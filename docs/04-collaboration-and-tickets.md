@@ -12,16 +12,16 @@
 
 ## 工单对象
 
-工单具有稳定 ID、父目标和版本、用户原话及整理后目标、验收标准、范围与禁止事项、唯一 owner、风险、权限快照、预算、依赖、工作区、状态、产物及证据。模板见 [ticket.md](../templates/ticket.md)。人改目标时记录新版本，向活动 assignment 投递修订；**投递、领取与实际应用**分别记事件。旧版结果保留、标记依据版本并判断是否仍有效。
+工单具有稳定 ID、父目标和版本、用户原话及整理后目标、验收标准、范围与禁止事项、唯一 owner、风险、权限快照、预算、依赖、工作区、状态、产物及证据。模板见 [ticket.md](../.agents/skills/roundtable-work/templates/ticket.md)。人改目标时记录新版本，向活动 assignment 投递修订；**投递、领取与实际应用**分别记事件。旧版结果保留、标记依据版本并判断是否仍有效。
 
-状态表达“在等什么”，建议 `queued → assigned → working → review → ready → done`，另有 `waiting_external`、`waiting_person`、`blocked`、`failed`、`cancelled`、`unknown`。状态只是投影视图，原因、owner、下一动作、等待条件都要单列。`ready` 是已提交待确认，`done` 必须有定义的验收证据；PR 关闭、合并与目标完成按部署规则明确映射。
+状态表达“在等什么”。工单状态、委派事件、交付状态和续行决定的统一词表以 [共享行为](../.agents/skills/roundtable-work/prompts/shared.md#状态词表全团队统一) 为准，本文不再重复定义。状态只是投影视图，原因、owner、下一动作、等待条件都要单列。`ready` 是已提交待确认，`done` 必须有定义的验收证据；PR 关闭、合并与目标完成按部署规则明确映射。
 
 ## 委派、接力与回收
 
 1. Chief 或经授权的负责人先检查依赖、可写文件范围、预算、风险、候选角色与工作区冲突。
 2. 事务性创建 assignment 和待发送消息，分配稳定 ID、目标版本和幂等键；一次委派一个主责执行者。
 3. 分别记录 `sent → delivered → acknowledged → started`，无回执超时按宿主能力重投、改派或提示；消息收取不等于完成。
-4. 执行者开始时核对委派卡，提交 [delivery.md](../templates/delivery.md)；不确定的外部动作标 `unknown`，由协调者核对，不盲目重跑。
+4. 执行者开始时核对委派卡，提交 [delivery.md](../.agents/skills/roundtable-work/templates/delivery.md)；不确定的外部动作标 `unknown`，由协调者核对，不盲目重跑。
 5. 产出送独立审查；审查退回仍由原作者修，超轮次或有重大分歧交上级。结论记录基于哪个版本/HEAD、执行证据与未做事项。
 6. 通过后按照权限交付，并将结果写回工单及发送人；审查后代码变化需重新判断审查有效性。
 

@@ -10,4 +10,8 @@ Bug 可直接开 Bug Issue，写清复现步骤、预期与实际、环境和证
 
 ## 本地检查
 
-使用 Node.js 24（见 `.nvmrc`），运行 `npm ci` 和 `npm test`。当前项目以 Markdown 为主，没有运行时依赖；检查覆盖本地 Markdown 链接，并非 Agent 运行时测试。添加 npm 依赖或 GitHub Actions 时更新锁文件并保持 Dependabot 配置。
+使用 Node.js 24（见 `.nvmrc`），运行 `npm ci` 和 `npm test`。测试覆盖安装脚本与诊断，并检查本地 Markdown 链接；并非 Agent 运行时测试。添加 npm 依赖或 GitHub Actions 时更新锁文件并保持 Dependabot 配置。
+
+## 修改运行时指令
+
+运行时指令和模板只放在 `.agents/skills/roundtable-work/`，`docs/` 写设计理由。skill 目录会被整体复制到用户工作区，因此其中的链接不能指向目录外（`npm run check` 会拒绝）。行为有实质变化时提升 `SKILL.md` 中的 `metadata.version`，`install.mjs --update` 和 `doctor --target` 依赖这个版本号。修改提示词后，最好在一个真实宿主里跑一次 [演练协议](practice/README.md) 并记录结果。

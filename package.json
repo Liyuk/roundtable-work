@@ -1,6 +1,6 @@
 {
   "name": "roundtable-work",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "private": true,
   "description": "An agent-guided setup and operating model for autonomous collaborative work.",
   "license": "MIT",
@@ -11,6 +11,7 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "node --test && npm run check",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "setup": "node scripts/install.mjs"
   }
 }
