@@ -43,3 +43,15 @@ Roundtable Work（`roundtable-work`）是一套以 Markdown 为主要载体的�
 ## 项目维护
 
 使用 Node.js 24 运行 `npm ci` 和 `npm test` 检查文档本地链接。工作流、讨论与贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，工程化下一步见 [实施建议](docs/13-engineering-next.md)。项目采用 [MIT 许可证](LICENSE)。
+
+运行 `npm run doctor` 可只读检查 Node、Git 及候选宿主命令是否可执行；`node scripts/doctor.mjs --json` 输出机器可读结果。诊断不会检查模型登录，也不能证明后台唤醒、持久委派或团队已经可用。
+
+## 给 AI 的入口
+
+支持 Agent Skills 的宿主可发现 [Roundtable Work Skill](.agents/skills/roundtable-work/SKILL.md)；也可以直接让 Agent 阅读该文件。提示词和实际运行时的边界见 [提示词与工程](docs/14-prompt-to-runtime.md)。
+
+[单一 Harness 优先：派发、回收和通信](docs/15-single-harness-communication.md)
+
+[单一宿主实际演练](practice/2026-11-10-native-harness-demo.md)
+
+[Skill 发现与分配流程](docs/16-skill-discovery.md)
