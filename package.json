@@ -5,6 +5,12 @@
   "description": "An agent-guided setup and operating model for autonomous collaborative work.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=24 <25" },
-  "scripts": { "check": "node scripts/check.mjs", "test": "npm run check" }
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test && npm run check",
+    "doctor": "node scripts/doctor.mjs"
+  }
 }
