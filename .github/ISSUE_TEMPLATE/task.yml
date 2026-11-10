@@ -1,0 +1,21 @@
+name: Agreed work item
+description: 为已讨论的想法创建可执行工单。
+title: "[Task] "
+body:
+  - type: input
+    id: discussion
+    attributes:
+      label: 关联 Discussion 链接
+      description: 功能和一般性改进请先讨论。
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 目标、范围与验收标准
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依赖、工作边界和其他背景

@@ -1,0 +1,21 @@
+name: Bug report
+description: 直接报告可复现的问题；修复 PR 应关联此 Issue。
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与影响
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤、预期和实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本、环境与相关证据（请勿包含敏感信息）
