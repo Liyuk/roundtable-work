@@ -2,56 +2,64 @@
 
 **让一支 Agent 团队理解目标、持续推进，并交出可验证的结果。**
 
-Roundtable Work（`roundtable-work`）是一套以 Markdown 为主要载体的自主工作室设计与 setup 方案。它从用户提供的工作约定与研究，以及 dsh-superagent 的公开原型中提炼：如何组织 Chief、长期角色和任务会话，让团队在授权范围内循环判断、委派、执行、验收和改进。
+Roundtable Work（`roundtable-work`）是一套装进现有 Agent 宿主（Claude Code、Codex 等）的工作方式：一个 Chief 负责目标与判断，开发、修复、审查、调研等角色在独立 session 中执行，用统一的工单、委派卡、交付卡和续行记录交接。它从用户的工作约定与研究，以及 dsh-superagent 的公开原型中提炼。
 
-**状态：设计草案，尚未实现、安装或验证。** 本仓库中的命令、配置、事件和接口均为候选契约，不能当作现成 CLI。相关实践已有运行经验，不能因此推断本项目已有同等运行能力。
+**状态：v0.2 · 可安装的 skill 与配置；没有后台运行时。** 安装后，团队在一个活跃会话内运作；回合结束后能否被自动唤醒取决于宿主，未经实测不能承诺。
 
-## 从哪里开始
+## 给 Harness 安装
 
-1. [总体方案](docs/01-architecture.md)：目标、架构、两层循环与关键决策。
-2. [Chief、Bot 与会话](docs/02-team-and-sessions.md)：职责、创建与生命周期。
-3. [主动循环与记忆](docs/03-autonomy-and-memory.md)：外部触发、可选定时机制、主动召回与停止条件。
-4. [协作和工单](docs/04-collaboration-and-tickets.md)：群聊、点对点、委派、工单状态和交接。
-5. [执行、权限与恢复](docs/05-execution-and-safety.md)：模型调用、执行回报、安全边界、故障与恢复。
-6. [组织调整与多层汇报](docs/08-organization.md)：自主扩缩、角色调整、报告过滤。
-7. [setup 方案](SETUP.md)：给配置 agent 的安装设计和验收流程。
-8. [实验与实施路线](docs/06-evaluation-and-roadmap.md)：验证用户不催促时能否持续推进。
-9. [来源与差异](docs/07-sources.md)：哪些来自现有资料、哪些是本方案的设计。
+需要 Node.js 24。获取本仓库后，把 skill 装进你的工作区：
 
-[工单模板](templates/ticket.md) · [委派卡模板](templates/assignment.md) · [交付卡模板](templates/delivery.md) · [记忆模板](templates/memory.md) · [工作室预设](profiles/studio/README.md) · [Chief 模板](templates/chief.md) · [角色模板](templates/bot.md)
+```bash
+git clone https://github.com/Liyuk/roundtable-work.git
+cd roundtable-work
+node scripts/install.mjs --target /path/to/workspace --dry-run
+node scripts/install.mjs --target /path/to/workspace
+node scripts/doctor.mjs --target /path/to/workspace
+```
+
+安装内容：
+
+| 位置 | 用途 |
+| --- | --- |
+| `.claude/skills/roundtable-work/` | Claude Code 发现的 skill（提示词、模板、参考） |
+| `.claude/agents/rt-*.md` | Claude Code 子代理：`rt-developer`、`rt-fixer`、`rt-reviewer`、`rt-researcher` |
+| `.agents/skills/roundtable-work/` | Codex 及其他读取 Agent Skills 目录的宿主 |
+| `.roundtable/team.md`、`policy.md` | 本部署的角色、授权、预算与停止条件（属于你，重装不会覆盖） |
+| `.roundtable/tickets/`、`state/`、`memory/` | 宿主没有任务系统时的工单、续行记录与记忆 |
+
+只装一个宿主用 `--harness claude` 或 `--harness codex`；升级加 `--update`。`.roundtable/` 可能含项目私有信息，是否提交由你决定。
+
+然后在工作区启动宿主：
+
+- **Claude Code**：在工作区运行 `claude`，确认 skill 列表里有 `roundtable-work`。直接说“用 roundtable-work 推进：<目标与验收>”。Chief 会通过 `Agent` 工具把工作派给 `rt-*` 子代理，并用另一个子代理做独立审查。
+- **Codex**：在工作区运行 `codex`，skill 从 `.agents/skills/` 发现；也可以直接说“阅读 `.agents/skills/roundtable-work/SKILL.md` 并按它推进：<目标>”。
+- **其他宿主**：让 Agent 读取 `SKILL.md`。没有子 session 工具时，它会降级为单 session 并把审查标为“自查”。
+
+第一次使用建议先说“用 roundtable-work 配置团队”，让 Agent 按 [配置流程](.agents/skills/roundtable-work/references/setup.md) 检查宿主能力、填写 `policy.md`。完整安装、配置与验收说明见 [SETUP](SETUP.md)。
+
+在本仓库内试用：`.claude/skills/roundtable-work` 已是指向 skill 源目录的符号链接，Claude Code 可直接发现；需要子代理时运行 `npm run setup -- --target .`（生成的 `.claude/agents/` 与 `.roundtable/` 不在版本控制中）。
+
+## 运行时包（Skill）
+
+所有运行时指令都在 [`.agents/skills/roundtable-work/`](.agents/skills/roundtable-work/SKILL.md)，可整体复制到任何工作区：
+
+- 指令：[共享行为](.agents/skills/roundtable-work/prompts/shared.md) · [Chief](.agents/skills/roundtable-work/prompts/roles/chief.md) · [开发](.agents/skills/roundtable-work/prompts/roles/developer.md) · [修复](.agents/skills/roundtable-work/prompts/roles/fixer.md) · [审查](.agents/skills/roundtable-work/prompts/roles/reviewer.md) · [调研](.agents/skills/roundtable-work/prompts/roles/researcher.md)
+- 模板：[工单](.agents/skills/roundtable-work/templates/ticket.md) · [委派卡](.agents/skills/roundtable-work/templates/assignment.md) · [交付卡](.agents/skills/roundtable-work/templates/delivery.md) · [续行记录](.agents/skills/roundtable-work/templates/checkpoint.md) · [团队](.agents/skills/roundtable-work/templates/team.md) · [政策](.agents/skills/roundtable-work/templates/policy.md) · [角色创建卡](.agents/skills/roundtable-work/templates/bot.md) · [记忆候选](.agents/skills/roundtable-work/templates/memory.md)
+- 参考：[宿主能力映射](.agents/skills/roundtable-work/references/harnesses.md) · [配置流程](.agents/skills/roundtable-work/references/setup.md) · [Skill 发现](.agents/skills/roundtable-work/references/skill-discovery.md)
 
 ## 核心原则
 
 - 人给方向和授权；团队在范围内自己决定下一步，真正需要判断时再打断人。
-- 回合结束不等于目标完成；已派发、已领取、已执行、已交付、已验收是不同事实。
-- 人格和提示词描述行为，权限、预算、任务状态与安全边界由运行时强制执行。
+- 回合结束不等于目标完成；已发送、已领取、已执行、已交付、已验收是不同事实。每回合以续行记录收尾：`continue / wait / ask / done / stop`。
+- 人格和提示词描述行为；权限、预算、任务状态与安全边界由宿主和运行时强制执行。
 - 允许主动发现和改进，但有来源、授权、预算、去重、验收及明确停止条件。
-- 复用宿主已有能力；每个部署只允许一个组件对同一项工作的调度和状态拥有权威。
+- 复用宿主已有能力；同一项工作只有一个调度和状态权威。
 
-## 实践指令
+## 设计文档
 
-[共享认知与交互](prompts/shared.md) · [Chief](prompts/roles/chief.md) · [开发](prompts/roles/developer.md) · [修复](prompts/roles/fixer.md) · [审查](prompts/roles/reviewer.md) · [调研](prompts/roles/researcher.md) · [多 Agent 演练](practice/README.md)
-
-[指令组装方式](docs/09-prompt-assembly.md) · [真实会话演练记录](practice/2026-11-10-session-trial.md)
-
-[从需求长出来的团队：运作逻辑与 工作室案例](docs/10-evolving-studio.md)
-
-[Chief 持续循环：人的参与、多 session、等待和主动记忆](docs/11-chief-continuous-loop.md)
-
-[外部事件、队列与开放记忆接口](docs/12-events-and-memory.md) · [连续队列演练](practice/2026-11-10-queue-trial.md)
+[文档索引](docs/README.md) 按主题列出全部设计文档与演练记录。建议先读 [总体方案](docs/01-architecture.md)、[单一 Harness 优先](docs/15-single-harness-communication.md) 和 [提示词与工程](docs/14-prompt-to-runtime.md)。
 
 ## 项目维护
 
-使用 Node.js 24 运行 `npm ci` 和 `npm test` 检查文档本地链接。工作流、讨论与贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，工程化下一步见 [实施建议](docs/13-engineering-next.md)。项目采用 [MIT 许可证](LICENSE)。
-
-运行 `npm run doctor` 可只读检查 Node、Git 及候选宿主命令是否可执行；`node scripts/doctor.mjs --json` 输出机器可读结果。诊断不会检查模型登录，也不能证明后台唤醒、持久委派或团队已经可用。
-
-## 给 AI 的入口
-
-支持 Agent Skills 的宿主可发现 [Roundtable Work Skill](.agents/skills/roundtable-work/SKILL.md)；也可以直接让 Agent 阅读该文件。提示词和实际运行时的边界见 [提示词与工程](docs/14-prompt-to-runtime.md)。
-
-[单一 Harness 优先：派发、回收和通信](docs/15-single-harness-communication.md)
-
-[单一宿主实际演练](practice/2026-11-10-native-harness-demo.md)
-
-[Skill 发现与分配流程](docs/16-skill-discovery.md)
+使用 Node.js 24 运行 `npm ci` 和 `npm test`：测试覆盖安装脚本与诊断，并检查 Markdown 本地链接以及 skill 目录不向外链接。`npm run doctor` 只读检查 Node、Git 及候选宿主命令；加 `--target <工作区>` 检查安装结果，`--json` 输出机器可读结果。诊断不检查模型登录，也不能证明后台唤醒或持久委派可用。工作流与贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。项目采用 [MIT 许可证](LICENSE)。

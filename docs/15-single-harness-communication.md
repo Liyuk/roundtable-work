@@ -1,6 +1,6 @@
 # 单一 Harness 优先：派发、回收和通信
 
-状态：设计建议与公开资料对照，2026-11-10；未实现安装器或后台服务。目标是在 Codex 或 Claude Code 等一个真实宿主内先运行 Chief 和子任务；跨 harness 是后续可选能力。
+状态：设计建议与公开资料对照，2026-11-10；已有把 skill 装进 Claude Code / Codex 工作区的安装脚本，未实现后台服务。宿主工具的对照表见 [宿主映射](../.agents/skills/roundtable-work/references/harnesses.md)。目标是在 Codex 或 Claude Code 等一个真实宿主内先运行 Chief 和子任务；跨 harness 是后续可选能力。
 
 ## 核心选择
 

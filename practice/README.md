@@ -7,8 +7,8 @@
 - 目标：为一个虚构的待办工具写一份包含目标、三个验收条件和一个风险的简短说明。
 - 工作区：用户指定的临时目录；不读写真实项目数据、不访问外部账号。
 - Chief：接到任务后建立任务卡并派开发者；收到结果后派审查者独立检查。若缺少验收条件，让开发者补足；通过后交付。
-- 开发者：依 [共享指令](../prompts/shared.md) 与 [开发者指令](../prompts/roles/developer.md) 写入文件，报告实际路径。
-- 审查者：依 [共享指令](../prompts/shared.md) 与 [审查指令](../prompts/roles/reviewer.md) 审查文件，对照任务卡，指出缺失并给出通过或打回。
+- 开发者：依 [共享指令](../.agents/skills/roundtable-work/prompts/shared.md) 与 [开发者指令](../.agents/skills/roundtable-work/prompts/roles/developer.md) 写入文件，报告实际路径。
+- 审查者：依 [共享指令](../.agents/skills/roundtable-work/prompts/shared.md) 与 [审查指令](../.agents/skills/roundtable-work/prompts/roles/reviewer.md) 审查文件，对照任务卡，指出缺失并给出通过或打回。
 - 预算：每角色至多两次执行；无权限、无进展或宿主不能唤醒时停止并报告。
 
 ## 操作步骤与证据
