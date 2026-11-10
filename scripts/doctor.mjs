@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { exists, harnessDirs, skillSource, skillVersion } from './install.mjs';
+import { classifyProbeResult } from './probe.mjs';
 
 const { values } = parseArgs({ options: { json: { type: 'boolean', default: false }, target: { type: 'string' } } });
 
@@ -14,10 +15,18 @@ const commands = [
   ['pi', 'pi', ['--version']],
   ['dsh', 'dsh', ['--version']],
 ];
+const TIMEOUT_MS = 5000;
+const reasons = new Map();
+function probe(command, args) {
+  const run = spawnSync(command, args, { encoding: 'utf8', timeout: TIMEOUT_MS, maxBuffer: 65536, windowsHide: true });
+  return { ...classifyProbeResult(run, TIMEOUT_MS), run };
+}
 const hosts = commands.map(([name, command, args]) => {
-  const run = spawnSync(command, args, { encoding: 'utf8', timeout: 5000, maxBuffer: 65536, windowsHide: true });
-  const available = run.status === 0;
-  return { name, available, version: available ? (run.stdout || '').trim().split('\n')[0].slice(0, 200) : null };
+  const probeResult = probe(command, args);
+  const { status, run, reason } = probeResult;
+  reasons.set(name, reason);
+  const available = probeResult.available;
+  return { name, available, version: available ? (run.stdout || '').trim().split('\n')[0].slice(0, 200) : null, status };
 });
 
 async function inspect(target) {
@@ -59,7 +68,10 @@ if (values.target) report.installation = await inspect(resolve(values.target));
 if (values.json) console.log(JSON.stringify(report, null, 2));
 else {
   console.log('Roundtable Work — read-only environment check');
-  for (const host of hosts) console.log(`  ${host.name}: ${host.available ? host.version || 'available' : 'not available'}`);
+  for (const host of hosts) {
+    const detail = host.status === 'not-found' ? 'not available' : `${host.status} (${reasons.get(host.name)})`;
+    console.log(`  ${host.name}: ${host.available ? host.version || 'available' : detail}`);
+  }
   const inst = report.installation;
   if (inst) {
     console.log(`Installation in ${inst.target} (source skill ${inst.sourceVersion}):`);
