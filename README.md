@@ -1,14 +1,14 @@
 # Roundtable Work
 
-**让一支 Agent 团队理解目标、持续推进，并交出可验证的结果。**
+**Help a team of agents understand a goal, keep making progress, and deliver verifiable results.**
 
-Roundtable Work（`roundtable-work`）是一套装进现有 Agent 宿主（Claude Code、Codex 等）的工作方式：一个 Chief 负责目标与判断，开发、修复、审查、调研等角色在独立 session 中执行，用统一的工单、委派卡、交付卡和续行记录交接。它从用户的工作约定与研究，以及 dsh-superagent 的公开原型中提炼。
+Roundtable Work (`roundtable-work`) is a way of working that installs into an existing agent harness (Claude Code, Codex, and others): one Chief owns the goal and the judgment calls, while roles such as developer, fixer, reviewer, and researcher execute in independent sessions and hand work off through a common set of tickets, assignment cards, delivery cards, and continuation records. It is distilled from the user's working conventions and research, and from the public prototype of dsh-superagent.
 
-**状态：v0.2 · 可安装的 skill 与配置；没有后台运行时。** 安装后，团队在一个活跃会话内运作；回合结束后能否被自动唤醒取决于宿主，未经实测不能承诺。
+**Status: v0.2 · an installable skill and configuration; there is no background runtime.** After installation, the team operates inside one active session; whether it can be woken automatically after a turn ends depends on the harness, and this cannot be promised without testing.
 
-## 给 Harness 安装
+## Install for a Harness
 
-需要 Node.js 24。获取本仓库后，把 skill 装进你的工作区：
+Node.js 24 is required. After getting this repository, install the skill into your workspace:
 
 ```bash
 git clone https://github.com/Liyuk/roundtable-work.git
@@ -18,48 +18,48 @@ node scripts/install.mjs --target /path/to/workspace
 node scripts/doctor.mjs --target /path/to/workspace
 ```
 
-安装内容：
+What gets installed:
 
-| 位置 | 用途 |
+| Location | Purpose |
 | --- | --- |
-| `.claude/skills/roundtable-work/` | Claude Code 发现的 skill（提示词、模板、参考） |
-| `.claude/agents/rt-*.md` | Claude Code 子代理：`rt-developer`、`rt-fixer`、`rt-reviewer`、`rt-researcher` |
-| `.agents/skills/roundtable-work/` | Codex 及其他读取 Agent Skills 目录的宿主 |
-| `.roundtable/team.md`、`policy.md` | 本部署的角色、授权、预算与停止条件（属于你，重装不会覆盖） |
-| `.roundtable/tickets/`、`state/`、`memory/` | 宿主没有任务系统时的工单、续行记录与记忆 |
+| `.claude/skills/roundtable-work/` | The skill that Claude Code discovers (prompts, templates, references) |
+| `.claude/agents/rt-*.md` | Claude Code subagents: `rt-developer`, `rt-fixer`, `rt-reviewer`, `rt-researcher` |
+| `.agents/skills/roundtable-work/` | Codex and other harnesses that read the Agent Skills directory |
+| `.roundtable/team.md`, `policy.md` | This deployment's roles, authorizations, budget, and stop conditions (they belong to you and are not overwritten on reinstall) |
+| `.roundtable/tickets/`, `state/`, `memory/` | Tickets, continuation records, and memory for when the harness has no task system |
 
-只装一个宿主用 `--harness claude` 或 `--harness codex`；升级加 `--update`。`.roundtable/` 可能含项目私有信息，是否提交由你决定。
+To install for only one harness, use `--harness claude` or `--harness codex`; to upgrade, add `--update`. `.roundtable/` may contain project-private information, and whether to commit it is up to you.
 
-然后在工作区启动宿主：
+Then start the harness in the workspace:
 
-- **Claude Code**：在工作区运行 `claude`，确认 skill 列表里有 `roundtable-work`。直接说“用 roundtable-work 推进：<目标与验收>”。Chief 会通过 `Agent` 工具把工作派给 `rt-*` 子代理，并用另一个子代理做独立审查。
-- **Codex**：在工作区运行 `codex`，skill 从 `.agents/skills/` 发现；也可以直接说“阅读 `.agents/skills/roundtable-work/SKILL.md` 并按它推进：<目标>”。
-- **其他宿主**：让 Agent 读取 `SKILL.md`。没有子 session 工具时，它会降级为单 session 并把审查标为“自查”。
+- **Claude Code**: run `claude` in the workspace and confirm that `roundtable-work` is in the skill list. Then say "Use roundtable-work to drive this: <goal and acceptance>". The Chief will use the `Agent` tool to assign work to the `rt-*` subagents and use another subagent for independent review.
+- **Codex**: run `codex` in the workspace; the skill is discovered from `.agents/skills/`. You can also say directly "Read `.agents/skills/roundtable-work/SKILL.md` and follow it to drive this: <goal>".
+- **Other harnesses**: have the agent read `SKILL.md`. Without a sub-session tool, it degrades to a single session and labels the review as "self-check" (`自查`).
 
-第一次使用建议先说“用 roundtable-work 配置团队”，让 Agent 按 [配置流程](.agents/skills/roundtable-work/references/setup.md) 检查宿主能力、填写 `policy.md`。完整安装、配置与验收说明见 [SETUP](SETUP.md)。
+For first use, we suggest saying "Use roundtable-work to configure the team" so the agent follows the [setup flow](.agents/skills/roundtable-work/references/setup.md) to check the harness's capabilities and fill in `policy.md`. For the full installation, configuration, and acceptance instructions, see [SETUP](SETUP.md).
 
-在本仓库内试用：`.claude/skills/roundtable-work` 已是指向 skill 源目录的符号链接，Claude Code 可直接发现；需要子代理时运行 `npm run setup -- --target .`（生成的 `.claude/agents/` 与 `.roundtable/` 不在版本控制中）。
+To try it inside this repository: `.claude/skills/roundtable-work` is already a symbolic link to the skill source directory, so Claude Code can discover it directly; when you need subagents, run `npm run setup -- --target .` (the generated `.claude/agents/` and `.roundtable/` are not under version control).
 
-## 运行时包（Skill）
+## Runtime package (Skill)
 
-所有运行时指令都在 [`.agents/skills/roundtable-work/`](.agents/skills/roundtable-work/SKILL.md)，可整体复制到任何工作区：
+All runtime instructions live in [`.agents/skills/roundtable-work/`](.agents/skills/roundtable-work/SKILL.md), which can be copied as a whole into any workspace:
 
-- 指令：[共享行为](.agents/skills/roundtable-work/prompts/shared.md) · [Chief](.agents/skills/roundtable-work/prompts/roles/chief.md) · [开发](.agents/skills/roundtable-work/prompts/roles/developer.md) · [修复](.agents/skills/roundtable-work/prompts/roles/fixer.md) · [审查](.agents/skills/roundtable-work/prompts/roles/reviewer.md) · [调研](.agents/skills/roundtable-work/prompts/roles/researcher.md)
-- 模板：[工单](.agents/skills/roundtable-work/templates/ticket.md) · [委派卡](.agents/skills/roundtable-work/templates/assignment.md) · [交付卡](.agents/skills/roundtable-work/templates/delivery.md) · [续行记录](.agents/skills/roundtable-work/templates/checkpoint.md) · [团队](.agents/skills/roundtable-work/templates/team.md) · [政策](.agents/skills/roundtable-work/templates/policy.md) · [角色创建卡](.agents/skills/roundtable-work/templates/bot.md) · [记忆候选](.agents/skills/roundtable-work/templates/memory.md)
-- 参考：[宿主能力映射](.agents/skills/roundtable-work/references/harnesses.md) · [配置流程](.agents/skills/roundtable-work/references/setup.md) · [Skill 发现](.agents/skills/roundtable-work/references/skill-discovery.md)
+- Instructions: [Shared behavior](.agents/skills/roundtable-work/prompts/shared.md) · [Chief](.agents/skills/roundtable-work/prompts/roles/chief.md) · [Developer](.agents/skills/roundtable-work/prompts/roles/developer.md) · [Fixer](.agents/skills/roundtable-work/prompts/roles/fixer.md) · [Reviewer](.agents/skills/roundtable-work/prompts/roles/reviewer.md) · [Researcher](.agents/skills/roundtable-work/prompts/roles/researcher.md)
+- Templates: [Ticket](.agents/skills/roundtable-work/templates/ticket.md) · [Assignment card](.agents/skills/roundtable-work/templates/assignment.md) · [Delivery card](.agents/skills/roundtable-work/templates/delivery.md) · [Continuation record](.agents/skills/roundtable-work/templates/checkpoint.md) · [Team](.agents/skills/roundtable-work/templates/team.md) · [Policy](.agents/skills/roundtable-work/templates/policy.md) · [Role creation card](.agents/skills/roundtable-work/templates/bot.md) · [Memory candidate](.agents/skills/roundtable-work/templates/memory.md)
+- References: [Harness capability mapping](.agents/skills/roundtable-work/references/harnesses.md) · [Setup flow](.agents/skills/roundtable-work/references/setup.md) · [Skill discovery](.agents/skills/roundtable-work/references/skill-discovery.md)
 
-## 核心原则
+## Core principles
 
-- 人给方向和授权；团队在范围内自己决定下一步，真正需要判断时再打断人。
-- 回合结束不等于目标完成；已发送、已领取、已执行、已交付、已验收是不同事实。每回合以续行记录收尾：`continue / wait / ask / done / stop`。
-- 人格和提示词描述行为；权限、预算、任务状态与安全边界由宿主和运行时强制执行。
-- 允许主动发现和改进，但有来源、授权、预算、去重、验收及明确停止条件。
-- 复用宿主已有能力；同一项工作只有一个调度和状态权威。
+- People provide direction and authorization; the team decides the next step on its own within scope, and interrupts people only when a judgment is truly needed.
+- The end of a turn does not mean the goal is complete; sent, claimed, executed, delivered, and accepted are different facts. Every turn ends with a continuation record: `continue / wait / ask / done / stop`.
+- Personas and prompts describe behavior; permissions, budget, task state, and safety boundaries are enforced by the harness and the runtime.
+- Proactive discovery and improvement are allowed, but only with a source, authorization, a budget, deduplication, acceptance criteria, and explicit stop conditions.
+- Reuse the harness's existing capabilities; each piece of work has exactly one authority for scheduling and state.
 
-## 设计文档
+## Design documents
 
-[文档索引](docs/README.md) 按主题列出全部设计文档与演练记录。建议先读 [总体方案](docs/01-architecture.md)、[单一 Harness 优先](docs/15-single-harness-communication.md) 和 [提示词与工程](docs/14-prompt-to-runtime.md)。
+The [documentation index](docs/README.md) lists all design documents and practice records by topic. We suggest reading the [overall design](docs/01-architecture.md), [single harness first](docs/15-single-harness-communication.md), and [prompts and engineering](docs/14-prompt-to-runtime.md) first.
 
-## 项目维护
+## Project maintenance
 
-使用 Node.js 24 运行 `npm ci` 和 `npm test`：测试覆盖安装脚本与诊断，并检查 Markdown 本地链接以及 skill 目录不向外链接。`npm run doctor` 只读检查 Node、Git 及候选宿主命令；加 `--target <工作区>` 检查安装结果，`--json` 输出机器可读结果。诊断不检查模型登录，也不能证明后台唤醒或持久委派可用。工作流与贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。项目采用 [MIT 许可证](LICENSE)。
+Use Node.js 24 to run `npm ci` and `npm test`: the tests cover the install script and diagnostics, and check local Markdown links and that the skill directory does not link outside itself. `npm run doctor` is a read-only check of Node, Git, and candidate harness commands; add `--target <workspace>` to check the installation result, and `--json` to output machine-readable results. Diagnostics do not check model login and cannot prove that background wake-up or persistent delegation works. For the workflow and how to contribute, see [CONTRIBUTING.md](CONTRIBUTING.md). The project is licensed under the [MIT License](LICENSE).

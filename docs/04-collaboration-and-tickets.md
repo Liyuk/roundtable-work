@@ -1,32 +1,32 @@
-# 协作、工单与交接
+# Collaboration, Tickets, and Handoff
 
-## 群聊与点对点如何选择
+## Choosing Between Group Chat and Point-to-Point
 
-| 方式 | 适合 | 优势 | 代价与处理 |
+| Mode | Suited for | Advantages | Costs and handling |
 | --- | --- | --- | --- |
-| 群聊 | 多视角讨论、澄清目标、展示阶段结果 | 公共上下文、跨角色发现遗漏、人能观察 | 广播消耗上下文；发言易循环、抢答、责任不明；限定主题、发言预算和一个收尾 owner |
-| 点对点 | 明确委派、直接送审、敏感或大量上下文 | 责任清楚、信息精简、执行可并行 | 私聊对群不可见；必须将委派、交付及关键结论写入权威工单 |
-| 多 session 并行 | 独立开发、修复、调研和审查 | 上下文隔离、不互相阻塞，可用不同模型 | 重复执行、文件/迁移冲突、迟到结果、协调成本；明确写入范围和目标版本，冲突工作排依赖 |
+| Group chat | Multi-perspective discussion, clarifying goals, showing interim results | Shared context, cross-role discovery of omissions, observable by people | Broadcasting consumes context; speaking easily loops, people rush to answer, and responsibility is unclear; limit the topic, the speaking budget, and have one closing owner |
+| Point-to-point | Explicit delegation, direct submission for review, sensitive or large-context work | Clear responsibility, concise information, execution can run in parallel | Private chats are invisible to the group; delegations, deliveries, and key conclusions must be written into the authoritative ticket |
+| Multi-session parallel | Independent development, fixing, research, and review | Context isolation, no mutual blocking, different models can be used | Duplicate execution, file/migration conflicts, late results, coordination cost; state the write scope and target version explicitly, and order conflicting work by dependency |
 
-默认点对点交接并把重要结果投影到任务视图；群聊是可选协调界面。**群里 @ 某人不是已委派**：必须建立关联 assignment 并记录投递、领取、执行和结果；没有宿主工具保障就明确标注为未受保障。群讨论得出的建议要有责任人和任务才会变成工作，不将群通知当权威状态。
+Default to point-to-point handoff and project important results into the task view; group chat is an optional coordination interface. **@-mentioning someone in a group is not a delegation**: an associated assignment must be created, with delivery, claiming, execution, and results recorded; if there is no host tool guarantee, mark it explicitly as unguaranteed. A suggestion from a group discussion becomes work only when it has an owner and a task; do not treat group notifications as authoritative state.
 
-## 工单对象
+## The Ticket Object
 
-工单具有稳定 ID、父目标和版本、用户原话及整理后目标、验收标准、范围与禁止事项、唯一 owner、风险、权限快照、预算、依赖、工作区、状态、产物及证据。模板见 [ticket.md](../.agents/skills/roundtable-work/templates/ticket.md)。人改目标时记录新版本，向活动 assignment 投递修订；**投递、领取与实际应用**分别记事件。旧版结果保留、标记依据版本并判断是否仍有效。
+A ticket has a stable ID, a parent goal and version, the user's own words and the organized goal, acceptance criteria, scope and prohibitions, a single owner, risks, a permission snapshot, budget, dependencies, workspace, status, artifacts, and evidence. See [ticket.md](../.agents/skills/roundtable-work/templates/ticket.md) for the template. When a person changes the goal, record a new version and deliver the revision to active assignments; **delivery, claiming, and actual application** are each recorded as events. Keep results from the old version, mark the version they are based on, and judge whether they are still valid.
 
-状态表达“在等什么”。工单状态、委派事件、交付状态和续行决定的统一词表以 [共享行为](../.agents/skills/roundtable-work/prompts/shared.md#状态词表全团队统一) 为准，本文不再重复定义。状态只是投影视图，原因、owner、下一动作、等待条件都要单列。`ready` 是已提交待确认，`done` 必须有定义的验收证据；PR 关闭、合并与目标完成按部署规则明确映射。
+Status expresses "what is being waited on". The unified vocabulary for ticket status, delegation events, delivery status, and continuation decisions is governed by [Shared behavior](../.agents/skills/roundtable-work/prompts/shared.md#状态词表全团队统一), and this document does not redefine it. Status is only a projected view; the reason, owner, next action, and wait condition must each be listed separately. `ready` means submitted and awaiting confirmation, and `done` must have the defined acceptance evidence; how PR closure, merging, and goal completion map is made explicit by deployment rules.
 
-## 委派、接力与回收
+## Delegation, Relay, and Reclaiming
 
-1. Chief 或经授权的负责人先检查依赖、可写文件范围、预算、风险、候选角色与工作区冲突。
-2. 事务性创建 assignment 和待发送消息，分配稳定 ID、目标版本和幂等键；一次委派一个主责执行者。
-3. 分别记录 `sent → delivered → acknowledged → started`，无回执超时按宿主能力重投、改派或提示；消息收取不等于完成。
-4. 执行者开始时核对委派卡，提交 [delivery.md](../.agents/skills/roundtable-work/templates/delivery.md)；不确定的外部动作标 `unknown`，由协调者核对，不盲目重跑。
-5. 产出送独立审查；审查退回仍由原作者修，超轮次或有重大分歧交上级。结论记录基于哪个版本/HEAD、执行证据与未做事项。
-6. 通过后按照权限交付，并将结果写回工单及发送人；审查后代码变化需重新判断审查有效性。
+1. The Chief or an authorized lead first checks dependencies, the writable file scope, budget, risk, candidate roles, and workspace conflicts.
+2. Transactionally create the assignment and the message to be sent, assigning a stable ID, target version, and idempotency key; delegate to one primary executor at a time.
+3. Record `sent → delivered → acknowledged → started` separately; when no receipt arrives before the timeout, re-deliver, reassign, or prompt according to host capabilities; a message being picked up does not mean it is complete.
+4. When starting, the executor checks the assignment card and submits [delivery.md](../.agents/skills/roundtable-work/templates/delivery.md); mark uncertain external actions `unknown`, to be verified by the coordinator, and do not blindly rerun them.
+5. Output goes to independent review; when review sends it back, the original author still fixes it, and anything beyond the round limit or with major disagreement goes to the superior. The verdict records which version/HEAD it is based on, the execution evidence, and what was not done.
+6. After passing, deliver according to permissions and write the result back to the ticket and the sender; if code changes after review, the validity of the review must be re-judged.
 
-委派允许 work、consult、notify 等不同目的：只有 work 建立交付责任；通知不会自动赋权。取消、回收或改派时记录原因、当前状态和未消费输入；确保原执行者已停止或围栏失效，避免双重写入。
+A delegation allows different purposes such as work, consult, and notify: only work establishes delivery responsibility; a notification does not automatically confer authority. When cancelling, reclaiming, or reassigning, record the reason, the current state, and unconsumed inputs; make sure the original executor has stopped or its fence is invalidated, to avoid double writes.
 
-## 直接交接与多层汇报
+## Direct Handoff and Multi-Level Reporting
 
-执行者可在授权内直接向审查者发送结构化交接，同时给管理链可查询的状态事件；普通交接无需经过所有上级转述。涉及目标范围、权限、跨队冲突或预算升级时交给相应负责人。对外唯一由部署授权者决定；团队消息、群讨论或中间报告不能扩大该授权。
+Within authorization, an executor may send a structured handoff directly to the reviewer, while also giving the management chain a queryable status event; ordinary handoffs need not be relayed through all superiors. Escalations involving the goal scope, permissions, cross-team conflicts, or budget go to the corresponding lead. Only the party authorized by the deployment decides what goes external; team messages, group discussions, or intermediate reports cannot expand that authorization.

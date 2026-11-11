@@ -1,28 +1,28 @@
-# 实践：在现有多 Agent 宿主中做一次工作室演练
+# Practice: run a studio rehearsal in an existing multi-agent harness
 
-这是可执行的实验协议，不是独立后台服务。需要宿主实际支持创建代理、发送任务和收到结果；本项目不提供这些工具。使用当前宿主的真实工具名，不要照搬别的平台 API。以沙箱内无外部副作用的文档任务为例。
+This is an executable experiment protocol, not a standalone background service. The harness must actually support creating agents, sending tasks, and receiving results; this project does not provide those tools. Use the real tool names of the current harness, and do not copy another platform's API. The example is a document task inside a sandbox with no external side effects.
 
-## 任务卡
+## Task card
 
-- 目标：为一个虚构的待办工具写一份包含目标、三个验收条件和一个风险的简短说明。
-- 工作区：用户指定的临时目录；不读写真实项目数据、不访问外部账号。
-- Chief：接到任务后建立任务卡并派开发者；收到结果后派审查者独立检查。若缺少验收条件，让开发者补足；通过后交付。
-- 开发者：依 [共享指令](../.agents/skills/roundtable-work/prompts/shared.md) 与 [开发者指令](../.agents/skills/roundtable-work/prompts/roles/developer.md) 写入文件，报告实际路径。
-- 审查者：依 [共享指令](../.agents/skills/roundtable-work/prompts/shared.md) 与 [审查指令](../.agents/skills/roundtable-work/prompts/roles/reviewer.md) 审查文件，对照任务卡，指出缺失并给出通过或打回。
-- 预算：每角色至多两次执行；无权限、无进展或宿主不能唤醒时停止并报告。
+- Goal: write a short description of a fictional to-do tool, containing a goal, three acceptance conditions, and one risk.
+- Workspace: a temporary directory specified by the user; do not read or write real project data and do not access external accounts.
+- Chief: after receiving the task, create the task card and assign it to the developer; after receiving the result, assign a reviewer to check it independently. If acceptance conditions are missing, have the developer fill them in; deliver once it passes.
+- Developer: following the [shared instructions](../.agents/skills/roundtable-work/prompts/shared.md) and the [developer instructions](../.agents/skills/roundtable-work/prompts/roles/developer.md), write the file and report the actual path.
+- Reviewer: following the [shared instructions](../.agents/skills/roundtable-work/prompts/shared.md) and the [reviewer instructions](../.agents/skills/roundtable-work/prompts/roles/reviewer.md), review the file against the task card, point out what is missing, and give a verdict of pass (`通过`) or send back (`打回`).
+- Budget: at most two runs per role; stop and report when there is no permission, no progress, or the harness cannot wake up.
 
-## 操作步骤与证据
+## Steps and evidence
 
-1. Chief 记录目标与版本，使用宿主创建开发者 session；日志记录时间、工具调用、实际 session ID 和任务内容。
-2. 开发者确认领取，写文件、报告文件与检查；Chief 收到完成事件。不能因仅发送文本就标记已领取。
-3. Chief 创建审查 session，交付工单和文件路径，不传伪造结果。审查者读实际文件，提交独立结论。
-4. 若打回，Chief 把具体问题发给原开发者继续执行，随后再次送审。通过后 Chief 对照原目标给出交付卡。
-5. 留存事件顺序、每次消息、实际文件和未执行步骤。记录是否由完成通知自然唤醒 Chief；如果主 session 主动等待或人工触发，明确标明，不能宣传为后台自主唤醒。
+1. The Chief records the goal and version and uses the harness to create a developer session; the log records the time, tool calls, the actual session ID, and the task content.
+2. The developer confirms the claim, writes the file, and reports the file and checks; the Chief receives the completion event. Do not mark a task as claimed merely because text was sent.
+3. The Chief creates a review session and delivers the ticket and the file path, without passing along fabricated results. The reviewer reads the actual file and submits an independent conclusion.
+4. If it is sent back, the Chief sends the specific issues to the original developer to continue, and then submits it for review again. After it passes, the Chief gives a delivery card against the original goal.
+5. Keep the event order, every message, the actual files, and the steps not executed. Record whether the Chief was woken naturally by a completion notification; if the main session waited actively or a person triggered it, state that explicitly, and do not advertise it as autonomous background wake-up.
 
-## 三个层次的验证
+## Three levels of verification
 
-- **会话内演练**：在当前对话使用多 Agent 工具执行上述流程，能验证分工、消息和评审；对话结束后的持续运行不在其证明范围。
-- **宿主续行测试**：让主会话结束或转为空闲，等待子任务结果由宿主自动唤醒；记录事实及超时。没有这种支持时标记不通过或不支持。
-- **跨重启测试**：重启宿主/控制层后恢复未完任务、投递和副作用对账。必须在专门的可控环境实际测试，不能由会话内演练外推。
+- **In-session rehearsal**: use multi-agent tools in the current conversation to run the flow above; it can verify the division of labor, messages, and review; continued running after the conversation ends is outside what it proves.
+- **Harness continuation test**: let the main session end or go idle and wait for the harness to wake it automatically when a subtask result arrives; record the facts and any timeouts. Without such support, mark it as failed or unsupported.
+- **Cross-restart test**: after restarting the harness or control layer, recover unfinished tasks, deliveries, and reconcile side effects. It must be tested for real in a dedicated, controlled environment, and cannot be extrapolated from an in-session rehearsal.
 
-如果无法创建审查会话或看到执行结果，直接记录失败；禁止编造工作室运行证据。
+If a review session cannot be created or the execution result cannot be seen, record the failure directly; fabricating evidence of studio operation is forbidden.

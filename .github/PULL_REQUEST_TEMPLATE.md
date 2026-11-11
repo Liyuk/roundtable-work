@@ -1,13 +1,13 @@
-## 问题和改动
+## Problem and changes
 
-## 关联
+## Links
 
-- Issue：Closes #
-- Discussion（功能或一般改进必填）：
+- Issue: Closes #
+- Discussion (required for features or general improvements):
 
-## 验证
+## Verification
 
-- 实际执行的检查及结果：
-- 未运行的检查和原因：
+- Checks actually run and their results:
+- Checks not run and why:
 
-## 风险与未完成事项
+## Risks and unfinished items

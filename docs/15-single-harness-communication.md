@@ -1,53 +1,53 @@
-# 单一 Harness 优先：派发、回收和通信
+# Single harness first: dispatch, collection, and communication
 
-状态：设计建议与公开资料对照，2026-11-10；已有把 skill 装进 Claude Code / Codex 工作区的安装脚本，未实现后台服务。宿主工具的对照表见 [宿主映射](../.agents/skills/roundtable-work/references/harnesses.md)。目标是在 Codex 或 Claude Code 等一个真实宿主内先运行 Chief 和子任务；跨 harness 是后续可选能力。
+Status: design recommendation compared against public material, 2026-11-10; an install script that puts the skill into Claude Code / Codex workspaces exists, but no background service is implemented. For a comparison table of host tools see [host mapping](../.agents/skills/roundtable-work/references/harnesses.md). The goal is to first run the Chief and sub-tasks inside one real host such as Codex or Claude Code; cross-harness is a later optional capability.
 
-## 核心选择
+## Core choice
 
 ```text
-用户 ↔ Chief（主 session）
-          ├── 宿主原生委派 → 执行 session → 宿主回收结果 ─┐
-          ├── 宿主原生委派 → 审查 session → 宿主回收结果 ─┤
-          └── 工单 / 记忆（按宿主实际能力记录）          │
-             ↑ 用户补充、完成事件、已配置的定时提醒 ←─────┘
+User ↔ Chief (main session)
+          ├── host-native delegation → executor session → host collects result ─┐
+          ├── host-native delegation → reviewer session → host collects result ─┤
+          └── ticket / memory (recorded per actual host capability)             │
+             ↑ user additions, completion events, configured timed reminders ←──┘
 ```
 
-同一宿主能处理派单、发消息、等待和结果回收时，使用它原生工具。Roundtable Work 提供 Chief、角色、任务卡、续行与验收纪律；不引入 gRPC、消息服务器或第二个调度器。一个任务需要多角色时才创建子 session；简单工作单 session 完成。
+When the same host can handle dispatching, sending messages, waiting, and collecting results, use its native tools. Roundtable Work provides the Chief, roles, assignment cards, continuation, and acceptance discipline; it does not introduce gRPC, a message server, or a second scheduler. Sub-sessions are created only when a task needs multiple roles; simple work is finished in a single session.
 
-### 消息的最小约定
+### Minimal messaging convention
 
-派单携带任务 ID、目标版本、执行对象、目标/验收、工作区、权限边界和回传位置；结果携带状态、产物、证据、未完成、下一步。Chief 以宿主的实际返回判断是否创建、发送和完成；发送不等于已读，回复不等于验收。宿主不能证明某个事件就标未知，不凭提示词伪造。
+A dispatch carries the task ID, goal version, the executor, goal/acceptance criteria, workspace, permission boundary, and the place to return results; a result carries status, artifacts, evidence, unfinished items, and next step. The Chief judges whether something was created, sent, and completed by what the host actually returns; sent does not mean read, and a reply does not mean acceptance. If the host cannot prove an event, mark it unknown (`未知`) rather than forging it from a prompt.
 
-用户追问或改变目标时，Chief 更新版本，并通过宿主当前真实可用的消息/后续任务能力转达受影响 session；若其不支持运行中转达，就记录待处理、在下次可用时注入或先停止。不能假设消息已被读取或旧执行立即停止。多人同时编辑文件需分清工作区及写入边界。
+When the user follows up or changes the goal, the Chief updates the version and relays it to the affected sessions through the messaging/follow-up-task capability the host actually has available at the moment; if it does not support relaying during a run, record it as pending, inject it the next time that is possible, or stop first. You cannot assume that the message was read or that the old execution stopped immediately. When several people edit files at the same time, the workspaces and write boundaries must be kept distinct.
 
-## 同一宿主不同能力
+## Different capabilities on the same host
 
-- Codex：本仓库已有的会话内演练实际使用主 Agent 创建、等待、给子 Agent 发后续任务并回收结果；这是本次所用 Codex 环境的观察，不证明其他 Codex 产品、配置或版本均支持同样接口。当前本机 `codex exec` 帮助显示支持恢复已保存会话；命令存在不证明跨重启后台调度。
-- Claude Code：官方描述独立上下文的 [subagents](https://code.claude.com/docs/en/sub-agents)；其 [agent teams](https://code.claude.com/docs/en/agent-teams) 支持团队间消息与任务协调，但文档标注为实验功能且默认关闭。具体启用、可用性与恢复限制以目标版本实测为准。
-- 不同 session 不一定能互相直接通信：若只有主 Agent 能协调，就采用 `子任务 → Chief → 另一子任务`。对于同一宿主内部的交接，应先验证其工具与作用范围，再考虑补文件信箱或其他适配。
+- Codex: the in-session trial already in this repository actually used the main agent to create, wait for, send follow-up tasks to, and collect results from sub-agents; this is an observation of the Codex environment used this time, and does not prove that other Codex products, configurations, or versions support the same interface. The current local `codex exec` help shows support for resuming saved sessions; the existence of a command does not prove cross-restart background scheduling.
+- Claude Code: the official docs describe [subagents](https://code.claude.com/docs/en/sub-agents) with independent context; its [agent teams](https://code.claude.com/docs/en/agent-teams) support messaging and task coordination between teammates, but the documentation marks them as experimental and off by default. Specific enablement, availability, and recovery limits are to be confirmed by testing on the target version.
+- Different sessions may not be able to talk to each other directly: if only the main agent can coordinate, use `sub-task → Chief → another sub-task`. For handoffs inside the same host, first verify its tools and scope, and only then consider adding a file mailbox or another adapter.
 
-## 何时需要宿主外代码
+## When code outside the host is needed
 
-任务进行期间的子 Agent 消息和**跨时间、跨进程持续运行**是不同能力。Chief 回合结束后要继续工作，需要宿主或外部运行环境在结果、定时或外部事件发生时重新唤醒它；还需要某个权威位置保存目标、工单与等待条件。没有这两项，提示词不会自动执行。
+Sub-agent messages while a task is in progress and **running continuously across time and processes** are different capabilities. For the Chief to keep working after its turn ends, the host or an external runtime must wake it again when a result, a timer, or an external event occurs; some authoritative place is also needed to store the goal, tickets, and wait conditions. Without these two, a prompt does not execute by itself.
 
-最低可用方案先验证：创建子任务 → 收结果 → 发审查/返修 → 用户中途纠偏 → 队列第二项继续。之后再测试空闲后唤醒、周期巡检、记忆读取与重启恢复。宿主已有机制则复用；缺少时先补可观察、持久的调度能力，不为第一天就做所有事件源和控制面。
+Verify the minimum viable setup first: create a sub-task → collect the result → send for review/rework → the user corrects midway → the second item in the queue continues. Only after that, test wake-up after idle, periodic inspection, memory reads, and restart recovery. Reuse a host mechanism if it exists; if it is missing, first add observable, durable scheduling capability, rather than building every event source and control plane on day one.
 
-## 跨 harness：暂不作为首版前提
+## Cross-harness: not a prerequisite for the first version
 
-当确实需要一个宿主调用另一个时，优先选择简单交接：Chief 用其环境支持的进程/适配方式发一张任务卡，另一个 Agent 输出结果与证据；把它视为一个执行 attempt。若必须支持持续双向消息或跨机器，再考虑用户熟悉的 gRPC 或其他传输。gRPC 解决进程之间如何传输消息；任务归属、已接收/已处理、重试去重、权限、取消、状态持久化与未知副作用仍须定义。需要这些语义时，不能只靠协议名宣称可靠。
+When one host really needs to call another, prefer a simple handoff: the Chief sends one assignment card using a process/adapter method its environment supports, and the other agent outputs a result and evidence; treat this as one execution attempt. If continuous two-way messaging or cross-machine operation must be supported, then consider gRPC, which the user knows well, or another transport. gRPC solves how messages are transported between processes; task ownership, received/processed, retry de-duplication, permissions, cancellation, state persistence, and unknown side effects still have to be defined. When these semantics are needed, reliability cannot be claimed on the strength of a protocol name alone.
 
-统一任务卡可以跨宿主复用，但不要先设计一套覆盖所有 harness 的通用协议。先跑通一个真实宿主，再以第二宿主的真实差异决定适配接口。
+A unified assignment card can be reused across hosts, but do not first design a general protocol covering all harnesses. Get one real host working first, then use the real differences of a second host to decide the adapter interface.
 
-## 与 dsh-superagent 的代码对应
+## Mapping to dsh-superagent's code
 
-| 上游部分 | 做的事 | 我们可以先怎么处理 |
+| Upstream part | What it does | How we can handle it first |
 | --- | --- | --- |
-| Source、Trigger、Thread | 接收外部事件、关联对话、记录和去重 | 宿主已有来源则复用；首版可从人工输入开始 |
-| Eval、Policy、Mandate | 判断请求、来源和授权范围 | 首版保留用户目标与权限；复杂外部准入在接来源时实现 |
-| Ticket、Assignment | 记录工作状态与交给哪个执行者 | 优先宿主任务对象；否则加一份轻量权威记录 |
-| Executor、Session | 工作会话、目录、工具及并发 | 复用宿主原生子 Agent 和隔离能力 |
-| Outbox、Notices | 持久投递结果并通知适当会话 | 优先宿主回执；缺失时补最小消息记录/投递 |
-| Setup、Settings、Panel | 探测配置、安装、查看待处理项目 | 先做能实际验证的 setup/doctor；面板可后做 |
-| 重启与失败处理 | 区分等待、失败、重试及恢复 | 作为后台使用的验收条件，不由 Markdown 假定 |
+| Source, Trigger, Thread | Receive external events, correlate conversations, record and de-duplicate | Reuse the host's existing sources; the first version can start from manual input |
+| Eval, Policy, Mandate | Judge requests, sources, and authorization scope | The first version keeps the user's goal and permissions; complex external admission is implemented when sources are connected |
+| Ticket, Assignment | Record work status and which executor it was given to | Prefer the host's task objects; otherwise add a lightweight authoritative record |
+| Executor, Session | Work sessions, directories, tools, and concurrency | Reuse the host's native sub-agents and isolation capabilities |
+| Outbox, Notices | Durably deliver results and notify the appropriate sessions | Prefer host receipts; when they are missing, add a minimal message record/delivery |
+| Setup, Settings, Panel | Probe configuration, install, view pending items | First build a setup/doctor that can actually be verified; the panel can come later |
+| Restart and failure handling | Distinguish waiting, failure, retry, and recovery | Treat as an acceptance condition for background use; not to be assumed by Markdown |
 
-来源：[领域模型](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md)、[执行](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md)、[架构](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md)。上游依托 DeepSeek Harness，项目自己的代码和宿主提供的 session/工具是两部分；它的 idle 工单等待触发，不等于已经验证本项目设想的持续目标循环。
+Sources: [domain model](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md), [execution](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md), [architecture](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md). Upstream relies on DeepSeek Harness; the project's own code and the session/tools provided by the host are two separate parts; the fact that its idle tickets wait for a trigger does not mean the continuous goal loop envisioned by this project has been verified.

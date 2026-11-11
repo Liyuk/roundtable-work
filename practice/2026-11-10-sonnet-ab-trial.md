@@ -1,43 +1,43 @@
-# Sonnet A/B 演练：v0.2 设计 vs 原设计
+# Sonnet A/B rehearsal: v0.2 design vs the original design
 
-日期：2026-11-10。宿主：Claude Code 桌面端。两个独立的 Sonnet（`claude-sonnet-5-5`）应用级 session 分别担任 Chief，用同一个目标处理同一个虚构仓库 `textkit` 的副本。Chief 与全部子代理都是 Sonnet；评估由另一个主会话读取产物与两份自述报告完成。没有人在运行中回答问题。
+Date: 2026-11-10. Harness: Claude Code desktop. Two independent Sonnet (`claude-sonnet-5-5`) app-level sessions each acted as Chief, using the same goal on copies of the same fictional repository `textkit`. The Chief and all subagents were Sonnet; the evaluation was done by another main session reading the artifacts and the two self-reported accounts. No one answered questions during the run.
 
-## 设置
+## Setup
 
-- 目标（原话）：「维护 textkit 项目：修复 ISSUE-12，实现 FEATURE-13，README 同步更新；最终 `npm test` 全部通过，且每项改动有对应测试。不要 push、不要发布。」
-- 夹具：`slugify` 有连续分隔符与首尾 `-` 的 bug；新增 `truncate`；FEATURE-13 含一个产品未决问题（按字素还是 UTF-16 code unit 计数）。
-- **v0.2 组**：用 `install.mjs --harness claude` 安装；会话开在本仓库，skill 通过 `.claude/skills` 符号链接被发现，`rt-*` 子代理可用；工作区另有 `.roundtable/team.md`、`policy.md`。
-- **基线组**：从提交 `733bb23` 导出原设计，让 Chief 读其 `SKILL.md`；禁止使用 v0.2 的 skill 与 `rt-*` 子代理，用通用子代理。会话列表里仍能看到 v0.2 skill 的描述，存在轻微污染。
+- Goal (verbatim): "Maintain the textkit project: fix ISSUE-12, implement FEATURE-13, and update the README in sync; in the end `npm test` must fully pass, and every change must have a corresponding test. Do not push, do not publish."
+- Fixture: `slugify` has a bug with consecutive separators and leading/trailing `-`; add `truncate`; FEATURE-13 contains an open product question (count by grapheme or by UTF-16 code unit).
+- **v0.2 group**: installed with `install.mjs --harness claude`; the session was opened in this repository, the skill was discovered through the `.claude/skills` symbolic link, and the `rt-*` subagents were available; the workspace also had `.roundtable/team.md` and `policy.md`.
+- **Baseline group**: the original design was exported from commit `733bb23`, and the Chief was told to read its `SKILL.md`; use of the v0.2 skill and the `rt-*` subagents was forbidden, and generic subagents were used. The description of the v0.2 skill was still visible in the session's skill list, so there is slight contamination.
 
-## 结果（独立核对）
+## Results (independently verified)
 
-| 项 | v0.2 | 基线 |
+| Item | v0.2 | Baseline |
 | --- | --- | --- |
-| 最终 `npm test` | 22/22，exit 0（评估方重跑） | 16/16，exit 0（评估方重跑） |
-| 目标完成 | 两项完成并经独立审查；功能分支两个提交 | 两项完成并经独立审查；未提交，用 diff 指纹锁定审查版本 |
-| 委派 | `rt-fixer`、`rt-developer`、`rt-reviewer`×2，后台并行 | 通用子代理 ×3，另加 1 次文档返修和 1 次复审 |
-| 未决问题 | 默认按字素、代码中标注；续行记录 `ask`：只挂起 Q1，其余 done | 同样的默认与标注；工单记为 `ready` + `waiting_person` |
-| 续行记录 | 首、尾两份 checkpoint，中间回合写在工单 | 手工工作记录一份 |
-| 越界写入 | 开发者向 `/tmp` 写日志 1 次，自报，Chief 清理 | 审查者在 `/tmp` 留下 4 处临时目录与日志，未当作问题（原设计无此规则） |
-| 读到的设计文件 | skill 目录内文件，无断链 | 约 11 个文件；`SETUP.md` 与 `npm run doctor` 在导出目录中不存在（原 skill 不可移植） |
+| Final `npm test` | 22/22, exit 0 (re-run by the evaluator) | 16/16, exit 0 (re-run by the evaluator) |
+| Goal completion | Both items completed and independently reviewed; two commits on a feature branch | Both items completed and independently reviewed; not committed, with a diff fingerprint locking the reviewed version |
+| Delegation | `rt-fixer`, `rt-developer`, `rt-reviewer`×2, in parallel in the background | Generic subagents ×3, plus 1 documentation rework and 1 re-review |
+| Open question | Defaulted to grapheme, annotated in the code; continuation record `ask`: suspends only Q1, the rest done | Same default and annotation; the ticket was recorded as `ready` + `waiting_person` |
+| Continuation records | Two checkpoints, first and last; intermediate turns written in the ticket | One hand-written work record |
+| Out-of-bounds writes | The developer wrote a log to `/tmp` once, self-reported, cleaned up by the Chief | The reviewer left 4 temporary directories and logs in `/tmp`, not treated as a problem (the original design has no such rule) |
+| Design files read | Files inside the skill directory, no broken links | About 11 files; `SETUP.md` and `npm run doctor` do not exist in the exported directory (the original skill is not portable) |
 
-两组都做到了：任务拆分并行、作者与审查者分离、审查者用变异或回退实验证明测试有效、只对未决问题提问而其余照做、没有编造结果。在这个规模的任务上，Sonnet 按两版设计都能交付；差别主要在可移植性、记录与边界清晰度，而不是最终代码质量。
+Both groups managed to: split the task and run in parallel, keep authors and reviewers separate, have reviewers prove the tests effective with mutation or revert experiments, ask only about the open question while doing the rest, and not fabricate results. At this task scale, Sonnet could deliver under either design; the differences were mainly in portability, records, and clarity of boundaries, not in final code quality.
 
-## 宿主能力观察
+## Observations on harness capabilities
 
-- 后台子代理完成后，宿主把完成通知作为新回合交给 Chief；两组都依赖它把多步工作在无人催促下跑完。这是同一应用会话内的续行，没有测试应用关闭、重启或跨天唤醒。
-- 回执只有“已启动 / 已完成”，`delivered / acknowledged` 无法单独证实（两组都报告了这一点）。
+- After a background subagent completed, the harness handed the completion notification to the Chief as a new turn; both groups relied on it to run multi-step work to the end without anyone prompting. This is continuation within the same app session; closing or restarting the app, or waking across days, was not tested.
+- The receipts were only "started / completed", so `delivered / acknowledged` could not be confirmed separately (both groups reported this).
 
-## 据此做出的修订（v0.2.1）
+## Revisions made as a result (v0.2.1)
 
-两组的卡顿报告中重合或可操作的部分已改进 skill：
+The overlapping or actionable parts of the two groups' reports of friction have been improved in the skill:
 
-- 执行者默认不提交，审查通过后由 Chief 在功能分支提交；`policy.md` 默认允许这一点。
-- 临时文件统一放 `.roundtable/scratch/<assignment>/`；Chief 验收时检查越界写入。
-- 只有两种回执时如何记录委派事件；发送前的宿主错误不计尝试次数。
-- 多项状态不同时的整体续行决定（如“ask：Q1；其余 done”），以及“按默认已满足（待确认）”的写法。
-- 非阻塞建议的处理、审查后改动何时必须复审、Chief 核对与执行的界线。
-- 续行记录只在首回合、决定变化时与末回合写完整版；新增轻量模式。
-- 委派默认交给进程内子代理；会话目录与工作区不同时卡片写绝对路径。
+- Executors do not commit by default; after review passes, the Chief commits on a feature branch; `policy.md` allows this by default.
+- Temporary files are uniformly placed in `.roundtable/scratch/<assignment>/`; the Chief checks for out-of-bounds writes at acceptance.
+- How to record delegation events when there are only two kinds of receipt; a harness error before sending does not count as an attempt.
+- The overall continuation decision when multiple items are in different states (such as "ask: Q1; the rest done"), and the notation for "satisfied by default (pending confirmation)" (`按默认已满足（待确认）`).
+- Handling of non-blocking suggestions, when changes after review must be re-reviewed, and the line between the Chief's verification and execution.
+- The continuation record is written in full only on the first turn, when the decision changes, and on the last turn; a lightweight mode is added.
+- Delegation goes to in-process subagents by default; when the session directory differs from the workspace, the card writes absolute paths.
 
-修订后的版本尚未再跑一次 A/B。
+The revised version has not yet been run through another A/B.
