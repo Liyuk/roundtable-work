@@ -57,10 +57,10 @@ const VERDICT_VALUES = ['通过', '打回', '阻塞'];
 const VERDICT_TRIPLE = '审查结论：通过 | 打回 | 阻塞';
 const VERDICT_RE = /审查结论：(?:通过 \| 打回 \| 阻塞|通过|打回|阻塞)/g;
 
-test('the three docs exist and nothing else lives in docs/pages-demo', () => {
+test('the three content docs exist and nothing else lives in docs/pages-demo except the deployment guide', () => {
   for (const p of Object.values(paths)) assert.ok(existsSync(p), `${rel(p)} is missing`);
   const files = walk(demoDir).map((p) => relative(demoDir, p)).sort();
-  assert.deepEqual(files, ['content-outline.md', 'privacy-audit.md', 'scenario.json']);
+  assert.deepEqual(files, ['content-outline.md', 'deployment.md', 'privacy-audit.md', 'scenario.json']);
 });
 
 test('scenario.json matches the schema', () => {

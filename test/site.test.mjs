@@ -64,7 +64,7 @@ test('the checked-in site equals a fresh build from scenario.json (text and data
 test('package.json has the build:site script and no other script or dependency changes', () => {
   const pkg = JSON.parse(read(join(root, 'package.json')));
   assert.equal(pkg.scripts['build:site'], 'node scripts/build-site.mjs');
-  assert.deepEqual(Object.keys(pkg.scripts).sort(), ['build:site', 'check', 'doctor', 'setup', 'test']);
+  assert.deepEqual(Object.keys(pkg.scripts).sort(), ['build:site', 'check', 'doctor', 'preview:site', 'setup', 'test', 'validate:site']);
   assert.equal(pkg.dependencies, undefined);
   assert.equal(pkg.devDependencies, undefined);
 });

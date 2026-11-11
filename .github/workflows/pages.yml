@@ -1,0 +1,74 @@
+# Validates, builds and deploys the static demo in site/ to GitHub Pages.
+#
+# - Pull requests (including from forks) only build and validate. They never deploy.
+# - Deployment runs only for a push to main (after a human merged) or a manual run on main.
+# - This workflow does not enable Pages. A maintainer does that once in the repository settings;
+#   see docs/pages-demo/deployment.md.
+#
+# Action pinning policy: only official actions/* actions, pinned to a major-version tag, the same
+# style as check.yml. Dependabot (github-actions ecosystem) proposes updates as reviewed PRs.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# No permissions by default. Each job asks only for what it needs.
+permissions: {}
+
+jobs:
+  build:
+    name: Validate and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # Pull request builds use one group per ref and may be superseded. Builds never queue behind a deploy.
+    concurrency:
+      group: pages-build-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Runs node --test and the Markdown link check.
+      - run: npm test
+      # The committed site/ must equal a fresh build from docs/pages-demo/scenario.json.
+      - run: npm run build:site -- --check
+      # Fails if site/ holds anything outside the allowlist or contains external URLs or host/secret patterns.
+      - run: npm run validate:site
+      # Pull requests upload too, so the same path is exercised, but only the deploy job can publish.
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    # Never for pull requests (forks included). Manual runs deploy only when started on main.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # A deploy in flight is never cancelled.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      # Kept in this job because reading the Pages configuration needs pages access, which the build job does not have.
+      # Fails with a clear message if a maintainer has not set the Pages source to GitHub Actions.
+      - uses: actions/configure-pages@v5
+      - id: deployment
+        uses: actions/deploy-pages@v4
