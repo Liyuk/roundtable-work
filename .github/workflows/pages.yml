@@ -30,10 +30,10 @@ jobs:
       group: pages-build-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -45,7 +45,7 @@ jobs:
       # Fails if site/ holds anything outside the allowlist or contains external URLs or host/secret patterns.
       - run: npm run validate:site
       # Pull requests upload too, so the same path is exercised, but only the deploy job can publish.
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -69,6 +69,6 @@ jobs:
     steps:
       # Kept in this job because reading the Pages configuration needs pages access, which the build job does not have.
       # Fails with a clear message if a maintainer has not set the Pages source to GitHub Actions.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
