@@ -67,19 +67,29 @@ if (values.target) report.installation = await inspect(resolve(values.target));
 
 if (values.json) console.log(JSON.stringify(report, null, 2));
 else {
-  console.log('Roundtable Work — read-only environment check');
+  console.log('Roundtable Work — 只读环境检查');
   for (const host of hosts) {
-    const detail = host.status === 'not-found' ? 'not available' : `${host.status} (${reasons.get(host.name)})`;
-    console.log(`  ${host.name}: ${host.available ? host.version || 'available' : detail}`);
+    const statusLabels = { ok: '正常', 'not-found': '未找到', failed: '失败', timeout: '超时' };
+    const reasonLabels = {
+      'not found on PATH': 'PATH 中未找到',
+      [`timed out after ${TIMEOUT_MS / 1000}s`]: `运行超时（${TIMEOUT_MS / 1000} 秒）`,
+    };
+    const reason = reasons.get(host.name);
+    const localizedReason = reasonLabels[reason] ?? (reason ?? '')
+      .replace(/^could not run: /, '无法运行：')
+      .replace(/^killed by /, '被信号终止：')
+      .replace(/^exited with code /, '退出码：');
+    const detail = host.status === 'not-found' ? '不可用' : `${statusLabels[host.status]}（${localizedReason}）`;
+    console.log(`  ${host.name}: ${host.available ? host.version || '可用' : detail}`);
   }
   const inst = report.installation;
   if (inst) {
-    console.log(`Installation in ${inst.target} (source skill ${inst.sourceVersion}):`);
-    for (const s of inst.skills) console.log(`  ${s.harness} skill (${s.path}): ${s.installed ? `v${s.version}${s.current ? '' : ' — outdated, rerun install with --update'}` : 'not installed'}`);
+    console.log(`安装位置：${inst.target}（源技能版本 ${inst.sourceVersion}）：`);
+    for (const s of inst.skills) console.log(`  ${s.harness} 技能（${s.path}）：${s.installed ? `v${s.version}${s.current ? '' : ' — 版本过旧，请使用 --update 重新安装'}` : '未安装'}`);
     const agents = inst.claudeAgents.filter((a) => a.installed).map((a) => a.name);
-    console.log(`  Claude Code subagents: ${agents.length ? agents.join(', ') : 'none'}`);
-    console.log(`  .roundtable/team.md: ${inst.config.team ? 'present' : 'missing'} · policy.md: ${inst.config.policy ? 'present' : 'missing'}`);
+    console.log(`  Claude Code 子代理：${agents.length ? agents.join(', ') : '无'}`);
+    console.log(`  .roundtable/team.md：${inst.config.team ? '存在' : '缺失'} · policy.md：${inst.config.policy ? '存在' : '缺失'}`);
   }
-  console.log('Background wake-up and persistent delegation: not verified.');
-  console.log('Model authentication: not checked. This does not install or start a team.');
+  console.log('后台唤醒和持久委派：未验证。');
+  console.log('模型身份验证：未检查。本检查不会安装或启动团队。');
 }

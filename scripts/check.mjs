@@ -26,12 +26,12 @@ async function checkFile(path) {
     const resolved = resolve(dirname(path), decodeURIComponent(target));
     const where = relative(root, path);
     try { await access(resolved); }
-    catch { errors.push(`${where}: missing ${target}`); continue; }
-    // The skill is copied into other workspaces, so it must not link outside itself.
-    if (inSkill && !resolved.startsWith(skillDir + sep)) errors.push(`${where}: skill links outside its directory: ${target}`);
+    catch { errors.push(`${where}：缺少 ${target}`); continue; }
+    // 技能会被复制到其他工作区，因此不能链接到其自身以外的位置。
+    if (inSkill && !resolved.startsWith(skillDir + sep)) errors.push(`${where}：技能链接到目录外：${target}`);
   }
 }
 
 await walk(root);
 if (errors.length) { console.error(errors.join('\n')); process.exitCode = 1; }
-else console.log(`Checked ${count} Markdown files: local links resolve and the skill is self-contained.`);
+else console.log(`检查了 ${count} 个 Markdown 文件：本地链接均已解析，技能自成一体。`);

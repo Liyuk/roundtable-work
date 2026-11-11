@@ -14,7 +14,7 @@ const workspace = (t) => {
   return target;
 };
 
-test('dry run plans the install but writes nothing', (t) => {
+test('试运行会规划安装，但不会写入文件', (t) => {
   const target = workspace(t);
   const result = install('--target', target, '--dry-run');
   assert.equal(result.dryRun, true);
@@ -23,7 +23,7 @@ test('dry run plans the install but writes nothing', (t) => {
   assert.equal(existsSync(join(target, '.claude')), false);
 });
 
-test('installs a self-contained skill for both harnesses plus config', (t) => {
+test('为两种运行环境安装完整技能和配置', (t) => {
   const target = workspace(t);
   install('--target', target);
   for (const dir of ['.claude/skills/roundtable-work', '.agents/skills/roundtable-work']) {
@@ -36,14 +36,14 @@ test('installs a self-contained skill for both harnesses plus config', (t) => {
   for (const dir of ['tickets', 'state', 'memory']) assert.ok(existsSync(join(target, '.roundtable', dir)));
 });
 
-test('--harness codex installs only the Agent Skills directory', (t) => {
+test('--harness codex 仅安装 Agent Skills 目录', (t) => {
   const target = workspace(t);
   install('--target', target, '--harness', 'codex');
   assert.ok(existsSync(join(target, '.agents/skills/roundtable-work/SKILL.md')));
   assert.equal(existsSync(join(target, '.claude')), false);
 });
 
-test('rerunning is idempotent and never overwrites user policy', (t) => {
+test('重复运行保持幂等，且不会覆盖用户策略', (t) => {
   const target = workspace(t);
   install('--target', target);
   const policy = join(target, '.roundtable/policy.md');
@@ -55,7 +55,7 @@ test('rerunning is idempotent and never overwrites user policy', (t) => {
   assert.ok(second.actions.some((a) => a.op === 'skip' && a.to === policy));
 });
 
-test('edited skill files are kept unless --update is given', (t) => {
+test('除非指定 --update，否则保留已编辑的技能文件', (t) => {
   const target = workspace(t);
   install('--target', target, '--harness', 'claude');
   const shared = join(target, '.claude/skills/roundtable-work/prompts/shared.md');
@@ -66,7 +66,7 @@ test('edited skill files are kept unless --update is given', (t) => {
   assert.notEqual(readFileSync(shared, 'utf8'), 'local edit\n');
 });
 
-test('rejects missing target and unknown harness', (t) => {
+test('拒绝缺少目标目录或指定未知运行环境', (t) => {
   assert.equal(spawnSync(process.execPath, [installer]).status, 2);
   assert.equal(spawnSync(process.execPath, [installer, '--target', workspace(t), '--harness', 'cursor']).status, 1);
 });

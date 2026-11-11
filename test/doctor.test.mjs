@@ -11,7 +11,7 @@ const cli = fileURLToPath(new URL('../scripts/doctor.mjs', import.meta.url));
 const installer = fileURLToPath(new URL('../scripts/install.mjs', import.meta.url));
 const run = (script, args) => JSON.parse(execFileSync(process.execPath, [script, ...args, '--json'], { encoding: 'utf8' }));
 
-test('classifyProbeResult distinguishes host outcomes and preserves successful status with error', () => {
+test('classifyProbeResult 区分运行环境状态，并在成功时保留成功状态', () => {
   assert.deepEqual(classifyProbeResult({ status: 0, stdout: 'v1\n' }), { status: 'ok', available: true, reason: null });
   assert.deepEqual(classifyProbeResult({ status: null, error: { code: 'ENOENT' } }), { status: 'not-found', available: false, reason: 'not found on PATH' });
   assert.deepEqual(classifyProbeResult({ status: 3 }), { status: 'failed', available: false, reason: 'exited with code 3' });
@@ -19,7 +19,7 @@ test('classifyProbeResult distinguishes host outcomes and preserves successful s
   assert.deepEqual(classifyProbeResult({ status: 0, stdout: 'v1\n', error: { code: 'EPERM' } }), { status: 'ok', available: true, reason: null });
 });
 
-test('doctor reports observed executables without asserting runtime capability', () => {
+test('doctor 报告检测到的可执行文件，不推断运行能力', () => {
   const result = run(cli, []);
   assert.equal(result.schemaVersion, 2);
   assert.ok(result.hosts.some((host) => host.name === 'node' && host.available));
@@ -31,7 +31,7 @@ test('doctor reports observed executables without asserting runtime capability',
   assert.equal(result.installation, undefined);
 });
 
-test('doctor --target reports what the installer put in a workspace', (t) => {
+test('doctor --target 报告安装器在工作区中的安装结果', (t) => {
   const target = mkdtempSync(join(tmpdir(), 'rtw-doctor-'));
   t.after(() => rmSync(target, { recursive: true, force: true }));
   assert.ok(run(cli, ['--target', target]).installation.skills.every((s) => !s.installed));
@@ -43,15 +43,15 @@ test('doctor --target reports what the installer put in a workspace', (t) => {
   assert.equal(inst.installedVersion, inst.sourceVersion);
 });
 
-test('doctor host status distinguishes ok / not-found / failed / timeout (fake commands on PATH)', { skip: process.platform === 'win32' }, (t) => {
+test('doctor 区分运行环境的正常、未找到、失败和超时状态（PATH 中使用伪命令）', { skip: process.platform === 'win32' }, (t) => {
   const bin = mkdtempSync(join(tmpdir(), 'rtw-fakebin-'));
   t.after(() => rmSync(bin, { recursive: true, force: true }));
   const fake = (name, body) => { const f = join(bin, name); writeFileSync(f, `#!/bin/sh\n${body}\n`); chmodSync(f, 0o755); };
   fake('claude', 'echo "claude fake 1.2.3"');
   fake('codex', 'exit 3');
-  const sleepBin = execFileSync('/bin/sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).trim(); // PATH below hides sleep
+  const sleepBin = execFileSync('/bin/sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).trim(); // 下方设置的 PATH 中不包含 sleep
   fake('pi', `exec ${sleepBin} 30`);
-  // dsh is intentionally absent; PATH contains only the fake dir, so git is absent too.
+  // 故意不提供 dsh；PATH 仅包含伪命令目录，因此 git 也不可用。
   const env = { ...process.env, PATH: `${bin}:/nonexistent` };
   const opts = { encoding: 'utf8', env };
   const json = JSON.parse(execFileSync(process.execPath, [cli, '--json'], opts));
@@ -62,7 +62,7 @@ test('doctor host status distinguishes ok / not-found / failed / timeout (fake c
   assert.deepEqual(by.dsh, { name: 'dsh', available: false, version: null, status: 'not-found' });
   assert.ok(json.hosts.every((h) => ['ok', 'not-found', 'failed', 'timeout'].includes(h.status)));
   const text = execFileSync(process.execPath, [cli], opts);
-  assert.match(text, /codex: failed \(exited with code 3\)/);
-  assert.match(text, /pi: timeout \(timed out after 5s\)/);
-  assert.match(text, /dsh: not available/);
+  assert.match(text, /codex: 失败（退出码：3）/);
+  assert.match(text, /pi: 超时（运行超时（5 秒））/);
+  assert.match(text, /dsh: 不可用/);
 });

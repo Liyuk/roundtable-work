@@ -8,14 +8,13 @@ export const harnessDirs = {
   claude: join('.claude', 'skills', 'roundtable-work'),
   codex: join('.agents', 'skills', 'roundtable-work'),
 };
-const usage = `Usage: node scripts/install.mjs --target <workspace> [--harness claude,codex] [--dry-run] [--update] [--json]
+const usage = `用法：node scripts/install.mjs --target <工作区> [--harness claude,codex] [--dry-run] [--update] [--json]
 
-Installs the Roundtable Work skill into a workspace for the chosen harnesses and
-creates .roundtable/team.md and policy.md from templates when they are missing.
-  --harness   claude -> .claude/skills + .claude/agents/rt-*.md; codex -> .agents/skills (default: both)
-  --dry-run   print the plan without writing
-  --update    refresh skill files and rt-* subagents that differ from this version
-User-owned files in .roundtable/ are never overwritten.`;
+将 Roundtable Work 技能安装到指定工作区和运行环境；缺少时会根据模板创建 .roundtable/team.md 和 policy.md。
+  --harness   claude -> .claude/skills + .claude/agents/rt-*.md；codex -> .agents/skills（默认：两者）
+  --dry-run   仅显示计划，不写入文件
+  --update    更新与此版本不同的技能文件和 rt-* 子代理
+.roundtable/ 中由用户管理的文件不会被覆盖。`;
 
 export async function exists(path) {
   try { await stat(path); return true; } catch { return false; }
@@ -122,10 +121,10 @@ async function main() {
     return;
   }
   const target = resolve(values.target);
-  if (!await exists(target) || !(await stat(target)).isDirectory()) throw new Error(`target is not a directory: ${target}`);
+  if (!await exists(target) || !(await stat(target)).isDirectory()) throw new Error(`目标不是目录：${target}`);
   const harnesses = [...new Set(values.harness.split(',').map((h) => h.trim()).filter(Boolean))];
   const unknown = harnesses.filter((h) => !harnessDirs[h]);
-  if (unknown.length || !harnesses.length) throw new Error(`unknown harness: ${unknown.join(', ') || '(none)'}; use claude and/or codex`);
+  if (unknown.length || !harnesses.length) throw new Error(`未知运行环境：${unknown.join(', ') || '（无）'}；请使用 claude 和/或 codex`);
 
   const { version, actions } = await plan({ target, harnesses, update: values.update });
   const dryRun = values['dry-run'];
@@ -135,8 +134,8 @@ async function main() {
     console.log(JSON.stringify({ schemaVersion: 1, target, version, harnesses, dryRun, summary, actions: actions.map(({ content, from, ...a }) => a) }, null, 2));
     return;
   }
-  console.log(`Roundtable Work ${version} → ${target}${dryRun ? ' (dry run, nothing written)' : ''}`);
-  // Collapse per-file skill actions into one line per skill directory and operation.
+  console.log(`Roundtable Work ${version} → ${target}${dryRun ? '（试运行，未写入任何内容）' : ''}`);
+  // 将每个技能目录中的逐文件操作合并为一行。
   const lines = new Map();
   for (const a of actions) {
     if (a.op === 'unchanged') continue;
@@ -149,16 +148,29 @@ async function main() {
     lines.set(key, line);
   }
   for (const { op, path, reason, count } of lines.values()) {
-    const detail = [count > 1 ? `${count} files` : '', reason ?? ''].filter(Boolean).join('; ');
-    console.log(`  ${op.padEnd(9)} ${path}${detail ? `  (${detail})` : ''}`);
+    const detail = [count > 1 ? `${count} 个文件` : '', translateReason(reason)].filter(Boolean).join('；');
+    console.log(`  ${translateOperation(op).padEnd(9)} ${path}${detail ? `  (${detail})` : ''}`);
   }
-  console.log(`Summary: ${Object.entries(summary).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  console.log(`汇总：${Object.entries(summary).map(([k, v]) => `${translateOperation(k)} ${v}`).join('，')}`);
   if (!dryRun) {
-    console.log('Next: edit .roundtable/policy.md, then run `node scripts/doctor.mjs --target <workspace>`.');
-    console.log('This installs instructions and config only; it does not start agents or verify background wake-up.');
+    console.log('下一步：编辑 .roundtable/policy.md，然后运行 `node scripts/doctor.mjs --target <工作区>`。');
+    console.log('本命令仅安装说明和配置；不会启动代理，也不会验证后台唤醒。');
   }
 }
 
+function translateOperation(op) {
+  return ({ create: '新建', update: '更新', skip: '跳过', mkdir: '创建目录', write: '写入', unchanged: '未变更' })[op] ?? op;
+}
+
+function translateReason(reason) {
+  if (!reason) return '';
+  return reason
+    .replace('differs; rerun with --update to refresh', '内容不同；请使用 --update 重新安装')
+    .replace('user-owned; not overwritten', '由用户管理；未覆盖')
+    .replace('this is the source skill', '这是源技能目录')
+    .replace(/^installed version (.+); rerun with --update for (.+)$/, '已安装版本 $1；请使用 --update 更新到 $2');
+}
+
 if (process.argv[1] && import.meta.filename === resolve(process.argv[1])) {
-  main().catch((error) => { console.error(`install: ${error.message}`); process.exitCode = 1; });
+  main().catch((error) => { console.error(`安装失败：${error.message}`); process.exitCode = 1; });
 }
