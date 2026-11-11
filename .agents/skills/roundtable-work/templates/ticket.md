@@ -1,25 +1,25 @@
-# 工单：<标题>
+# Ticket: <title>
 
-- ID / 父目标 / 目标版本：
-- 用户原话与整理后目标：
-- 主责 owner / 创建时间：
-- 来源与授权依据：
-- 状态 / 下一动作 / 执行者：
-- 工作区 / 允许和禁止的动作：
-- 风险档 / 预算（时间、费用、尝试次数）：
-- 依赖 / 并行冲突 / 等待对象及唤醒条件：
+- ID / parent goal / target version:
+- User's original words and refined goal:
+- Owner / created time:
+- Source and authorization basis:
+- Status / next action / executor:
+- Workspace / allowed and forbidden actions:
+- Risk level / budget (time, cost, attempts):
+- Dependencies / concurrent conflicts / waiting for and wake-up conditions:
 
-## 验收标准
+## Acceptance Criteria
 
-- [ ] <可验证条件；注明自动或人工判断>
+- [ ] <verifiable condition; note whether automatic or manual evaluation>
 
-## 工作记录与委派
+## Work Record and Delegation
 
-- <时间、事件 ID、assignment、结果或证据链接>
+- <time, event ID, assignment, result or evidence link>
 
-## 交付与未完成
+## Delivery and Incomplete Items
 
-- 产物及依据的目标版本：
-- 检查、审查与证据：
-- 未完成、未知的外部副作用：
-- 下一步与需人决策：
+- Artifacts and target version of basis:
+- Checks, review and evidence:
+- Incomplete, unknown external side effects:
+- 下一步 (Next steps) and decisions requiring human input:

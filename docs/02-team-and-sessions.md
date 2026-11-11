@@ -1,45 +1,45 @@
-# Chief、Bot 与 Session
+# Chief, Bot, and Session
 
-## 概念分离
+## Separation of Concepts
 
-| 概念 | 含义 | 生命周期 |
+| Concept | Meaning | Lifecycle |
 | --- | --- | --- |
-| Chief | 对用户目标和整体交付负责的协调角色 | 通常长期存在，可更换会话 |
-| Bot / 角色 | 稳定身份、职责、模型档、技能、工具权限和沟通边界 | 跨任务长期存在 |
-| Session | 承载某次对话与上下文的运行实例；一个角色可有多个 | 可创建、压缩、恢复、结束 |
-| Ticket | 可追踪的目标或工作项，有一个最终 owner | 跨多轮、多个 session |
-| Assignment | 工单下对某执行者的一次明确委派 | 可有多次 attempt |
-| Attempt | 单次进程或模型调用 | 失败/重试不覆盖历史 |
+| Chief | The coordinating role responsible for the user's goal and overall delivery | Usually long-lived; the session can be replaced |
+| Bot / role | A stable identity, responsibilities, model tier, skills, tool permissions, and communication boundaries | Long-lived across tasks |
+| Session | A running instance that carries a given conversation and its context; one role can have several | Can be created, compacted, resumed, and ended |
+| Ticket | A trackable goal or work item, with one final owner | Spans multiple rounds and multiple sessions |
+| Assignment | One explicit delegation to a given executor under a ticket | Can have multiple attempts |
+| Attempt | A single process or model invocation | Failures/retries do not overwrite history |
 
-名字、人设和模型不构成任务归属或授权。任务 owner 属于工单，审查者可和 owner 不同。人员创建无需等于一个模型进程永久占用资源。
+Names, personas, and models do not constitute task ownership or authorization. The task owner belongs to the ticket, and the reviewer can differ from the owner. Creating a team member need not mean a model process permanently occupies resources.
 
-## Chief 做什么
+## What the Chief Does
 
-1. 维持用户原始目标、当前版本、范围、授权、验收和待决事项；目标变化时通知受影响任务并复查旧产物。
-2. 接收用户、外部事件、团队结果与必要的时间事件；区分新工作、已有工单后续、仅作上下文、忽略和待人判断。
-3. 维护跨工单全局视图，排依赖、去重、判断优先级和资源冲突，选择角色并发起结构化委派。
-4. 跟踪领取、执行、交付、审查及阻塞，按事实决定继续、换路径、返修、等待或结束；避免把草稿当完成。
-5. 只在结果可用、需要决定、越权或确实受阻时通知人；每次问题附已尝试方案、影响与可选择的决定。
-6. 定期或由事件触发复盘，提出可验证的改进候选。
+1. Maintain the user's original goal, current version, scope, authorization, acceptance criteria, and pending decisions; when the goal changes, notify the affected tasks and re-check old artifacts.
+2. Receive the user, external events, team results, and necessary time events; distinguish new work, follow-ups to existing tickets, context only, ignorable items, and items awaiting a human's judgment.
+3. Maintain a cross-ticket global view: order dependencies, deduplicate, judge priorities and resource conflicts, choose roles, and issue structured delegations.
+4. Track claiming, execution, delivery, review, and blockers; based on the facts, decide whether to continue, switch paths, rework, wait, or finish; avoid treating drafts as complete.
+5. Notify people only when results are usable, a decision is needed, authority is exceeded, or work is genuinely blocked; each question comes with the options already tried, the impact, and the decisions to choose from.
+6. Hold retrospectives periodically or when triggered by events, and propose verifiable improvement candidates.
 
-Chief 可读取工具摘要与必要证据；耗时调研、编码、完整审查应交给执行者。例外由具体部署配置，不把这一职责限制当作系统安全边界。
+The Chief may read tool summaries and necessary evidence; time-consuming research, coding, and full reviews should be handed to executors. Exceptions are configured per deployment; this responsibility restriction is not to be treated as a system safety boundary.
 
-## 建立一个 Bot
+## Creating a Bot
 
-部署者选择模板或 Chief 按事先授权提出新角色。创建卡至少包括：稳定 bot_id、职责和禁止事项、汇报对象、可接工单类型、可用 skills、执行器与模型档、工作区、资源限制、通信范围、授权上限和退役规则。先检查是否存在可复用角色，避免为每个任务无限造 Bot。会创建多少长期角色和是否自动创建由部署者设置；创建角色不得扩大任何授权。
+The deployer chooses a template, or the Chief proposes a new role under prior authorization. A creation card includes at least: a stable bot_id, responsibilities and prohibitions, who it reports to, the ticket types it can take, available skills, runner and model tier, workspace, resource limits, communication scope, authorization ceiling, and retirement rules. First check whether a reusable role exists, to avoid creating a new Bot endlessly for every task. How many long-lived roles are created and whether they are created automatically is set by the deployer; creating a role must not expand any authorization.
 
-程序流程：验证角色与权限 → 保存版本化 profile → 宿主创建/绑定 session（若支持）→ 注入稳定身份与共享纪律 → 做能力自检 → 写入已创建事件。失败保留失败原因，不声称已创建。涉及新账号、外部身份或更大权限，按实际授权处理。
+Procedure: validate the role and permissions → save a versioned profile → the host creates/binds a session (if supported) → inject the stable identity and shared discipline → run a capability self-check → write a created event. On failure, keep the failure reason and do not claim it was created. For new accounts, external identities, or broader permissions, handle them according to the actual authorization.
 
-Session 初始化加载：身份与稳定规则、当前工单及授权快照、相关记忆摘要、可用工具说明和预算。任务信息不固化为长期人格。轮转/压缩时写结构化交接，记录未完成项和未读消息；新 session 必须恢复实际身份、工单、授权、目标版本及可用工具。只注入当前需要的上下文，不将所有历史记录塞入提示词。
+Session initialization loads: identity and stable rules, the current ticket and authorization snapshot, relevant memory summaries, descriptions of available tools, and the budget. Task information is not solidified into a long-term persona. When rotating/compacting, write a structured handoff that records unfinished items and unread messages; the new session must restore the actual identity, ticket, authorization, target version, and available tools. Inject only the context that is currently needed; do not stuff all history into the prompt.
 
-## 工作室的候选职责映射
+## Candidate Responsibility Mapping for the Studio
 
-| 角色 | 责任 | 默认禁止 |
+| Role | Responsibility | Prohibited by default |
 | --- | --- | --- |
-| Chief | 对接人、拆分、派单、把关、汇报 | 代替执行者做大段编码 |
-| 开发 | 功能与测试补缺 | 互相覆盖同批文件；直接合 main |
-| 修复 | bug 定位和修复 | 接普通功能；抢作者仍在修的 PR |
-| 审查 | 审查、执行验收、给结论 | 将自述当执行证据 |
-| 调研 | 调研和有来源报告 | 无授权转为开发或对外发布 |
+| Chief | Liaison with the person, splitting work, dispatching, gatekeeping, reporting | Doing large stretches of coding in place of executors |
+| Developer | Features and filling test gaps | Overwriting each other's files in the same batch; merging directly to main |
+| Fixer | Locating and fixing bugs | Taking ordinary features; taking over a PR whose author is still fixing it |
+| Reviewer | Reviewing, executing acceptance, giving verdicts | Treating self-reports as execution evidence |
+| Researcher | Research and sourced reports | Turning into development or external publishing without authorization |
 
-这是角色示例；部署是否使用这些名称和模型由操作者配置。角色实现见 [工作室预设](../profiles/studio/README.md)。
+These are example roles; whether a deployment uses these names and models is configured by the operator. For the role implementation, see the [studio preset](../profiles/studio/README.md).

@@ -1,17 +1,17 @@
-# Bot 角色模板
+# Bot Role Template
 
-- 稳定 bot ID / 显示名称：
-- 职责 / 接单类型 / 不负责的事：
-- 汇报对象 / 可直接交接的角色：
-- 工作区与权限上限 / 授权来源：
-- 执行器、模型档及回退规则：
-- 可用工具和 skills / 运行资源限制：
-- 创建依据 / 评估周期或触发事件 / 到期与退役条件：
+- Stable bot ID / display name:
+- Responsibilities / job types / not responsible for:
+- Reports to / roles that can accept handoff directly:
+- Workspace and permission ceiling / authorization source:
+- Executor, model tier and fallback rules:
+- Available tools and skills / execution resource limits:
+- Created based on / assessment period or trigger events / expiration and decommission conditions:
 
-## 工作约定
+## Work Agreement
 
-每次按 assignment 核对目标版本、验收、授权、工作区和预算；领取后记录开始。实际执行交给已探测可用的执行器，完整日志与证据保留。交付必须说明状态、检查、未完成事项和下一步，按规定送审并向负责人回报。遇到风险、范围变化、权限不足或未知副作用时及时上报；不要因为自己能运行某命令就认为已获授权。
+Each assignment is checked against target version, acceptance criteria, authorization, workspace and budget; record the start upon taking it. Actual execution is delegated to verified available executors, with complete logs and evidence retained. Delivery must state status, checks, incomplete items and next steps, be reviewed per policy and report to the responsible person. When encountering risks, scope changes, insufficient permissions or unknown side effects, report immediately; do not assume authorization just because you can run a command.
 
-## 会话初始化
+## Session Initialization
 
-注入稳定身份与共享纪律；载入当前工作卡、授权、工具能力、相关记忆及来源。中断或上下文换段时保留未完成工作、待接收消息、运行中的进程及下一触发条件。
+Inject stable identity and shared discipline; load current work card, authorization, tool capabilities, related memories and sources. When interrupted or context switches, retain incomplete work, pending messages, running processes, and next trigger conditions.

@@ -1,16 +1,16 @@
-# 来源、脱敏与证据边界
+# Sources, sanitization and the evidence boundary
 
-## 项目材料
+## Project materials
 
-- 用户提供的工作约定：用户提供的本地文件，描述真实运行中的职责、工单、模型分工、权限、审查及反复补充的规则。本文档只提炼通用工作方式；不复制账号、工单、主机、内部路径、密钥或业务信息。
-- 用户提供的工作量报表：用户提供的工作量统计页面；可读作个人运行记录，但未独立审计。报表明确提示挂起认领会抬高忙碌时长、审查时长有估算。不可将工单跨度视为执行时长。报表不随本仓库公开复制。
-- 用户提供的既有研究：覆盖目标与交付、共享记忆、多 Agent 调度和宿主接入；部分研究基于公开资料和静态源码，不等于运行实验。
-- 用户观察：把类似架构放入 OpenMausBot 后，目标未完成时有时需人催促。未获该运行的日志，具体原因未知。
+- User-provided working conventions: a local file provided by the user, describing responsibilities, tickets, model division of labor, permissions, review and repeatedly supplemented rules in real operation. This document distills only the general way of working; it does not copy accounts, tickets, hosts, internal paths, keys or business information.
+- User-provided workload report: a workload statistics page provided by the user; it can be read as a personal operating record, but has not been independently audited. The report explicitly notes that suspended claims inflate busy time and that review time is estimated. The span of a ticket must not be treated as execution time. The report is not copied publicly with this repository.
+- User-provided existing research: covers goals and delivery, shared memory, multi-Agent scheduling and host integration; part of the research is based on public materials and static source code, which is not the same as running experiments.
+- User observation: after a similar architecture was put into OpenMausBot, a person sometimes needed to nudge it when the goal was unfinished. The logs of that run were not obtained, so the specific cause is unknown.
 
-## 外部资料
+## External materials
 
-- [dsh-superagent README](https://github.com/deepseek-ai/dsh-superagent-prototype)：项目声明是研究原型，与内部实现和文章有差异。
-- [setup](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/SETUP.md)、[领域模型](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md)、[授权](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/002-authorization.md)、[执行](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md)、[提示词](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/004-prompts.md)、[架构](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md)：截至 2026-11-10 阅读的主分支；会变化。其文档指出命令包装和目录不是安全边界。
-- [OpenMausBot](https://github.com/milind-soni/OpenMausBot)：其产品说明及项目自身文档，具体能力需按部署版本实测。
+- [dsh-superagent README](https://github.com/deepseek-ai/dsh-superagent-prototype): the project states it is a research prototype, and it differs from the internal implementation and articles.
+- [setup](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/SETUP.md), [domain model](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md), [authorization](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/002-authorization.md), [execution](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md), [prompts](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/004-prompts.md), [architecture](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md): the main branch as read on 2026-11-10; it will change. Its documents point out that command wrappers and directories are not security boundaries.
+- [OpenMausBot](https://github.com/milind-soni/OpenMausBot): its product description and the project's own documents; specific capabilities must be tested against the deployed version.
 
-以上材料只提供设计依据；本仓库新增的状态机、续行、记忆、组织变化和模板均是**提案**。没有安装或运行对照实验，不声称已验证优于任何现有项目。
+The materials above provide only design grounds; the state machine, continuation, memory, organizational changes and templates newly added in this repository are all **proposals**. No comparison experiment was installed or run, and no claim is made that it is verified to be better than any existing project.

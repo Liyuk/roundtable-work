@@ -1,33 +1,33 @@
-# 宿主能力映射
+# Harness Capabilities Mapping
 
-开始前对照**当前会话真实的工具列表**填写下表；下面的工具名是 2026-11 观察到的常见名称，版本、配置和产品形态不同就可能不存在。找不到就按“不支持”处理。
+Before starting, fill in the table below by comparing with the **actual tools available in the current session**. The tool names listed are commonly observed in 2026-11 and may not exist if the version, configuration, or product form differs. If a tool is not found, treat it as “不支持” (unsupported).
 
-| 能力 | 用途 | Claude Code（常见） | Codex（常见） |
+| Capability | Purpose | Claude Code (Common) | Codex (Common) |
 | --- | --- | --- | --- |
-| 创建子 session | 委派执行与独立审查 | `Agent`（或 `Task`）工具；`subagent_type` 可选 `.claude/agents/` 中的 `rt-developer`、`rt-reviewer`、`rt-fixer`、`rt-researcher` | 会话内协作工具，如 `spawn_agent`；或用 `codex exec` 启动非交互执行 |
-| 回执粒度 | 记录委派事件 | 通常只有“已启动 / 已完成” | 视工具而定 |
-| 给已有子 session 发后续 | 返修、目标修订 | `SendMessage`（若可用） | `followup_task` 一类工具 |
-| 等待结果 | 回收交付卡 | 前台调用直接返回；后台运行（`run_in_background`）时，子代理完成会作为通知开启 Chief 的新回合（2026-11-10 在 Claude Code 桌面端实测，仅限同一应用会话内） | `wait_agent` 一类工具 |
-| 回合结束后再唤醒 | 无人催促时继续 | 计划任务或定时工具（如 `CronCreate`、`/loop`、桌面端 scheduled tasks），仅在会话中真实出现时可用 | 未验证 |
-| skill 发现 | 加载本 skill | `.claude/skills/<name>/SKILL.md`、`~/.claude/skills/` | `.agents/skills/<name>/SKILL.md` |
+| Create sub-session | Delegate execution and independent review | `Agent` (or `Task`) tool; `subagent_type` can optionally select `rt-developer`, `rt-reviewer`, `rt-fixer`, `rt-researcher` from `.claude/agents/` | In-session collaboration tools like `spawn_agent`; or use `codex exec` to start non-interactive execution |
+| Receipt Granularity | Record delegation events | Usually only “已启动 / 已完成” (started / completed) | Depends on tool |
+| Send follow-up to existing sub-session | Fixes, target revisions | `SendMessage` (if available) | Tools like `followup_task` |
+| Wait for Results | Collect delivery cards | Foreground calls return directly; when running in background (`run_in_background`), sub-agent completion acts as a notification to start Chief's new turn (tested on Claude Code desktop on 2026-11-10, limited to same application session) | Tools like `wait_agent` |
+| Wake up after turn ends | Continue without external prompting | Scheduled tasks or timer tools (e.g., `CronCreate`, `/loop`, desktop scheduled tasks), only available if actually present in session | Not verified |
+| Skill Discovery | Load this skill | `.claude/skills/<name>/SKILL.md`, `~/.claude/skills/` | `.agents/skills/<name>/SKILL.md` |
 
-宿主同时有“应用级会话”（用户可见、独立运行的另一个 session）和“进程内子代理”时，委派卡默认交给子代理；应用级会话只用于用户要求的、独立成果的任务。
+When the harness has both "application-level sessions" (visible to user, another independently running session) and "in-process sub-agents", delegation cards are delivered to sub-agents by default; application-level sessions are used only for user-requested, independently scoped tasks.
 
-## 记录方式
+## Recording Method
 
-在第一回合的续行记录或工单里写一行能力结论，例如：
+Write one line of capability conclusion in the continuation record or ticket from the first turn, for example:
 
 ```text
 宿主：Claude Code · 子 session：支持（Agent）· 后续消息：支持（SendMessage）· 回合后唤醒：不支持 · 证据：本会话工具列表
 ```
 
-未亲自调用过的能力写“列出但未验证”。不要因为文档或本表提到某工具就写“支持”。
+For capabilities not personally invoked, write “列出但未验证” (listed but not verified). Do not write “支持” (supported) just because documentation or this table mentions a tool.
 
-## 不同能力下的打法
+## Strategies Under Different Capabilities
 
-- **能创建子 session 并收回结果**：作者与审查者使用不同子 session；Chief 只读交付卡与必要证据。
-- **子代理的工作目录与工作区不同**（会话开在别的仓库）：卡片写绝对路径；宿主的隔离工作树通常只作用于会话自己的仓库，不能替代工作区隔离。
-- **子 session 之间不能直接通信**：一律经 Chief 转交：`作者 → Chief → 审查者 → Chief → 作者`。
-- **只能前台等待**：Chief 在本回合内等待并继续；向用户说明会话结束后不会自动继续。
-- **没有委派能力**：单 session 顺序执行，审查标为“自查，非独立审查”。
-- **有回合后唤醒能力**：只为已登记的等待条件设置唤醒，写明目的、间隔、有效期和停止条件；没有授权不新建定时任务。
+- **Can create sub-session and collect results**: Author and reviewer use different sub-sessions; Chief only reads delivery cards and necessary evidence.
+- **Sub-agent's working directory differs from workspace** (session opened in different repo): Write absolute paths on the card; harness's isolated working tree usually only applies to the session's own repository and cannot substitute for workspace isolation.
+- **Sub-sessions cannot communicate directly**: All communication goes through Chief: `作者 → Chief → 审查者 → Chief → 作者` (author → Chief → reviewer → Chief → author).
+- **Can only wait in foreground**: Chief waits and continues within this turn; inform user that session will not automatically continue after turn ends.
+- **No delegation capability**: Single session executes sequentially, review marked as “自查，非独立审查” (self-review, not independent review).
+- **Has post-turn wake-up capability**: Only set wake-up for registered wait conditions, stating purpose, interval, validity period and stop conditions; do not create timer tasks without authorization.

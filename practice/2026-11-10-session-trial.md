@@ -1,17 +1,17 @@
-# 会话内多 Agent 演练记录
+# In-session multi-agent rehearsal record
 
-日期：2026-11-10。目标：验证当前宿主能否支持任务派发、独立审查、打回和原作者修复。示例是虚构待办工具说明，不涉及真实业务数据。
+Date: 2026-11-10. Goal: verify whether the current harness can support task dispatch, independent review, sending back, and a fix by the original author. The example is a fictional to-do tool description and involves no real business data.
 
-## 实际过程
+## What actually happened
 
-1. 主会话作为 Chief，用当前宿主的 `collaboration.spawn_agent` 创建 `practice_developer`，交付任务 RTW-DEMO-1：写入临时文件，目标、三个验收条件和一个风险。为测试返修，首稿刻意只写两个条件。
-2. 开发者报告实际创建 `/tmp/rtw-demo/brief.md` 并核对；Chief 使用 `collaboration.spawn_agent` 创建独立的 `practice_reviewer`，提供原目标和文件位置。
-3. 审查者实际读取共享指令、审查角色和文件，发现两项验收而要求三项，结论打回。
-4. Chief 使用 `collaboration.followup_task` 把缺陷发回原开发者；开发者补第三条并读取核对。
-5. Chief 使用 `collaboration.followup_task` 让原审查者复审；审查者报告读取后通过，确认目标、三条验收和一个风险。Chief 另行读取最终文件核对。
+1. The main session, acting as Chief, used the current harness's `collaboration.spawn_agent` to create `practice_developer` and handed over task RTW-DEMO-1: write a temporary file with a goal, three acceptance conditions, and one risk. To test rework, the first draft deliberately contained only two conditions.
+2. The developer reported actually creating `/tmp/rtw-demo/brief.md` and checking it; the Chief used `collaboration.spawn_agent` to create an independent `practice_reviewer`, providing the original goal and the file location.
+3. The reviewer actually read the shared instructions, the reviewer role, and the file, found that the file had two acceptance conditions where three were required, and concluded with a send-back verdict (`打回`).
+4. The Chief used `collaboration.followup_task` to send the defect back to the original developer; the developer added the third condition and read it back to check.
+5. The Chief used `collaboration.followup_task` to have the original reviewer re-review; the reviewer reported a pass (`通过`) after reading, confirming the goal, the three acceptance conditions, and one risk. The Chief separately read the final file to check.
 
-## 结论与边界
+## Conclusions and boundaries
 
-上述执行真实发生，完成事件和消息在当前活动会话中可见。为了验证打回，缺陷是事先设置的；这不证明审查对自然产生的复杂错误有效。主会话使用 `wait_agent` 等待结果，后续任务由 Chief 显式发起。没有验证主会话结束后的自动唤醒、长期会话持久化、定时触发、跨进程重启、权限执行、外部副作用或真实开发任务，也没有测试 pi/Codex 命令行适配。临时文件不作为永久发布材料。
+The execution above really happened, and the completion events and messages were visible in the current active session. The defect was set up in advance in order to verify the send-back; this does not prove that review is effective against naturally occurring complex errors. The main session used `wait_agent` to wait for results, and follow-up tasks were initiated explicitly by the Chief. Not verified: automatic wake-up after the main session ended, long-term session persistence, scheduled triggers, cross-process restarts, permission enforcement, external side effects, or real development tasks; the pi/Codex command-line adapters were also not tested. The temporary files are not permanent publication material.
 
-独立文档审阅者指出的未解决问题：尚未选择并实现具体宿主安装适配；角色提示与工具的实际装配、持久派发及空闲续行需要在目标宿主实际验证。此演练不改变这些状态。
+Unresolved issues pointed out by the independent document reviewer: no specific harness installation adapter has yet been chosen and implemented; the actual assembly of role prompts and tools, durable dispatch, and idle continuation need to be verified in the target harness. This rehearsal does not change those states.

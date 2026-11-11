@@ -1,12 +1,12 @@
-# 交付 / 审查卡
+# Delivery / Review Card
 
-- 工单 / assignment / attempt / 目标版本：
-- 状态：完成 | 部分完成 | 失败 | 阻塞 | 未知（审查者另写第一行 `审查结论：通过 | 打回 | 阻塞`）
-- 执行者 / 审查者：
-- 结论与完成范围（逐条对照验收）：
-- 产物、变更或 PR 链接 / 被审版本或 HEAD：
-- 实际执行的检查：原样命令、退出状态、关键输出或证据位置：
-- 未运行的检查及原因：
-- 未完成项、风险及未知外部副作用：
-- 需要人或 Chief 决定的事项：
-- 建议的下一步：
+- Ticket / assignment / attempt / target version:
+- Status: 完成 | 部分完成 | 失败 | 阻塞 | 未知 (complete | partially complete | failed | blocked | unknown) (the reviewer additionally writes as the first line `审查结论：通过 | 打回 | 阻塞` (Review verdict: pass | reject | block))
+- Executor / Reviewer:
+- Conclusion and scope of completion (verify each acceptance criterion):
+- 产物 (Artifacts), changes or PR links / reviewed version or HEAD:
+- Actually run checks: commands as-is, exit status, key output or evidence location:
+- Checks not run and why:
+- 未完成项 (Incomplete items), risks and unknown external side effects:
+- 需要人或 Chief 决定 (Items that require a human or Chief decision):
+- Recommended next steps:

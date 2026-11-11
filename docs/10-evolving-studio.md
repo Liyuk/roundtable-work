@@ -1,90 +1,90 @@
-# 从需求长出来的团队：工作室如何运作
+# A team that grows out of needs: how the studio operates
 
-状态：设计与脱敏实践归纳，2026-11-10。工作室案例是用户讲述的实际组织演变；触发、自动决策及 setup 为本项目提案，尚未作为完整系统验证。用户已澄清，此处负责主动判断与协调的是 **Chief**；会话、通信、工具和计时能力由实际宿主提供。
+Status: design and sanitized practice summary, 2026-11-10. The studio case is an actual organizational evolution recounted by the user; the triggers, automatic decisions and setup are proposals of this project and have not yet been validated as a complete system. The user has clarified that the one responsible here for proactive judgment and coordination is **Chief**; session, communication, tool and timing capabilities are provided by the actual host.
 
-## 为什么需要动态组织
+## Why a dynamic organization is needed
 
-用户通常先给一个工作目标，并不知道最后需要几位成员、哪些专业或多复杂的流程。工作过程中才会出现质量问题、新类型的任务、积压与空闲。工作室需要在不反复让人充当项目经理的前提下，观察这些变化并调整组织；它也需要知道何时不增加人、不继续做无价值的工作。
+Users usually give a work goal first, without knowing how many members, which specialties or how complex a process will ultimately be needed. Quality problems, new types of tasks, backlogs and idleness only appear during the work. The studio needs to observe these changes and adjust the organization without repeatedly making a person act as project manager; it also needs to know when not to add people and not to keep doing worthless work.
 
-## 一个工作室的演进：脱敏案例
+## The evolution of one studio: a sanitized case
 
-1. **先有需求**：用户提出开发目标，先安排开发角色推进。此时一个小团队足够，不预先假设完整组织。
-2. **交付后出现验收需求**：用户希望开发和验收分开，并考虑用不同模型检查，因而加入审查职责。要观察的是验收是否真的发现遗漏、是否减少返工，模型不同本身不证明独立或有效。
-3. **问题积压后引入修复角色**：GitHub issue 中出现较多 bug，需要持续定位和修复，于是加入专门修 bug 的角色；功能开发与故障修复的队列和工作方式开始分开。
-4. **功能需求增加后扩展开发**：feature 工作量暂时超过现有开发能力，加入第二名开发者。并行时需要判断任务依赖、文件冲突和资源。
-5. **需求变化后重新审视容量**：过一段时间，第二名开发者并不总是忙。角色空闲是重新评估容量的信号，不自动等同于无价值；先检查是否有适合、已授权、无冲突的待办，再决定保持待命、减少 session 或暂停角色。
-6. **出现调研需求**：遇到反复的调研工作后，设置调研 position，把有来源的资料分析交给专门角色；调研结果可以进入决策或新工单，但不自动变成开发任务。
+1. **Needs come first**: the user states a development goal, and a developer role is assigned to move it forward first. A small team is enough at this point, and no full organization is assumed in advance.
+2. **An acceptance need appears after delivery**: the user wants development and acceptance to be separate, and considers checking with a different model, so a review responsibility is added. What to observe is whether acceptance really finds omissions and whether it reduces rework; a different model does not by itself prove independence or effectiveness.
+3. **A fixer role is introduced after problems pile up**: many bugs appear in GitHub issues and need continuous locating and fixing, so a role dedicated to fixing bugs is added; the queues and ways of working for feature development and fault fixing begin to separate.
+4. **Development is expanded after feature demand grows**: the feature workload temporarily exceeds existing development capacity, and a second developer is added. When working in parallel, task dependencies, file conflicts and resources need to be judged.
+5. **Capacity is reconsidered after demand changes**: after a while, the second developer is not always busy. An idle role is a signal to reassess capacity, and is not automatically equivalent to worthless; first check whether there is suitable, authorized, conflict-free pending work, and then decide whether to keep it on standby, reduce sessions or pause the role.
+6. **A research need appears**: after research work recurs, a research position is set up, and the analysis of sourced materials is handed to a dedicated role; research results can enter decisions or new tickets, but do not automatically become development tasks.
 
-这是从用户叙述抽象出的演化逻辑，不是对原宿主设计缺陷的判断，也不代表本仓库已自动复现这些决策。
+This is evolutionary logic abstracted from the user's account; it is not a judgment of design flaws in the original host, nor does it mean this repository has automatically reproduced these decisions.
 
-## 一次需求如何变成工作
+## How a need becomes work
 
 ```text
-用户给目标 / 后续补充
-  → 宿主接收输入，保留消息、身份、来源和实际工具能力
-  → 唤醒 Chief，并提供当前目标、待处理工单与相关记忆
-  → Chief 判断意图、可决策部分、验收、约束和下一步
-  → 选择现有角色或临时工作 session，发出委派卡
-  → 宿主投递并记录送达；执行者领取后调用执行工具
-  → 执行结果及证据回传；需要时进入独立审查和返修
-  → Chief 对照当前目标，继续做下一项或写明等待条件
-  → 用户收到可用成果或确有必要的问题
+User gives a goal / later additions
+  → The host receives the input, keeping the message, identity, source and actual tool capabilities
+  → Wake Chief, and provide the current goal, pending tickets and relevant memory
+  → Chief judges the intent, the decidable parts, acceptance, constraints and the next step
+  → Choose an existing role or a temporary work session, and issue an assignment card
+  → The host delivers and records delivery; the executor claims it and then calls the execution tool
+  → The execution result and evidence come back; independent review and rework follow when needed
+  → Chief checks against the current goal, and either moves on to the next item or states the waiting condition
+  → The user receives a usable result or a question that is truly necessary
 ```
 
-Chief 承担主动观察、沟通、召回和任务及组织判断；宿主提供会话、事件、消息投递、进程和工具接入。两者可在同一系统中实现，但一份任务只能有一个调度权威。
+Chief takes on proactive observation, communication, recall, and task and organizational judgment; the host provides sessions, events, message delivery, processes and tool access. The two can be implemented in the same system, but a piece of work can have only one scheduling authority.
 
-举例：开发者完成一项功能后，宿主接收到实际进程退出或完成事件，将结果交给 Chief 或按预先设置直接送审；审查者打回时，卡片回到原作者；审查通过后 Chief 重新查看原目标和待办，决定继续下一项还是等待。若宿主无法在空闲后自动唤醒 Chief，提示词里的“继续”不会自己生效，setup 必须标出缺口。
+For example: after a developer completes a feature, the host receives the actual process exit or completion event, and hands the result to Chief or, as preconfigured, sends it directly for review; when the reviewer returns `打回` (sent back), the card returns to the original author; after review `通过` (passes), Chief re-examines the original goal and the to-do items, and decides whether to continue with the next one or to wait. If the host cannot automatically wake Chief after it goes idle, the "continue" in the prompt will not take effect by itself, and setup must flag the gap.
 
-## Chief 如何决定招聘、待命或缩减
+## How Chief decides to hire, stand by or shrink
 
-组织评估由任务完成、积压变化、失败、资源变化或用户要求触发；部署者也可以启用有预算的周期评估。先比较四个选项：复用已有角色、为已有角色启动临时 session、建立新的长期角色、调整工作流程。角色是长期能力与身份，session 是一次运行；短期峰值优先考虑临时 session，反复出现且职责清晰才考虑长期角色。
+An organizational assessment is triggered by task completion, backlog changes, failures, resource changes or user requests; the deployer can also enable a periodic assessment with a budget. First compare four options: reuse an existing role, start a temporary session for an existing role, establish a new long-term role, adjust the workflow. A role is a long-term capability and identity, and a session is a single run; for short-term peaks prefer a temporary session, and consider a long-term role only when the need recurs and the responsibilities are clear.
 
-一次建议决策至少回答：
+A recommended decision should answer at least:
 
-- 哪类工作实际排队，多久，是否能并行，是否被人或外部依赖阻塞？
-- 现有成员的真实运行时间、等待时间和可用能力怎样？不能把挂起工单算成忙碌。
-- 新角色能做什么、向谁汇报、使用什么工具、验收什么、是否需要新权限？
-- 新增之后如何衡量是否有用；什么时候停止、暂停或回滚？
+- What kind of work is actually queuing, for how long, can it be parallelized, and is it blocked by a person or an external dependency?
+- What are the existing members' real running time, waiting time and available capabilities? A suspended ticket must not be counted as busy.
+- What can the new role do, to whom does it report, what tools does it use, what does it accept, and does it need new permissions?
+- After it is added, how is usefulness measured; when is it stopped, paused or rolled back?
 
-例如：bug 持续积压且有可复现证据，可先给已有执行者开受限修复 session；若反复与功能开发争抢容量，再在授权范围内创建修复角色。第二开发者连续多个评估窗口没有合适工作时，可以先停止新会话并保留角色及记忆；减少长期角色前完成工单和消息交接。具体窗口与阈值由部署者配置，不能凭单次观察虚构最佳数字。
+For example: if bugs keep piling up and there is reproducible evidence, first open a restricted fix session for an existing executor; if it repeatedly competes with feature development for capacity, then create a fixer role within the authorized scope. When the second developer has had no suitable work for several consecutive assessment windows, new sessions can be stopped first while keeping the role and its memory; complete the handoff of tickets and messages before reducing long-term roles. The specific windows and thresholds are configured by the deployer, and an optimal number must not be invented from a single observation.
 
-简单、可逆且已获预授权的调整可自主执行；新外部身份、权限扩大或预算突破由部署者决定。记录证据、方案、决定、影响与回滚。组织层级不是必备：只在任务量、领域复杂度或信息过载确实需要时增加中间负责人。
+Simple, reversible adjustments that have been pre-authorized can be executed autonomously; new external identities, expanded permissions or exceeding the budget are decided by the deployer. Record the evidence, plan, decision, impact and rollback. An organizational hierarchy is not mandatory: add intermediate leads only when task volume, domain complexity or information overload truly requires it.
 
-## 多层汇报如何过滤
+## How multi-layer reporting filters
 
-执行者向直属负责人报告结果、证据、风险、未完成和请求；负责人处理可决策事项，将重大风险、跨组冲突、预算与权限问题上报 Chief。普通进展保留在工单中按需查看；不丢弃失败、未知和原始依据。Chief 汇总对用户有用的结果或具体决策。紧急风险必须有直接升级路径，不能因为中间层沉默而丢失。
+Executors report results, evidence, risks, unfinished items and requests to their direct lead; the lead handles decidable matters and escalates major risks, cross-group conflicts, and budget and permission issues to Chief. Ordinary progress stays in the ticket to be viewed as needed; failures, unknowns and original grounds are not discarded. Chief aggregates results or specific decisions that are useful to the user. Urgent risks must have a direct escalation path and must not be lost because an intermediate layer is silent.
 
-## 主动性、时间与记忆
+## Proactivity, time and memory
 
-主动不是频繁发消息，而是收到可用信号后，主动判断**现在应该做什么**。信号可来自：
+Being proactive does not mean sending messages frequently; it means that, on receiving a usable signal, one proactively judges **what should be done now**. Signals can come from:
 
-- 外部事件：用户消息、issue、审查意见、CI、数据源更新。
-- 内部事件：任务结束、子任务超时、队列变化、记忆被更新、目标版本变化。
-- 计划事件：用户启用的 daily session、工作室复盘、例行内容检查；带时区、间隔、预算和截止条件。
-- 记忆触发：失败后查类似案例；送审前找风险约定；积压增长时召回过去扩员决策；每日任务启动时找前一天未解决事项。
+- External events: user messages, issues, review comments, CI, data source updates.
+- Internal events: a task ending, a subtask timing out, queue changes, memory being updated, the goal version changing.
+- Scheduled events: a daily session enabled by the user, a studio retrospective, a routine content check; with a time zone, interval, budget and deadline conditions.
+- Memory triggers: look up similar cases after a failure; find risk conventions before submitting for review; recall past headcount-expansion decisions when the backlog grows; find the previous day's unresolved items when a daily task starts.
 
-可选的**随机召回**用于低频发现被忽略的信息：在预先允许的记忆范围内抽取少量候选，检查是否与当前目标相关、是否过期、是否值得进一步验证；它只产生候选，不直接扩大权限或触发外部写入。记录抽样原因、来源、判断和预算，避免无限回忆或凭旧记忆重复工作。没有支持的宿主不能声称它会自动发生。
+Optional **random recall** is used to discover neglected information at low frequency: within a pre-allowed memory scope, draw a small number of candidates and check whether they are relevant to the current goal, whether they are expired, and whether they are worth verifying further; it produces only candidates, and does not directly expand permissions or trigger external writes. Record the sampling reason, source, judgment and budget, to avoid unbounded recollection or repeating work based on old memory. A host that does not support it cannot claim that it will happen automatically.
 
-每日 session 应明确“日期、时区、数据截至时间、任务 owner、目标、前一天遗留和当日停止条件”。缺席或重启后的补跑策略要明示；研究和交易类信息标注数据来源、时间与不确定性，交易或资金动作依据单独授权。
+A daily session should state clearly "the date, time zone, the time the data is current to, the task owner, the goal, leftovers from the previous day and the stop conditions for the day". The make-up policy after absence or restart should be explicit; research and trading information is labeled with data source, time and uncertainty, and trading or fund actions rely on separate authorization.
 
-## 同一循环能覆盖其他工作
+## The same loop can cover other work
 
-| 场景 | 观察与工作来源 | 角色及交付示例 | 验收和等待 |
+| Scenario | Observation and work sources | Roles and delivery examples | Acceptance and waiting |
 | --- | --- | --- | --- |
-| 软件开发 | 用户需求、issue、CI、审查意见 | 开发、修复、审查、调研；变更与证据 | 测试、审查、PR；可能等待合并 |
-| 自媒体运营 | 选题目标、素材、发布日历、反馈 | 选题、研究、写作、编辑；带来源草稿 | 事实、风格、版权/素材许可及人工发布权限 |
-| 视频剪辑 | 素材、脚本、时长、格式与修改意见 | 素材整理、剪辑、质检；工程文件和成片 | 素材可访问、时长/画幅、内容质量；发布权限另定 |
-| 每日研究 | 指定日期、数据源、关注事项、前日遗留 | 数据、分析、复核；可追溯日报 | 数据新鲜度和可复现性；结论不等于交易授权 |
+| Software development | User requirements, issues, CI, review comments | Developer, fixer, reviewer, researcher; changes and evidence | Tests, review, PR; may wait for merge |
+| Self-media operation | Topic goals, material, publishing calendar, feedback | Topic selection, research, writing, editing; sourced drafts | Facts, style, copyright/material licensing and human publishing permission |
+| Video editing | Material, script, duration, format and revision comments | Material organization, editing, quality inspection; project files and the finished cut | Material accessible, duration/aspect ratio, content quality; publishing permission determined separately |
+| Daily research | Specified date, data sources, topics of interest, previous day's leftovers | Data, analysis, review; a traceable daily report | Data freshness and reproducibility; conclusions are not trading authorization |
 
-这些是适配示例，不是现成功能；每个领域需要自己的工具、验收标准、授权和失败策略。setup 先选场景模板，再探测真实宿主能力，不能把软件开发中的 GitHub 工作流强加给所有团队。
+These are adaptation examples, not ready-made features; each domain needs its own tools, acceptance criteria, authorization and failure policy. Setup first selects a scenario template and then probes the real host's capabilities, and must not impose the GitHub workflow of software development on every team.
 
-## 安装后如何实际运转
+## How it actually runs after installation
 
-1. 确认宿主提供哪些 session 创建、消息投递、完成通知、工具调用和定时能力；记录不可用项。
-2. 导入共享认知和 Chief 指令，建立一个目标与最小角色；选择该宿主作为任务状态和调度权威。
-3. 配置授权内可自主决定的范围、角色上限、预算、是否启用周期/随机召回及消息渠道。
-4. 创建一张真实但低风险的任务卡，执行、审查、处理反馈；记录谁发送、接收、执行、交付和唤醒。
-5. 在任务有余项时验证 Chief 是否会继续；以实际事件而不是模型承诺判断。如不支持后台唤醒，则只能手动继续或补宿主能力。
-6. 跑一段观察期，根据真实需求评估新增/暂停角色和调整工作流；任何自动配置修改都应可追溯并可回退。
+1. Confirm which session creation, message delivery, completion notification, tool invocation and timing capabilities the host provides; record the unavailable ones.
+2. Import the shared understanding and the Chief instructions, and establish one goal and a minimal set of roles; choose that host as the authority for task state and scheduling.
+3. Configure the scope that may be decided autonomously within authorization, the role cap, the budget, whether periodic/random recall is enabled, and the message channels.
+4. Create one real but low-risk assignment card, execute it, review it and handle feedback; record who sent, received, executed, delivered and woke.
+5. When a task has remaining items, verify whether Chief will continue; judge by actual events rather than model promises. If background wake-up is not supported, one can only continue manually or add host capability.
+6. Run an observation period, assess adding/pausing roles and adjusting the workflow based on real needs; any automatic configuration change should be traceable and reversible.
 
-本仓库目前提供这些操作的方案、可安装的 skill（提示词与模板）及会话内演练，还未提供持久运行时。见 [实践记录](../practice/2026-11-10-session-trial.md)。
+This repository currently provides the approach for these operations, an installable skill (prompts and templates) and an in-session walkthrough, but does not yet provide a durable runtime. See the [practice record](../practice/2026-11-10-session-trial.md).

@@ -1,51 +1,51 @@
-# 提示词与工程如何配合
+# How prompts and engineering work together
 
-状态：设计与验收清单。提示词包可在支持 Skills 或文件读取的 Agent 内使用；这不等于本项目已提供持久调度系统。
+Status: design and acceptance checklist. The prompt package can be used inside agents that support Skills or file reading; this does not mean the project already provides a persistent scheduling system.
 
-## 可安装单元：Skill
+## The installable unit: the Skill
 
-运行时需要的全部指令都在 [Roundtable Work Skill](../.agents/skills/roundtable-work/SKILL.md) 目录内：`prompts/`（共享行为与角色）、`templates/`（工单、委派、交付、续行记录、团队与政策）、`references/`（宿主映射、配置流程、Skill 发现）、`agents/claude/`（Claude Code 子代理定义）。目录不链接外部文件（`npm run check` 强制），因此可以整体复制到任何工作区；[安装脚本](../scripts/install.mjs) 就是这样做的。`docs/` 是设计依据，运行时不需要加载。
+All the instructions needed at runtime are inside the [Roundtable Work Skill](../.agents/skills/roundtable-work/SKILL.md) directory: `prompts/` (shared behavior and roles), `templates/` (ticket, assignment, delivery, continuation record, team, and policy), `references/` (host mapping, setup flow, skill discovery), and `agents/claude/` (Claude Code sub-agent definitions). The directory does not link to external files (enforced by `npm run check`), so it can be copied as a whole into any workspace; the [install script](../scripts/install.mjs) does exactly that. `docs/` is the design rationale and does not need to be loaded at runtime.
 
-## 指令如何组装
+## How instructions are assembled
 
-一次工作会话按以下顺序得到上下文：
+A working session gets its context in the following order:
 
-1. 宿主系统规则、真实开放的工具与安全约束（宿主提供，本项目不能覆盖）。
-2. Skill 入口：判断模式（Chief / 执行者 / 配置），只加载该模式需要的文件。
-3. [共享行为](../.agents/skills/roundtable-work/prompts/shared.md)：协作、状态词表、证据等级与收尾纪律。
-4. 选定的角色说明 `prompts/roles/<角色>.md`；Claude Code 子代理定义会直接指向它。
-5. 部署配置 `.roundtable/team.md` 与 `policy.md`：角色、授权、预算、路由、触发。历史授权不能迁移为新授权。
-6. 当前目标版本、工单、委派卡、相关记忆及来源。外部材料作为低信任数据。
-7. 工具的真实回执和执行证据；状态更新依赖宿主的真实操作，而非模型声称。
+1. The host's system rules, the tools actually open, and safety constraints (provided by the host; this project cannot override them).
+2. The Skill entry point: determine the mode (Chief / executor / setup) and load only the files that mode needs.
+3. [Shared behavior](../.agents/skills/roundtable-work/prompts/shared.md): collaboration, the status vocabulary, evidence levels, and closing discipline.
+4. The selected role description `prompts/roles/<角色>.md` (`<角色>` is the role name placeholder); the Claude Code sub-agent definition points directly to it.
+5. The deployment configuration `.roundtable/team.md` and `policy.md`: roles, authorization, budget, routing, triggers. Historical authorization cannot be carried over as new authorization.
+6. The current goal version, ticket, assignment card, relevant memory, and its sources. External material is treated as low-trust data.
+7. The tools' real receipts and execution evidence; status updates depend on real host operations, not on what the model claims.
 
-动态目标与当前任务不写进永久角色身份。权限和安全由工具及宿主强制，提示词只是行为指导。该顺序参考 [dsh-superagent 的提示词组装](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/004-prompts.md)，为本项目重写。
+The dynamic goal and the current task are not written into the permanent role identity. Permissions and safety are enforced by the tools and the host; prompts are only behavioral guidance. This order is modeled on [dsh-superagent's prompt assembly](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/004-prompts.md), rewritten for this project.
 
-## 可先用提示词驱动的工作
+## Work that can be driven by prompts first
 
-Chief 读取目标及验收，决定拆分、优先级、角色、合理假设和下一步；使用宿主实际存在的子 session 工具委派，按委派卡交接；读取交付卡并发起独立审查；每回合写续行记录。宿主没有 session 能力时，不能假装存在独立审查者；单 session 自查不能称为独立审查。真实表现取决于模型、上下文和宿主，必须通过任务验证。
+The Chief reads the goal and acceptance criteria and decides the split, priorities, roles, reasonable assumptions, and next step; delegates using the sub-session tools that actually exist on the host, handing off by assignment card; reads the delivery card and initiates an independent review; and writes a continuation record every turn. When the host has no session capability, an independent reviewer must not be pretended into existence; a single-session self-check cannot be called independent review. Real performance depends on the model, the context, and the host, and must be verified through tasks.
 
-## 哪些需要宿主或工程
+## What needs the host or engineering
 
-| 功能 | 最小要求 | 验证 |
+| Capability | Minimum requirement | Verification |
 | --- | --- | --- |
-| 生命周期 | 创建、取消、观察 session，区分身份、会话和委派 | 启动子任务并查看真实结果 |
-| 完成通知与等待 | 完成、失败和用户输入能送给正确 owner；空闲后能唤醒 | 让主会话空闲，再观察通知；不支持时报告 |
-| 目标与工单 | 一个状态权威；目标版本、owner、验收、等待条件和证据 | 目标中途变化后检查旧结果版本 |
-| 外部事件 | 接收、身份认证、授权判断、去重和关联 | 真实事件、重复事件和无权来源测试 |
-| 定时唤醒 | 配置时间、时区、预算、过期及错过策略 | 到时触发、暂停和重启后处理测试 |
-| 记忆 | 读取/写入/检索，来源与权限、有效期和删除 | 跨会话重载、冲突与修订测试 |
-| 恢复 | 输入持久化、未知副作用对账、恢复或安全停下 | 任务运行中断、重启和重复投递 |
-| 授权与隔离 | 权限在工具和宿主强制，账号/工作区受控 | 验证无权动作被真实拒绝 |
-| 观测和预算 | 工作、等待、失败、费用、资源与人工介入可区分 | 与实际进程/事件交叉检查 |
+| Lifecycle | Create, cancel, and observe sessions; distinguish identity, session, and assignment | Start a sub-task and view the real result |
+| Completion notification and waiting | Completion, failure, and user input can reach the right owner; it can be woken after being idle | Leave the main session idle, then observe the notification; report if unsupported |
+| Goals and tickets | A single state authority; goal version, owner, acceptance criteria, wait conditions, and evidence | Check the version of old results after the goal changes midway |
+| External events | Receipt, identity authentication, authorization decisions, de-duplication, and correlation | Tests with real events, duplicate events, and unauthorized sources |
+| Scheduled wake-up | Configured time, time zone, budget, expiry, and missed-run policy | Tests of firing on time, pausing, and handling after restart |
+| Memory | Read/write/retrieve, source and permissions, validity period, and deletion | Cross-session reload, conflict, and revision tests |
+| Recovery | Input persistence, reconciliation of unknown side effects, resuming or stopping safely | Task interruption mid-run, restart, and duplicate delivery |
+| Authorization and isolation | Permissions enforced in the tools and host; accounts/workspaces controlled | Verify that unauthorized actions are really rejected |
+| Observability and budget | Work, waiting, failures, cost, resources, and human intervention can be told apart | Cross-check against actual processes/events |
 
-## 工程路线
+## Engineering roadmap
 
-参考 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 与 [dsh-superagent 的 setup](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/SETUP.md)、[领域模型](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md)、[执行机制](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md)：
+See [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and [dsh-superagent's setup](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/SETUP.md), [domain model](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md), and [execution mechanism](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md):
 
-1. **已完成**：可复制的 skill 包、`install.mjs`（幂等、不覆盖用户政策）、`doctor.mjs --target`（检查安装结果与候选宿主命令）。
-2. 固定首个宿主和版本，在其中跑通：Chief 派发 → 执行者交付 → 独立审查打回 → 返修 → 目标未完成时继续第二项；保存回执证据。
-3. 主会话空闲后等待完成结果，再测试用户中途修改目标。无法唤醒或处理纠偏即记录失败和具体缺口。
-4. 只对经验证的宿主缺口增加最薄适配；先定义权威状态与数据所有权，再测试重复事件、重启与未知外部副作用。
-5. 逐项接入记忆、定时任务、外部触发和组织扩缩；第二宿主运行同一案例后，才稳定通用接口。
+1. **Done**: a copyable skill package, `install.mjs` (idempotent, does not overwrite user policy), and `doctor.mjs --target` (checks the install result and candidate host commands).
+2. Fix the first host and version, and get the following working there: Chief dispatches → executor delivers → independent review `打回` (sends it back) → rework → when the goal is not yet complete, continue with the second item; keep the receipt evidence.
+3. After the main session goes idle, wait for the completion result, then test the user changing the goal midway. If it cannot be woken or cannot handle the correction, record the failure and the specific gap.
+4. Add only the thinnest adapter for verified host gaps; first define the authoritative state and data ownership, then test duplicate events, restart, and unknown external side effects.
+5. Wire in memory, scheduled tasks, external triggers, and organizational scaling one at a time; only after a second host runs the same case should the common interface be stabilized.
 
-不要因为有角色提示词就声称后台团队可运行，也不要因为单次会话演练通过就声称自动恢复。Superagent 的公开实现是研究原型，其工单在 idle 时等待触发；这里的持续目标和组织演化是候选设计，不是对上游能力的概括。
+Do not claim a background team can run just because role prompts exist, and do not claim automatic recovery just because a single-session trial passed. Superagent's public implementation is a research prototype, and its tickets wait for a trigger while idle; the continuous goal and organizational evolution described here are a candidate design, not a summary of upstream capabilities.

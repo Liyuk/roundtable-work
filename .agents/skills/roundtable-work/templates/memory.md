@@ -1,9 +1,9 @@
-# 记忆候选
+# Memory Candidate
 
-- 标题 / 类型（事实、观察、推断、用户决定、经验）：
-- 内容与适用范围：
-- 依据与证据链接 / 来源权限：
-- 创建时间 / 版本 / 责任人 / 置信度：
-- 状态：候选、已核验、冲突、过期、撤销：
-- 到期或复核条件：
-- 与其他记忆的冲突及如何处理：
+- Title / Type (fact, observation, inference, user decision, experience):
+- Content and applicable scope:
+- Evidence and evidence chain / source authority:
+- Created time / version / owner / confidence:
+- Status: candidate, verified, conflict, expired, revoked:
+- Expiration or review condition:
+- Conflicts with other memories and how to handle them:
