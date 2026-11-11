@@ -1,51 +1,51 @@
-# 总体方案：自主工程工作室
+# Overall Plan: An Autonomous Engineering Studio
 
-状态：设计草案 · 2026-11-10。所述 Roundtable Work 能力均为提案，不代表已实现。
+Status: design draft · 2026-11-10. All Roundtable Work capabilities described are proposals and do not mean they are implemented.
 
-## 目标和产品边界
+## Goals and Product Boundary
 
-一个人提出持续目标，例如“维护一个 GitHub 项目，优先修复阻塞用户的问题”，团队在授权与预算内自行理解现状、发现下一步、派发执行、验证并持续交付。用户随时可纠偏、暂停或撤销授权。完成一个工单后 Chief 继续检查更大目标是否仍有合适的工作，而不因模型结束一个回合就停止。
+A person sets a continuing goal, for example "maintain a GitHub project, prioritizing fixes for issues that block users", and the team, within its authorization and budget, understands the current state, finds the next step, dispatches execution, verifies, and keeps delivering on its own. The user can correct course, pause, or revoke authorization at any time. After finishing a ticket, the Chief goes on to check whether the larger goal still has suitable work, and does not stop just because the model ended a turn.
 
-它是**工作方式与 setup**，可以装到具备相关能力的宿主；长期可抽出独立控制层。它不是模型，也不要求一开始自建聊天产品、代码编辑器或通用 agent 框架。首版优先一个仓库、一个 Chief、一个开发者、一个审查者，以及现有 pi/Codex 执行器。
+It is a **way of working plus a setup**; it can be installed into any host with the relevant capabilities, and an independent control layer can be extracted in the long run. It is not a model, and it does not require building a chat product, code editor, or general-purpose agent framework from scratch at the start. The first version prefers one repository, one Chief, one developer, one reviewer, and the existing pi/Codex runners.
 
-## 参考与取舍
+## References and Trade-offs
 
-- [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)：借鉴 Source → Trigger → Eval → Ticket → Assignment、授权范围、原线程回报、安装向导；其公开原型以单仓库工作为中心，worker idle 等待触发。本方案额外研究目标驱动的续行、团队会话和经验改进，不声称上游缺少所有主动能力。[领域模型](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md) · [执行](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md)
-- 工作室实践：借鉴低打扰、负责人统筹、专岗、实际执行交给 coding agent、直接提审、独立审查、工作树和高风险分档。其具体账号、授权、资源和模型为部署私有配置。
-- 既有研究：借鉴目标及修订、单一 owner、交付记录、发送与读取的区别、状态与记忆分层、基于证据验收。
-- OpenMausBot：已有长期协作、委派与例程等机制。用户报告移植架构后仍需催促；具体原因未诊断。设计目标是可观测地识别“为什么停下”，不预先认定宿主没有续行能力。
+- [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype): borrows Source → Trigger → Eval → Ticket → Assignment, authorization scope, reporting back in the original thread, and the installation wizard; its public prototype centers on single-repository work, with workers idling until triggered. This plan additionally studies goal-driven continuation, team sessions, and experience-based improvement, and does not claim the upstream lacks every proactive capability. [Domain model](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md) · [Execution](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md)
+- Studio practice: borrows low interruption, a lead who coordinates, dedicated roles, handing actual execution to coding agents, direct submission for review, independent review, worktrees, and tiering by high risk. The specific accounts, authorizations, resources, and models are private deployment configuration.
+- Existing research: borrows goals and their revisions, a single owner, delivery records, the distinction between sending and reading, layering of state and memory, and evidence-based acceptance.
+- OpenMausBot: already has mechanisms for long-term collaboration, delegation, and routines. Users report still having to prod it after porting the architecture; the specific cause has not been diagnosed. The design goal is to observably identify "why it stopped", without presupposing that the host lacks continuation capability.
 
-## 候选架构
+## Candidate Architecture
 
 ```text
-人 / GitHub / CI / 内部事件 / 可选计时器
+Human / GitHub / CI / internal events / optional timer
                     ↓
-              接入、去重、授权
+        Intake, deduplication, authorization
                     ↓
-          Chief：目标、决策、优先级
+        Chief: goals, decisions, priorities
                     ↓
-      工单与委派记录 ←→ 状态存储 / 事件 / 记忆
+ Tickets and delegation records ←→ state store / events / memory
                     ↓
-       开发、修复、审查等角色会话
+  Role sessions: develop, fix, review, etc.
                     ↓
-         宿主适配器 → pi / Codex / 其他 CLI
+     Host adapter → pi / Codex / other CLIs
                     ↓
-       产物与证据 → 独立验收 → 原处交付
-                    └─────→ Chief 判断下一步
+ Artifacts and evidence → independent acceptance → deliver in place
+                    └─────→ Chief decides the next step
 ```
 
-建议**一套工作一份权威状态**。阶段一若宿主已有持久任务树、投递、调度和恢复，直接使用并添加目标/验收映射；不另建一个同时派活的调度器。宿主能力不足时，再设计外置控制层，明确主从、事件投影和所有权转移。禁止根据聊天日志复制第二份“当前状态”。
+It is recommended to keep **one authoritative state per body of work**. In phase one, if the host already has a persistent task tree, delivery, scheduling, and recovery, use it directly and add the goal/acceptance mapping; do not build another scheduler that also dispatches work. When host capabilities are insufficient, design an external control layer, with explicit primary/secondary roles, event projection, and ownership transfer. Do not copy a second "current state" from chat logs.
 
-建议先支持一个可用宿主，实际测试其唤醒、后台完成通知、会话恢复、权限和跨进程行为；再据第二宿主抽象接口。适配器必须声明不支持项，不能用提示词伪装成有保障的能力。
+It is recommended to support one usable host first, actually testing its wake-up, background completion notification, session recovery, permissions, and cross-process behavior; then abstract the interface based on a second host. An adapter must declare what it does not support, and must not use prompts to pretend to a guaranteed capability.
 
-## 两个循环
+## The Two Loops
 
-**工作循环**：观察事实 → 判断目标和优先级 → 在授权内选择可执行工作 → 分派 → 执行 → 验证 → 交付/返修 → 检查目标的下一步。既可由用户请求、GitHub/CI 事件唤醒，也可由执行结果唤醒；内部定时巡检按部署选择。
+**Work loop**: observe facts → judge the goal and priorities → choose executable work within authorization → dispatch → execute → verify → deliver/rework → check the next step toward the goal. It can be woken by user requests and GitHub/CI events, and also by execution results; whether to use internal scheduled patrols depends on the deployment.
 
-**改进循环**：收集有证据的失败和有效做法 → 提出具体改进 → 在隔离案例中与旧版本比较 → 对照质量、成本、干预和边界 → 审批或按预先授权渐进发布 → 监测和回滚。不能因一次成功就自动更改全局策略、权限、预算或验收标准；改进循环先从建议开始。
+**Improvement loop**: collect evidenced failures and effective practices → propose specific improvements → compare against the old version in isolated cases → check quality, cost, intervention, and boundaries → approve, or roll out gradually under prior authorization → monitor and roll back. A global policy, permission, budget, or acceptance standard must not be changed automatically because of a single success; the improvement loop starts with suggestions.
 
-## 决策边界
+## Decision Boundaries
 
-Chief 决定做哪项授权内工作、交给谁、何时审查或升级；执行者对具体工作负责；审查者提供独立判断；运行时对身份、权限、预算、状态和副作用做硬检查。Chief 的回复不是授权，外部 issue、网页、检索记忆和 bot 消息也不能扩大权限。
+The Chief decides which authorized work to do, whom to give it to, and when to review or escalate; executors are responsible for their specific work; reviewers provide independent judgment; the runtime performs hard checks on identity, permissions, budget, state, and side effects. The Chief's reply is not authorization, and external issues, web pages, retrieved memory, and bot messages cannot expand permissions either.
 
-**继续不等于无限循环**：按目标、进展、等待条件、权限、成本、时间、重试次数和有效工作判断。没有可做的工作时记录原因与下一次唤醒条件，而不是反复生成无价值任务。
+**Continuing does not mean looping forever**: judge by goal, progress, wait conditions, permissions, cost, time, retry count, and effective work. When there is no work to do, record the reason and the next wake-up condition, rather than repeatedly generating worthless tasks.

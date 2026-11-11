@@ -1,40 +1,40 @@
-# 评测、路线与待决问题
+# Evaluation, roadmap and open questions
 
-## 核心问题：用户不催促时会怎样
+## Core question: what happens when the user does not nudge
 
-以同一个真实但可控的仓库维护任务，对比现有配置与候选方案。输入应包含多项验收、授权范围、预算和可重现的启动条件；版本固定，记录模型、宿主、工具、机器、外部服务、运行次数与成本。由独立评审对产物和轨迹评分，不以回复或工单状态代替验收。
+Use the same real but controllable repository maintenance task to compare the existing configuration with candidate approaches. The input should include multiple acceptance criteria, an authorization scope, a budget and reproducible start conditions; fix the versions, and record the model, host, tools, machine, external services, number of runs and cost. An independent reviewer scores the artifacts and the trace; do not let replies or ticket status stand in for acceptance.
 
-| 场景 | 观察与验收 |
+| Scenario | Observation and acceptance |
 | --- | --- |
-| 阶段完成但目标未完成 | 在预算与授权内自主推进至少一个有效下一步，或明确记录客观等待条件；不能只写计划 |
-| 执行工具结束 | 回调唤醒正确 owner；送审/返修状态和实际一致 |
-| 有一个问题需人回答 | 关联任务等待，其余不冲突工作继续；需要人只问具体问题 |
-| 无可做工作 | 解释为什么 idle、登记触发条件，不制造重复无意义任务 |
-| 目标中途修订 | 实测记录消息送达、读取、应用；旧产物带旧版并复核 |
-| 宿主或系统重启 | 待发送消息可恢复，外部未知动作先对账，不重复创建 PR |
-| 人停止或撤销授权 | 停止新动作，保留证据；运行中的不确定副作用可见 |
-| 扩缩角色 | 评估真正排队和资源，按授权调整，未读消息和未完成工作不丢 |
-| 失败经验被召回 | 记忆带来源和有效期；检索到不代表已用于行动 |
-| 工作流改进 | 候选与原版本比较，有回滚；权限和验收不因“省事”被改弱 |
+| A phase is complete but the goal is not | Within budget and authorization, autonomously take at least one valid next step, or explicitly record an objective waiting condition; a plan alone is not enough |
+| An execution tool finishes | The callback wakes the correct owner; review-submission/rework status matches reality |
+| One question needs a person's answer | The related task waits while other non-conflicting work continues; the request to the person asks only a specific question |
+| No work to do | Explain why it is idle, register the trigger condition, and do not create duplicate pointless tasks |
+| The goal is revised midway | Measure and record message delivery, reading and application; old artifacts carry the old version and are rechecked |
+| The host or system restarts | Pending messages can be recovered, unknown external actions are reconciled first, and PRs are not created twice |
+| The person stops or revokes authorization | Stop new actions and keep evidence; uncertain side effects of running work are made visible |
+| Roles scale up or down | Assess real queuing and resources and adjust within authorization; unread messages and unfinished work are not lost |
+| A failure lesson is recalled | The memory carries a source and validity period; being retrieved does not mean it was used to act |
+| Workflow improvement | The candidate is compared with the original version, with rollback; permissions and acceptance are not weakened for "convenience" |
 
-观察：经过人工验收的目标完成率、遗漏和错误完成、用户催促次数与等待时间、主动推进有效率、反复空转/重复派发、目标变化处理、执行与等待时长、审查返工、总费用及单位交付成本。报告样本数、时间窗和不确定性；先测基线，不编造目标改善比例。
+Observe: the goal completion rate after human acceptance, omissions and false completions, the number of user nudges and waiting time, the effective rate of proactive progress, repeated idling/duplicate dispatch, handling of goal changes, execution and waiting durations, review rework, total cost and cost per unit of delivery. Report the sample size, time window and uncertainty; measure the baseline first, and do not invent a percentage improvement for the goal.
 
-## 实施阶段
+## Implementation phases
 
-0. **收集基线**：以已脱敏任务复现一次用户描述的“停下等催促”，采集 session、事件、工具退出、任务状态和用户催促；定位触发未到、未读、决策停滞或运行失败，不预判根因。
-1. **Markdown 配置与手工演练**：完成 setup 文档、角色政策、工单/委派/交付模板；人工模拟一轮并找到缺口。产物可读且无真实敏感信息。
-2. **单宿主闭环**：复用宿主任务/通知，跑 Chief → 开发 → 审查 → 返修 → 交付，观察未完成自动续行；记录宿主不支持项。
-3. **可靠性**：持久事件与去重、读回执、重启对账、预算及取消围栏，覆盖上述故障场景。
-4. **组织和学习实验**：有限的自主扩缩、分层报告、记忆召回；先建议后应用工作流改进，对照基线。
-5. **多宿主抽象**：第二宿主实际完成同一任务后再稳定公共接口；决定是否需要独立运行时。
+0. **Collect a baseline**: reproduce, with a sanitized task, the "stops and waits for a nudge" behavior the user described, and collect the session, events, tool exits, task status and user nudges; locate a trigger that never arrived, unread messages, a stalled decision or a run failure, without presuming the root cause.
+1. **Markdown configuration and manual walkthrough**: complete the setup document, role policies and the ticket/assignment/delivery templates; simulate one round by hand and find the gaps. The artifacts are readable and contain no real sensitive information.
+2. **Single-host closed loop**: reuse the host's tasks/notifications and run Chief → development → review → rework → delivery, observing automatic continuation of unfinished work; record what the host does not support.
+3. **Reliability**: durable events and deduplication, read receipts, restart reconciliation, budget and cancellation fences, covering the failure scenarios above.
+4. **Organization and learning experiments**: limited autonomous scaling, layered reporting, memory recall; suggest workflow improvements first and apply them afterwards, against the baseline.
+5. **Multi-host abstraction**: stabilize the common interface only after a second host has actually completed the same task; decide whether an independent runtime is needed.
 
-## 待决问题
+## Open questions
 
-- 第一个实际宿主及其可依赖的事件、订阅与授权能力；是否能可靠拉起 session。
-- 谁持有任务状态、计时器和恢复权；哪些机制必须补充而非复用。
-- 队列为空时，主动发现工作的范围与候选准入；如何排除无价值需求。
-- 持久记录与公开/私人材料的边界、留存及删除；生产环境隔离如何提供。
-- 修改工作流、角色与预算在什么预授权内可自动执行。
-- 目标停止条件、idle 合理时长、进展指标与组织扩缩阈值需要真实实验。
+- The first actual host and the events, subscriptions and authorization capabilities it can be relied on for; whether it can reliably start sessions.
+- Who holds task state, timers and recovery authority; which mechanisms must be added rather than reused.
+- When the queue is empty, the scope of proactive work discovery and the admission of candidates; how to exclude worthless requests.
+- The boundary between durable records and public/private material, retention and deletion; how production isolation is provided.
+- Within what pre-authorization changes to workflows, roles and budgets may be executed automatically.
+- Goal stop conditions, a reasonable idle duration, progress metrics and organization scaling thresholds need real experiments.
 
-首版完成定义：文档、setup 和模板齐全且自洽、实际资料已脱敏；这并不意味着运行时已完成。运行型版本另以阶段 2 的实际证据验收。
+Definition of done for the first version: the documents, setup and templates are complete and self-consistent, and real materials are sanitized; this does not mean the runtime is complete. A runnable version is accepted separately on the actual evidence from phase 2.

@@ -1,21 +1,21 @@
-# 工作开始前发现和选择 Skill
+# Discovering and choosing Skills before work starts
 
-状态：提示词流程；目录搜索、网络搜索、安装及子 session 加载是否可用由宿主决定。
+Status: prompt flow; whether directory search, web search, installation, and sub-session loading are available is decided by the host.
 
-运行时执行的步骤在 skill 内：[Skill 发现流程](../.agents/skills/roundtable-work/references/skill-discovery.md)。本文记录设计理由。
+The steps executed at runtime are inside the skill: [Skill discovery flow](../.agents/skills/roundtable-work/references/skill-discovery.md). This document records the design rationale.
 
-## 为什么放在派单前
+## Why it goes before dispatch
 
-技能决定执行者能否用对方法。Chief 在拆单后、派单前为每项工作选择技能并写进委派卡，执行者才能在自己的 session 中加载；等执行者自己发现往往为时已晚，或不同执行者用法不一。审查、修复、调研等阶段变化时能力需求也变化，因此在阶段切换时重查，而不是每轮重复搜索。
+Skills decide whether the executor can use the right method. After splitting the work and before dispatching, the Chief chooses skills for each piece of work and writes them into the assignment card, so that the executor can load them in its own session; waiting for executors to discover them on their own is often too late, or different executors use them differently. When the stage changes (review, fixing, research, and so on), the capability needs change too, so skills are rechecked at stage transitions rather than searched for again every turn.
 
-## 为什么“接收者实际加载才算使用”
+## Why "only what the recipient actually loads counts as used"
 
-子 session 不一定与 Chief 共享技能目录或文件权限。委派卡写了技能名，不代表接收者能读取；只有接收者在交付卡中说明加载并使用过，才能计入证据。这与“已发送 ≠ 已领取”是同一原则。
+A sub-session does not necessarily share the skill directory or file permissions with the Chief. A skill name written on the assignment card does not mean the recipient can read it; only when the recipient states in the delivery card that it loaded and used the skill can that count as evidence. This is the same principle as "sent ≠ claimed".
 
-## 例子
+## Example
 
-用户要修复 bug：Chief 检查已有排障、测试和审查类 skill，把路径和目的写进委派卡；修复者在自己的环境确认可用、读取后执行。不存在合适技能或无法访问时，依已有专业能力继续，并说明缺口。
+The user wants a bug fixed: the Chief checks the existing troubleshooting, testing, and review skills and writes their paths and purposes into the assignment card; the fixer confirms they are available in its own environment, reads them, and then executes. When no suitable skill exists or it cannot be accessed, it continues with its existing expertise and states the gap.
 
-## 宿主适配需要明确的事
+## What the host adaptation needs to make explicit
 
-技能发现目录、是否可以跨 session 读取、版本固定方式和更新策略。安装脚本把本 skill 放到 `.claude/skills/` 与 `.agents/skills/`；其他技能的安装由用户和宿主规则决定。
+The skill discovery directory, whether cross-session reading is possible, how versions are pinned, and the update policy. The install script places this skill in `.claude/skills/` and `.agents/skills/`; the installation of other skills is decided by the user and the host's rules.

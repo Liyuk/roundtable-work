@@ -1,16 +1,16 @@
-# 同一宿主的派单、纠偏、回收演练
+# Rehearsal on a single harness: dispatch, course correction, and collection
 
-日期：2026-11-10。任务为虚构读书活动。当前会话中的主 Agent 担任 Chief，两个子 Agent 分别执行和审查；全部使用同一个宿主的原生协作工具。没有新增 gRPC 或消息服务器。
+Date: 2026-11-10. The task was a fictional book-club event. The main agent in the current session acted as Chief, and two subagents executed and reviewed respectively; all of them used the native collaboration tools of the same harness. No gRPC or message server was added.
 
-## 实际过程
+## What actually happened
 
-1. Chief 创建执行者并派发 D1：在临时目录写活动目标和两条验收条件。执行者读取共享及开发者指令，创建并读取计划，返回路径和检查结果。
-2. Chief 使用宿主的后续任务工具，向原执行者发送模拟用户纠偏：目标版本 v2 增加人数上限，并继续 D2，基于 v2 写核对清单。
-3. 原执行者更新计划并写清单，读取两个文件并回报。此处发送与处理均有当前会话消息证据，未独立测试宿主崩溃后的持久投递。
-4. Chief 创建独立审查 session，提供目标版本、验收条件及两个文件路径。审查者实际读取文件，确认 v2 约束和清单一致，给出通过；它只检查文档，没有执行实际活动。
+1. The Chief created an executor and dispatched D1: write the event goal and two acceptance conditions in a temporary directory. The executor read the shared and developer instructions, created and read the plan, and returned the path and check results.
+2. The Chief used the harness's follow-up task tool to send the original executor a simulated user course correction: target version v2 adds an attendee cap, and continue with D2, writing a checklist based on v2.
+3. The original executor updated the plan and wrote the checklist, read both files, and reported back. The sending and handling here both have evidence in the current session's messages; durable delivery after a harness crash was not tested independently.
+4. The Chief created an independent review session and provided the target version, acceptance conditions, and the paths of the two files. The reviewer actually read the files, confirmed that the v2 constraint and the checklist were consistent, and gave a pass (`通过`); it only checked the documents and did not carry out the actual event.
 
-## 结论与边界
+## Conclusions and boundaries
 
-当前环境可在**活跃会话内**派发子任务、接收结果、向已有子 Agent 发送后续任务、另建审查者并回收结果。此次 Chief 明确调用等待与后续任务；这不是无需人工干预的长期运行证明。
+The current environment can, **inside an active session**, dispatch subtasks, receive results, send follow-up tasks to an existing subagent, create a separate reviewer, and collect its results. In this run the Chief explicitly invoked waiting and follow-up tasks; this is not proof of long-running operation without human intervention.
 
-没有真实 GitHub/webhook、定时巡检、会话结束后唤醒、重启恢复、跨 harness 或独立记忆库测试；没有保存 v1 快照。此次模拟输入不是外部用户消息，也没有真实外部副作用。该演练说明原生工具可以承载一个交接闭环，不代表其他 Codex 版本或 Claude Code 环境自动具有同样能力。
+There was no testing of real GitHub/webhooks, scheduled patrols, wake-up after the session ended, recovery after restart, cross-harness operation, or an independent memory store; no v1 snapshot was saved. The simulated input in this run was not a message from an external user, and there were no real external side effects. This rehearsal shows that native tools can carry one handoff loop; it does not mean that other Codex versions or Claude Code environments automatically have the same capability.

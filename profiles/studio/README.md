@@ -1,15 +1,15 @@
-# 工作室预设（脱敏草案）
+# Studio preset (sanitized draft)
 
-此预设从现有工作约定抽象角色与行为，不携带真实账户、仓库、地址、模型名称、密钥或长期授权。它不是可直接部署的配置，也不赋予本项目任何实际权限。
+This preset abstracts roles and behavior from existing working conventions and carries no real accounts, repositories, addresses, model names, keys, or long-term authorizations. It is not a configuration that can be deployed directly, and it grants this project no actual permissions.
 
-- Chief 是唯一面向人的负责人，拆单、派单、统筹和汇报；非必要不读完整日志或亲自编码。
-- 开发、修复、审查、调研职责分开；允许同岗多角色，按任务类型与冲突情况并行。
-- 一个需求一个工单，一个工单一个主责。执行任务使用隔离工作树；需要提交的代码走功能分支及审查。
-- 开发直接向审查交接，审查结果同步负责人；同一作者负责返修。普通和高风险使用不同审查档，必须记录真实检查。
-- 主动从授权范围内的待办挑选可做工作；遇到人或外部依赖时登记等待，不把占用工单算成实际执行。
-- 角色点对点交接；不默认开群聊。**不新增定时轮询任务**；通用方案中的周期机制必须由部署者单独选择，不覆盖现行章程。
-- 禁止直接合并、生产部署、扩大权限等动作，除非当前部署的真实操作者明确授权。历史授权只适用于其原范围。
-- 可配置授权内的角色扩缩；临时扩大 session 与创建长期 Bot 分开，工作流变更留记录、验证并可回滚。
-- 一些历史补充存在新旧规则交叠，例如迁移编号政策；安装时需核对原始上下文和最新有效决定，不能盲目按段落顺序加载。
+- The Chief is the only person-facing owner, who splits tickets, assigns work, coordinates, and reports; the Chief does not read full logs or write code personally unless necessary.
+- Developer, fixer, reviewer, and researcher responsibilities are kept separate; multiple roles of the same kind are allowed and run in parallel according to task type and conflicts.
+- One requirement per ticket, and one primary owner per ticket. Executing a task uses an isolated worktree; code that needs to be committed goes through a feature branch and review.
+- The developer hands off directly to the reviewer, and review results are synced to the owner; the same author is responsible for rework. Ordinary and high-risk work use different review tiers, and real checks must be recorded.
+- Proactively pick workable items from the backlog within the authorized scope; when a person or an external dependency is involved, register a wait, and do not count holding a ticket as actual execution.
+- Roles hand off point to point; group chats are not opened by default. **No new scheduled polling tasks are added**; periodic mechanisms in the general design must be chosen separately by the deployer and do not override the current charter.
+- Actions such as direct merging, production deployment, and expanding permissions are prohibited unless the real operator of the current deployment explicitly authorizes them. Historical authorizations apply only to their original scope.
+- Role scaling within the configured authorization is allowed; temporarily expanding sessions is separate from creating long-lived Bots, and workflow changes are recorded, verified, and reversible.
+- Some historical addenda contain overlapping old and new rules, for example the migration numbering policy; at installation, check the original context and the latest valid decision, and do not blindly load them in paragraph order.
 
-可选角色：Chief、开发（1–N）、修复、审查、调研。每个角色应通过 [委派卡](../../.agents/skills/roundtable-work/templates/assignment.md) 获得任务，不依靠名字推断权限。
+Optional roles: Chief, developer (1–N), fixer, reviewer, researcher. Each role should receive its tasks through an [assignment card](../../.agents/skills/roundtable-work/templates/assignment.md) and not infer permissions from its name.

@@ -1,29 +1,29 @@
-# 执行模型、权限、可靠性
+# Execution Model, Permissions, and Reliability
 
-## 如何调用下级执行模型
+## How to Invoke Subordinate Execution Models
 
-角色并不等于模型。Chief 根据任务类型、风险、质量要求、可用性、费用、延迟和工具能力选择**执行器 + 模型档 + 权限 + 工作区**。例如设计可用强推理档；普通实现用经济档；高风险独立复核固定指定档。模型名称和供应商由本地配置并通过实际探测确定；不能把样例中的模型名视为可用承诺。
+A role is not equivalent to a model. The Chief chooses **runner + model tier + permissions + workspace** according to task type, risk, quality requirements, availability, cost, latency, and tool capability. For example, use a strong-reasoning tier for design; an economy tier for ordinary implementation; and a fixed, designated tier for high-risk independent re-checks. Model names and vendors are configured locally and determined through actual probing; model names in examples must not be taken as a promise of availability.
 
-适配器最小接口（设计，非现成 API）：`probe`、`start(assignment, profile, workspace)`、`observe(attempt_id)`、`send_input`、`cancel`、`recover`。启动参数使用参数数组，任务从受控文件或 stdin 输入；不直接拼接不可信 shell。记录 CLI 与模型版本、provider、配置哈希、工作目录、启动/结束时间、状态、退出码、资源用量（可得时）、原始日志路径及结论。敏感数据按权限脱敏或不存。
+Minimal adapter interface (design, not an existing API): `probe`, `start(assignment, profile, workspace)`, `observe(attempt_id)`, `send_input`, `cancel`, `recover`. Launch arguments use an argument array, and the task is supplied from a controlled file or stdin; untrusted input is not concatenated directly into a shell. Record the CLI and model versions, provider, configuration hash, working directory, start/end times, status, exit code, resource usage (when available), raw log path, and the conclusion. Sensitive data is redacted or not stored, according to permissions.
 
 ```text
-Chief → 创建 Assignment → 角色领单 → 选择可用路由
-      → 独立工作区执行 pi/Codex → 进程完成事件
-      → 读取结构化结论与验证证据 → 送审/返修 → 交付
+Chief → create Assignment → role claims the ticket → choose an available route
+      → execute pi/Codex in an isolated workspace → process-completion event
+      → read structured conclusion and verification evidence → submit for review/rework → deliver
 ```
 
-最小结论包括状态（完成/失败/阻塞/部分完成/结果未知）、要点、改动、产物、检查命令及退出状态、未完成事项、下一步。完整日志保留可查，Chief 默认读摘要；执行器无法提供结构化结论时标不完整。系统应由实际进程退出和工具结果产生证据，不能只信模型报告。
+The minimal conclusion includes status (`完成` (complete) / `失败` (failed) / `阻塞` (blocked) / `部分完成` (partially complete) / `结果未知` (result unknown)), key points, changes, artifacts, check commands and their exit statuses, unfinished items, and next steps. Full logs remain available for inspection, and the Chief reads the summary by default; when a runner cannot provide a structured conclusion, mark it incomplete. The system should produce evidence from actual process exits and tool results, and must not trust the model's report alone.
 
-回退只对预定义的提供商不可用或可恢复故障触发，记录原模型、错误、替代模型与尝试 ID；新尝试接续之前先核对外部副作用。高风险审查若要求指定模型，不能静默降级。输出格式、成本和模型能力因 CLI/版本而异，setup 必须实际探测。
+Fallback is triggered only for predefined provider unavailability or recoverable faults, recording the original model, the error, the substitute model, and the attempt ID; before a new attempt picks up, first verify external side effects. If a high-risk review requires a designated model, it must not be silently downgraded. Output format, cost, and model capability vary by CLI/version, so setup must probe them in practice.
 
-## 权限与隔离
+## Permissions and Isolation
 
-请求者身份与授权规则决定工单 Mandate；Mandate 包含允许的仓库、工作区、动作、预算及有效期，权限只能收窄，不能由提示词、issue 或记忆扩大。默认不开生产部署、合并主分支或外部消息；实际长期授权需部署者配置，撤销后阻止新动作。检查写操作前的有效授权及目标版本，执行时使用独立身份和最小权限凭据。
+The requester's identity and the authorization rules determine the ticket's Mandate; a Mandate includes the allowed repositories, workspaces, actions, budget, and validity period, and permissions can only be narrowed, never expanded by prompts, issues, or memory. By default, production deployment, merging into the main branch, and external messages are not enabled; actual long-term authorization must be configured by the deployer, and after revocation new actions are blocked. Before write operations, check the effective authorization and the target version, and at execution use an independent identity and least-privilege credentials.
 
-Git worktree 便于隔离并行改动，**不是安全沙箱**；命令黑名单、环境变量清理也不能保证禁止访问生产。针对风险选择受限用户、文件/网络隔离、凭据分离、分支保护及审计，能力不足时禁止相关自动操作或人工处理。不要把真实主机、内部路径、个人身份、密钥、日志和私有业务数据放进可分享模板。
+A Git worktree makes it convenient to isolate parallel changes, but **it is not a security sandbox**; command blacklists and environment-variable scrubbing also cannot guarantee that access to production is prevented. Choose restricted users, file/network isolation, credential separation, branch protection, and auditing according to the risk; when capability is insufficient, forbid the related automatic operations or handle them manually. Do not put real hosts, internal paths, personal identities, secrets, logs, or private business data into templates that can be shared.
 
-## 中断与幂等
+## Interruption and Idempotency
 
-事件、状态更新及副作用意图应原子落盘；发送使用 outbox + 幂等键与回执。服务或宿主重启时，先恢复订阅和未处理消息，再查进程、工单、远端 PR/评论等实际状态。不可证明结果的写操作标 `unknown`，对账后再重试或上报；外部系统不提供幂等或查询能力时，禁止声称 exactly-once。目标修订、取消或角色回收应通过版本/租约围栏拒绝旧尝试继续写入；无法强制终止时禁用受影响写操作并报告。
+Events, state updates, and side-effect intents should be persisted atomically; sending uses an outbox plus idempotency keys and receipts. When a service or host restarts, first restore subscriptions and unprocessed messages, then check the actual state of processes, tickets, remote PRs/comments, and so on. Mark write operations whose result cannot be proven `unknown`, and retry or escalate only after reconciliation; when an external system provides no idempotency or query capability, do not claim exactly-once. Goal revision, cancellation, or role reclaiming should reject further writes from old attempts through version/lease fencing; when forced termination is impossible, disable the affected write operations and report.
 
-并行由实际进程数、CPU、内存、磁盘、inode、工作区冲突与任务依赖共同限制；占用工单不等于执行进程。审查和返修优先，具体阈值由部署环境配置。可清理的工作树须确认已结束且无未提交工作；清理、关闭、删除及合并的权限各自明确。
+Parallelism is limited jointly by the actual number of processes, CPU, memory, disk, inodes, workspace conflicts, and task dependencies; occupying a ticket is not the same as an executing process. Review and rework take priority, and concrete thresholds are configured by the deployment environment. A worktree can be cleaned up only after confirming it has finished and has no uncommitted work; the permissions to clean up, close, delete, and merge are each made explicit.
