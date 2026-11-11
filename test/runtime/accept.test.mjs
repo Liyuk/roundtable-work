@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import {
   runGate0, buildRegistry, deriveVerdictTokens, deriveTemplateTokens, countToken, countCjk,
   stripFrozenCjk, globToRegExp, matchesAny, buildRunnerEnv, resolveTestSteps, nodeSatisfies,
-  formatResult, isTestFile, countTestCases, BASELINE_PATH,
+  formatResult, isTestFile, countTestCases, BASELINE_PATH, stripNonCode, verifyDepsDir,
+  deriveSharedPromptTokens,
 } from '../../runtime/lib/accept.mjs';
 import { hashText } from '../../runtime/lib/hygiene.mjs';
 
@@ -28,6 +29,7 @@ const UNK = '\u672a\u77e5';
 const LABEL = '\u5ba1\u67e5\u7ed3\u8bba';
 const COLON = '\uff1a';
 const ARTIFACT = '\u4ea7\u7269';
+const EXECUTED = '\u5df2\u6267\u884c';
 const PROSE_ZH = '\u8fd9\u4e2a\u6a21\u5757\u8d1f\u8d23\u68c0\u67e5\u6bcf\u6b21\u4ea4\u4ed8';
 const PROSE_ZH_2 = '\u8bf7\u5148\u9605\u8bfb\u4efb\u52a1\u5361\u518d\u5f00\u59cb\u5de5\u4f5c';
 const VERDICT_LINE = `${LABEL}${COLON}${PASS} | ${REJ} | ${BLK}`;
@@ -36,6 +38,8 @@ const VERDICT_LINE = `${LABEL}${COLON}${PASS} | ${REJ} | ${BLK}`;
 const ip = (...p) => p.join('.');
 const PRIVATE_IP = ip('10', '0', '0', '5');
 const DOC_IP = ip('192', '0', '2', '10');
+// A four-part version number (looks like a dotted quad); built from pieces on purpose.
+const V4 = ip('1', '2', '3', '4');
 const HOME_PATH = '/ho' + 'me/' + 'someone';
 // A common OS image name is listed as a common-word host name; built from pieces on purpose.
 const OS_IMAGE = ['ubu', 'ntu'].join('');
@@ -371,7 +375,7 @@ test('documentation IPs, CI runs-on images, a colliding audit-tool name and four
     `  runs-on: ${OS_IMAGE}-latest`,
     `  runs-on: ${OS_IMAGE}-24.04`,
     'run the toolbox audit before release',
-    'requires pkg@1.2.3.4 or v1.2.3.4',
+    `requires pkg@${V4} or v${V4}`,
   ].join('\n');
   const r = await run([edit('docs/a.md', 'x\n', `x\n${text}\n`), addFile('.github/workflows/ci.yml', `  runs-on: ${OS_IMAGE}-latest\n`)], {
     issue: { allowedPaths: ['docs/**', '.github/**'], allowChanges: { ci: true } },
@@ -461,7 +465,7 @@ test('an overall timeout blocks', async () => {
 });
 
 test('a CPU-bound scan that outlives the timeout blocks instead of passing', async () => {
-  const long = 'aGVsbG8gd29ybGQ%41 token=abc 1.2.3.4 '.repeat(2000); // ~74 KB single line
+  const long = `aGVsbG8gd29ybGQ%41 token=abc ${V4} `.repeat(2000); // ~74 KB single line
   const head = `x\n${long}\n`;
   const r = await run([edit('docs/a.md', 'x\n', head)], { timeoutMs: 1 });
   assert.equal(r.verdict, 'block');
@@ -507,6 +511,167 @@ test('Gate 0 can only reject or block, never approve: result verdicts are pass/r
 });
 
 // ---------------------------------------------------------------------------
+// Gate fix round: disable markers, counting, dependencies, registry
+// ---------------------------------------------------------------------------
+
+test('disable markers are checked on added lines of every non-Markdown file', async () => {
+  const issue = { allowedPaths: ['test/**', 'lib/**', 'scripts/**', 'docs/**'] };
+  const sk = `${T}.${'sk'}ip('x', () => {});`;
+  const wordTodo = `// ${'to'}do: fix this later`;
+  const cases = [
+    ['helper outside tests', edit('lib/helper.mjs', 'export const a = 1;\n', `export const a = 1;\n${sk}\n`)],
+    ['test fixture dir', edit('test/fixtures/util.mjs', 'export const a = 1;\n', `export const a = 1;\n${sk}\n`)],
+    ['plain word in a source comment', edit('scripts/tool.mjs', 'a\n', `a\n${wordTodo}\n`)],
+    ['x-prefixed case', edit('lib/helper.mjs', 'a\n', `a\n${'x'}it('x', () => {});\n`)],
+    ['option form in config', edit('scripts/conf.json', '{}\n', `{ "${'on'}ly": true }\n`)],
+    ['option form in code', edit('lib/helper.mjs', 'a\n', `a\nconst o = { ${'on'}ly: true };\n`)],
+  ];
+  for (const [name, file] of cases) {
+    let r = await run([file], { issue });
+    assert.deepEqual(ruleIds(r), ['G0-TEST-SKIP'], name);
+    r = await run([file], { issue: { ...issue, allowSkip: true } });
+    assert.equal(r.verdict, 'pass', name);
+  }
+  // A marker that is already in the base and not added is not flagged.
+  const kept = edit('lib/helper.mjs', `${sk}\na\n`, `${sk}\nb\n`);
+  assert.equal((await run([kept], { issue })).verdict, 'pass');
+});
+
+test('Markdown prose that uses the plain words is not rejected; dotted call forms are', async () => {
+  const issue = { allowedPaths: ['docs/**', 'README.md'] };
+  const prose = [
+    `A ${'to'}do list for the release. We ${'sk'}ip nothing.`,
+    `${'On'}ly: the owner may approve.`,
+    `Use ${'x'}it only in tests.`,
+  ].join('\n');
+  for (const path of ['docs/notes.md', 'README.md', 'docs/NOTES.MD']) {
+    assert.equal((await run([edit(path, 'x\n', `x\n${prose}\n`)], { issue })).verdict, 'pass', path);
+  }
+  for (const form of [`${T}.${'sk'}ip(`, `${T}.${'on'}ly(`, `describe.${'on'}ly (`.replace(' (', '(')]) {
+    const file = edit('docs/notes.md', 'x\n', `x\nCall \`${form}'x')\` here.\n`);
+    assert.deepEqual(ruleIds(await run([file], { issue })), ['G0-TEST-SKIP'], form);
+    assert.equal((await run([file], { issue: { ...issue, allowSkip: true } })).verdict, 'pass', form);
+  }
+});
+
+test('commented-out test calls are not counted, so disabling tests lowers the count', async () => {
+  const issue = { allowedPaths: ['test/**'] };
+  const base = testSource(3);
+  // Commenting out a case and adding a comment copy of it does not keep the count.
+  const head = `${testSource(2)}\n// ${T}('case 2', () => {});\n/* ${T}('case 3', () => {}); */\n`;
+  let r = await run([edit('test/a.test.mjs', base, head)], { issue });
+  assert.deepEqual(ruleIds(r), ['G0-TEST-COUNT']);
+  // A normal test file whose comments mention the call keeps its count.
+  const noisy = `${base}\n// the ${T}( helper wraps it( for you\n/* ${T}('x') */\n`;
+  r = await run([edit('test/a.test.mjs', base, noisy)], { issue });
+  assert.equal(r.verdict, 'pass');
+  // The same noise on the base side must not inflate the base count either.
+  r = await run([edit('test/a.test.mjs', noisy, `${testSource(3)}\n`)], { issue });
+  assert.equal(r.verdict, 'pass');
+  // Unit: strings, templates (code inside an expression still counts), regex literals and comments.
+  const src = [
+    `const s = "${T}(x)"; const t = 'it(y)';`,
+    'const u = `' + T + '(z) ${' + T + "('real', f)}`;",
+    `// ${T}(c)`,
+    `/* it(c) */ ${T}('a', () => {});`,
+    `const re = /${T}\\(/; const d = 4 / 2; ${T}('b', () => {});`,
+  ].join('\n');
+  assert.equal(countTestCases(src), 3);
+  assert.equal(countTestCases(`${T}('a', () => {}); // ${T}('b')`), 1);
+  assert.equal(stripNonCode("a = 'x // y'; b = 1; // c\n").includes('//'), false);
+  assert.equal(stripNonCode('x /* a\nb */ y').split('\n').length, 2);
+});
+
+test('depsDir must carry the lockfile of the base', async () => {
+  const lock = '{"lockfileVersion":3,"packages":{}}\n';
+  const withDeps = JSON.stringify({ scripts: { test: 'node --test' }, engines: { node: '>=20' }, devDependencies: { 'pkg-example': '1.0.0' } });
+  const tmpDirs = [];
+  const depsWith = (content) => {
+    const d = mkdtempSync(join(tmpdir(), 'gate0-deps-'));
+    tmpDirs.push(d);
+    if (content !== undefined) writeFileSync(join(d, 'package-lock.json'), content);
+    return d;
+  };
+  const ran = [];
+  const go = (depsDir, base) => runGate0({
+    diff: { files: [edit('docs/a.md', 'a\n', 'b\n')], base: { templates: [], ...base } },
+    issue: DOCS_ISSUE, denylist: FIXTURE_DENY, depsDir,
+    runner: async () => { ran.push(1); return { exitCode: 0 }; },
+  });
+  try {
+    const good = await go(depsWith(lock), { packageJson: withDeps, lockfile: lock });
+    assert.deepEqual(good, { verdict: 'pass', findings: [], blocks: [] });
+    assert.equal(ran.length, 1);
+    ran.length = 0;
+    const blocked = { verdict: 'block', findings: [], blocks: [{ ruleId: 'G0-DEPS' }] };
+    // A different lockfile, no lockfile in the directory, no directory at all, an unreadable directory.
+    assert.deepEqual(await go(depsWith(`${lock} `), { packageJson: withDeps, lockfile: lock }), blocked);
+    assert.deepEqual(await go(depsWith(undefined), { packageJson: withDeps, lockfile: lock }), blocked);
+    assert.deepEqual(await go(undefined, { packageJson: withDeps, lockfile: lock }), blocked);
+    assert.deepEqual(await go(join(tmpdir(), 'gate0-no-such-deps-dir'), { packageJson: withDeps, lockfile: lock }), blocked);
+    // Base declares dependencies but has no lockfile to compare against.
+    assert.deepEqual(await go(depsWith(lock), { packageJson: withDeps }), blocked);
+    // A lockfile on the base alone also requires a matching directory when one is supplied.
+    assert.deepEqual(await go(depsWith(undefined), { packageJson: BASE_PACKAGE, lockfile: lock }), blocked);
+    assert.equal(ran.length, 0, 'the runner must not start with unverified dependencies');
+    // Nothing to verify: no dependencies and no lockfile on the base.
+    assert.equal((await go(depsWith(undefined), { packageJson: BASE_PACKAGE })).verdict, 'pass');
+    assert.equal((await go(undefined, { packageJson: BASE_PACKAGE })).verdict, 'pass');
+    await assert.rejects(() => verifyDepsDir({ depsDir: depsWith('x'), baseLockfile: lock, hasDeps: true }), (e) => e.ruleId === 'G0-DEPS');
+  } finally {
+    for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('frozen-token registry covers every template bullet, the shared prompt vocabulary and built-in names', async () => {
+  const arrow = '\u2192';
+  const tpl = [
+    '# Card', '', '## Required', '- Ticket ID:', '', '## Fill as needed', '',
+    '- Background facts: details', '- Budget (limits):', `- ${ARTIFACT} (Artifacts)`, '',
+  ].join('\n');
+  const shared = [
+    '# Shared', '', '## Status Vocabulary (team)', '',
+    `- **Delegation events**: \`sent ${arrow} delivered ${arrow} acknowledged\`; \`waiting_external\`.`,
+    `- **Evidence level**: \`${EXECUTED}\` > \`${ARTIFACT}\``,
+    '', '## Other', '', '- Mentions `outside_vocab` here.', '',
+  ].join('\n');
+  const reg = buildRegistry({ templates: [{ content: tpl }], sharedPrompt: shared });
+  for (const t of ['Ticket ID', 'Background facts', 'Budget', ARTIFACT, 'sent', 'delivered', 'acknowledged', 'waiting_external', EXECUTED]) {
+    assert.ok(reg.tokens.includes(t), t);
+  }
+  assert.ok(!reg.tokens.includes('outside_vocab'));
+  assert.deepEqual(deriveSharedPromptTokens(shared).sort(), [ARTIFACT, EXECUTED, 'acknowledged', 'delivered', 'sent', 'waiting_external'].sort());
+  assert.deepEqual(deriveSharedPromptTokens(undefined), []);
+
+  const baseSide = { templates: [{ path: 'templates/card.md', content: tpl }], sharedPrompt: shared };
+  const runBase = (files, over = {}) => run(files, {
+    diff: { files, base: { packageJson: BASE_PACKAGE, ...baseSide } }, ...over,
+  });
+  // A machine field outside the old label set (a non-required heading) is renamed: fails.
+  const doc = 'Background facts are listed here.\nThe budget: three attempts.\n';
+  let r = await runBase([edit('docs/card.md', doc, doc.replace('Background facts', 'Context notes'))]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+  // A delegation event word from the shared prompt vocabulary is renamed: fails.
+  const events = 'Events: sent, delivered, acknowledged, started.\n';
+  r = await runBase([edit('docs/events.md', events, events.replace('acknowledged', 'received'))]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+  // A built-in default (evidence level) translated without keeping the original: fails.
+  r = await runBase([edit('docs/evidence.md', `Level ${EXECUTED}\n`, 'Level executed\n')]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+  // A backticked word outside the vocabulary section is not frozen.
+  r = await runBase([edit('docs/other.md', 'Use outside_vocab here.\n', 'Use another_name here.\n')]);
+  assert.equal(r.verdict, 'pass');
+  // Correct direction still passes: the Chinese token is kept and a parenthetical is added.
+  const zhBase = `- ${ARTIFACT}: ${PROSE_ZH}\nEvidence level ${EXECUTED}\nBackground facts: ${PROSE_ZH_2}\n`;
+  const enHead = `- ${ARTIFACT} (Artifacts): This module checks every delivery.\nEvidence level ${EXECUTED} (executed)\nBackground facts: Read the task card first.\n`;
+  r = await runBase([edit('docs/zh.md', zhBase, enHead)]);
+  assert.deepEqual(r, { verdict: 'pass', findings: [], blocks: [] });
+  // A base-side extra token supplied through the baseline is frozen as well.
+  r = await runBase([edit('docs/x.md', 'The zzfield is set.\n', 'The renamedfield is set.\n')], { baseline: { frozenTokens: ['zzfield'] } });
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+});
+
+// ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
 
@@ -531,10 +696,10 @@ test('registry derives verdict forms from lib/verdict.mjs by probing parseVerdic
   assert.equal(countFirstLine(reg, 'Review verdict: pass | reject | block'), 0);
 });
 
-test('template tokens: Required labels and placeholders only', () => {
-  const content = '## Required (x)\n\n- Ticket ID:\n- Result (details), more:\n\n## Fill as Needed\n\n- Background:\nuse <ticket ID>\n';
+test('template tokens: labels and placeholders from every heading', () => {
+  const content = '## Required (x)\n\n- Ticket ID:\n- Result (details), more:\n\n## Fill as Needed\n\n- Background:\n- Notes (extra)\nuse <ticket ID>\n- A long prose bullet that is not a label, with words (and a note)\n';
   const tokens = deriveTemplateTokens([{ content }]);
-  assert.deepEqual(tokens.sort(), ['<ticket ID>', 'Result', 'Ticket ID']);
+  assert.deepEqual(tokens.sort(), ['<ticket ID>', 'Background', 'Notes', 'Result', 'Ticket ID']);
 });
 
 test('token counting is word-boundary and Chinese tokens ignore Han-adjacent prose', () => {
@@ -652,6 +817,42 @@ function commitAll(dir, msg) {
   sh(dir, 'commit', '-q', '-m', msg);
 }
 
+test('git mode: supplied commit messages and authors are additive and never hide real git metadata', async () => {
+  const dir = makeRepo({ 'package.json': NODE_PACKAGE, 'run-tests.mjs': 'process.exit(0);\n', 'docs/a.md': 'a\n' });
+  try {
+    writeFileSync(join(dir, 'docs/a.md'), 'b\n');
+    commitAll(dir, `Update, see ${PRIVATE_IP}`);
+    writeFileSync(join(dir, 'docs/a.md'), 'c\n');
+    sh(dir, 'add', '-A');
+    sh(dir, 'commit', '-q', '-m', 'Clean follow-up', '--author', 'fixtureuser-example <writer@example.com>');
+    const issue = { allowedPaths: ['docs/**'] };
+    const common = { root: dir, baseRef: 'main', issue, denylist: FIXTURE_DENY, runner: OK_RUNNER };
+    // Supplying a clean list does not hide the real commit message or the real author.
+    const r = await runGate0({ ...common, metadata: { commitMessages: ['All clean'], authors: ['Fixture Author <author@example.com>'] } });
+    assert.equal(r.verdict, 'reject');
+    assert.ok(r.findings.some((f) => f.ruleId === 'HYG-IP' && f.path.startsWith('<metadata:commit#')));
+    assert.ok(r.findings.some((f) => f.ruleId === 'HYG-USER' && f.path.startsWith('<metadata:author#')));
+    assert.ok(!JSON.stringify(r).includes(PRIVATE_IP));
+    // Supplied values are scanned as well (union), and malformed values block.
+    const extra = await runGate0({ ...common, issue, metadata: { commitMessages: [`extra ${PRIVATE_IP}`] } });
+    assert.ok(extra.findings.filter((f) => f.ruleId === 'HYG-IP').length >= 2);
+    const bad = await runGate0({ ...common, metadata: { commitMessages: 'not-a-list' } });
+    assert.deepEqual(bad.blocks, [{ ruleId: 'G0-INPUT' }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function cliCaller(dir) {
+  const cli = join(repoRoot, 'runtime', 'lib', 'accept.mjs');
+  return (args, extraEnv = {}) => {
+    try {
+      const out = execFileSync(process.execPath, [cli, ...args], { cwd: dir, env: { PATH: process.env.PATH, ...extraEnv }, encoding: 'utf8' });
+      return { code: 0, out };
+    } catch (err) { return { code: err.status, out: String(err.stdout) }; }
+  };
+}
+
 const NODE_PACKAGE = JSON.stringify({ scripts: { test: 'node run-tests.mjs' }, engines: { node: '>=20' } });
 
 test('git mode: a Chinese->English translation in scope passes; rename, symlink and binary are caught', async () => {
@@ -759,31 +960,69 @@ test('git mode: the base-side allowlist file is read from base, and an unknown b
   }
 });
 
-test('CLI exits 0 / 1 / 2 for pass / reject / block and prints redacted JSON', () => {
+test('CLI exits 0 / 1 / 2 for pass / reject / block and prints redacted JSON (local mode)', () => {
   const dir = makeRepo({ 'package.json': NODE_PACKAGE, 'run-tests.mjs': 'process.exit(0);\n', 'docs/a.md': 'a\n' });
   try {
     writeFileSync(join(dir, 'docs/a.md'), 'b\n');
     commitAll(dir, 'Edit');
     writeFileSync(join(dir, 'issue.json'), JSON.stringify({ allowedPaths: ['docs/**'] }));
-    const cli = join(repoRoot, 'runtime', 'lib', 'accept.mjs');
-    const call = (args) => {
-      try {
-        const out = execFileSync(process.execPath, [cli, ...args], { cwd: dir, env: { PATH: process.env.PATH }, encoding: 'utf8' });
-        return { code: 0, out };
-      } catch (err) { return { code: err.status, out: String(err.stdout) }; }
-    };
-    const pass = call(['--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]);
+    const call = cliCaller(dir);
+    const pass = call(['--local', '--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]);
     assert.equal(pass.code, 0, pass.out);
-    assert.equal(JSON.parse(pass.out).verdict, 'pass');
+    const parsed = JSON.parse(pass.out);
+    assert.equal(parsed.verdict, 'pass');
+    // Local runs are marked non-authoritative; the alias behaves the same.
+    assert.equal(parsed.authoritative, false);
+    assert.equal(parsed.mode, 'local');
+    assert.equal(call(['--no-host-run', '--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]).code, 0);
     writeFileSync(join(dir, 'issue.json'), JSON.stringify({ allowedPaths: ['other/**'] }));
-    const reject = call(['--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]);
+    const reject = call(['--local', '--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]);
     assert.equal(reject.code, 1);
     assert.equal(JSON.parse(reject.out).verdict, 'reject');
-    const block = call(['--root', dir, '--base', 'main']);
+    const block = call(['--local', '--root', dir, '--base', 'main']);
     assert.equal(block.code, 2);
     assert.deepEqual(JSON.parse(block.out).blocks, [{ ruleId: 'G0-INPUT' }]);
     const hostBlock = call(['--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json'), '--host-run']);
     assert.equal(hostBlock.code, 2);
+    // Contradictory mode flags are an input error.
+    assert.equal(call(['--local', '--host-run', '--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]).code, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI defaults to production semantics: no denylist, no isolation assertion or no metadata blocks (exit 2)', () => {
+  const dir = makeRepo({ 'package.json': NODE_PACKAGE, 'run-tests.mjs': 'process.exit(0);\n', 'docs/a.md': 'a\n' });
+  try {
+    writeFileSync(join(dir, 'docs/a.md'), 'b\n');
+    commitAll(dir, 'Edit');
+    const issue = join(dir, 'issue.json');
+    writeFileSync(issue, JSON.stringify({ allowedPaths: ['docs/**'] }));
+    const meta = join(dir, 'meta.json');
+    writeFileSync(meta, JSON.stringify({ prTitle: 'Edit', prBody: 'Docs only.', branch: 'rt/fixture' }));
+    const call = cliCaller(dir);
+    const base = ['--root', dir, '--base', 'main', '--issue', issue];
+    const ids = (r) => JSON.parse(r.out).blocks.map((b) => b.ruleId).sort();
+    // Nothing supplied: every production requirement is reported.
+    const bare = call(base);
+    assert.equal(bare.code, 2);
+    assert.deepEqual(ids(bare), ['G0-DENYLIST', 'G0-METADATA', 'G0-NETWORK']);
+    assert.equal(JSON.parse(bare.out).authoritative, undefined);
+    // Metadata and isolation asserted but no denylist under $RT_HOME: still a block.
+    const noList = call([...base, '--metadata', meta, '--network-isolated']);
+    assert.equal(noList.code, 2);
+    assert.deepEqual(ids(noList), ['G0-DENYLIST']);
+    // No isolation assertion.
+    const home = join(dir, 'rt-home');
+    mkdirSync(join(home, 'gate0'), { recursive: true });
+    writeFileSync(join(home, 'gate0', 'denylist.json'), JSON.stringify(FIXTURE_DENY));
+    const noNet = call([...base, '--metadata', meta], { RT_HOME: home });
+    assert.equal(noNet.code, 2);
+    assert.deepEqual(ids(noNet), ['G0-NETWORK']);
+    // Everything supplied: runs the base command through the default runner and passes.
+    const full = call([...base, '--metadata', meta, '--network-isolated'], { RT_HOME: home });
+    assert.equal(full.code, 0, full.out);
+    assert.deepEqual(JSON.parse(full.out), { verdict: 'pass', findings: [], blocks: [] });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

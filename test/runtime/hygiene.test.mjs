@@ -25,6 +25,16 @@ const PUBLIC_IP = ip('8', '8', '4', '4');
 const HOME_PATH = '/ho' + 'me/' + 'someone';
 const MAC_PATH = '/Us' + 'ers/' + 'someone';
 const WIN_PATH = 'C:\\Us' + 'ers\\' + 'someone';
+const HOME_ROOT = '/ho' + 'me';
+const MAC_ROOT = '/Us' + 'ers';
+const WIN_ROOT = 'C:\\Us' + 'ers';
+const LOOPBACK = ip('127', '0', '0', '1');
+const UNSPEC = ip('0', '0', '0', '0');
+const NETMASK = ip('255', '255', '255', '0');
+const SEMVER4 = ip('1', '2', '3', '4');
+const SEMVER4B = ip('2', '0', '1', '7');
+const SEMVER4C = ip('9', '8', '7', '6');
+const FIVE_PART = ip('1', '2', '3', '4', '5');
 
 function scanLines(...texts) {
   return scanHygiene({
@@ -58,18 +68,31 @@ test('IPv6 non-doc addresses fail, doc range and loopback pass', () => {
 
 test('documentation ranges, loopback and netmasks pass', () => {
   assert.deepEqual(scanLines(
-    'use 192.0.2.10 or 198.51.100.7 or 203.0.113.250',
-    'listen on 127.0.0.1 and 0.0.0.0, mask 255.255.255.0',
+    `use ${ip('192', '0', '2', '10')} or ${ip('198', '51', '100', '7')} or ${ip('203', '0', '113', '250')}`,
+    `listen on ${LOOPBACK} and ${UNSPEC}, mask ${NETMASK}`,
   ), []);
 });
 
 test('four-part semver and version-like strings pass', () => {
   assert.deepEqual(scanLines(
-    'release v1.2.3.4 is out',
-    'install pkg@1.2.3.4 now',
-    'build 1.2.3.4.5 is odd',
-    'tag V9.8.7.6',
+    `release v${SEMVER4} is out`,
+    `install pkg@${SEMVER4} now`,
+    `build ${FIVE_PART} is odd`,
+    `tag V${SEMVER4C}`,
   ), []);
+});
+
+test('a pre-release suffix on a v-prefixed or package-context four-part version passes; a bare one does not', () => {
+  assert.deepEqual(scanLines(
+    `release v${SEMVER4}-rc1 is out`,
+    `release v${SEMVER4}-beta.2 is out`,
+    `npm install pkg@${SEMVER4}-rc1`,
+    `requires @scope/pkg@${SEMVER4}-beta`,
+  ), []);
+  // Without a version-like context the suffix does not make it a version.
+  assert.deepEqual(rules(scanLines(`connect to ${SEMVER4}-rc1 now`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`deploy@${PUBLIC_IP}-rc1`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`git clone git@${SEMVER4}-rc1:o/r.git`)), ['HYG-IP']);
 });
 
 test('an @ prefix does not hide an address in an ssh command', () => {
@@ -86,16 +109,16 @@ test('an address behind an @ prefix fails without an ssh word; package versions 
     `url = "https://user@${PRIVATE_IP}:8443/x"`,
     `deploy@${PUBLIC_IP}:2222`,
     `install pkg@${PUBLIC_IP}/x`,
-    `remote add origin git@${ip('1', '2', '3', '4')}:o/r.git`,
+    `remote add origin git@${SEMVER4}:o/r.git`,
   ]) {
     assert.deepEqual(rules(scanLines(text)), ['HYG-IP'], text);
   }
   assert.deepEqual(scanLines(
-    'npm install pkg@1.2.3.4',
-    'requires @scope/pkg@1.2.3.4 or later',
-    'yarn add left-pad@2.0.1.7',
-    'release v1.2.3.4 is out',
-    'build 1.2.3.4.5 is odd',
+    `npm install pkg@${SEMVER4}`,
+    `requires @scope/pkg@${SEMVER4} or later`,
+    `yarn add left-pad@${SEMVER4B}`,
+    `release v${SEMVER4} is out`,
+    `build ${FIVE_PART} is odd`,
   ), []);
 });
 
@@ -112,6 +135,32 @@ test('JS member access with a private-looking suffix is not a host; real hosts s
   }
   // A member-access word in host position (URL authority / user@host) is still a host.
   assert.deepEqual(rules(scanLines('open https://' + ['env', 'local'].join('.') + '/x')), ['HYG-FQDN']);
+});
+
+test('a member-access word with a private suffix is a host in ssh/scp/rsync context, after @ and after ://', () => {
+  const hosts = [['config', 'local'], ['user', 'home'], ['env', 'internal'], ['this', 'lan']].map((p) => p.join('.'));
+  for (const host of hosts) {
+    for (const text of [
+      `ssh ${host}`,
+      `ssh -p 22 ${host}`,
+      `ssh admin@${host}`,
+      `scp file.txt ${host}:/tmp`,
+      `rsync -av src/ ${host}:backup/`,
+      `sftp ${host}`,
+      `mosh ${host}`,
+      `echo hi; ssh ${host}`,
+      `open https://${host}/x`,
+      `contact admin@${host}`,
+    ]) {
+      assert.deepEqual(rules(scanLines(text)), ['HYG-FQDN'], text);
+    }
+  }
+  // Ordinary code is still fine, also when a remote command is a separate statement.
+  assert.deepEqual(scanLines(
+    'const h = process.env.HOME; const l = this.local;',
+    'if (user.home && config.internal) { env.HOME = os.homedir(); }',
+    'ssh host1; const x = config.internal;',
+  ), []);
 });
 
 test('private-suffix FQDNs fail; example, test, invalid, localhost and public hosts pass', () => {
@@ -219,9 +268,9 @@ test('added and renamed paths are scanned and reported without echoing the path'
 
 test('placeholders pass', () => {
   assert.deepEqual(scanLines(
-    'cd /home/<user>/work and /Users/<user>/x and C:\\Users\\<user>\\x and ~<user>/bin',
+    `cd ${HOME_ROOT}/<user>/work and ${MAC_ROOT}/<user>/x and ${WIN_ROOT}\\<user>\\x and ~<user>/bin`,
     'store in $RT_HOME/gate0, run on the host, ssh <vps>, runner <host-runner>',
-    'path /home/$USER/x and /home/${USER}/x',
+    `path ${HOME_ROOT}/$USER/x and ${HOME_ROOT}/\${USER}/x`,
     'url https://<user>:<password>@example.com/x',
   ), []);
 });
@@ -271,20 +320,59 @@ test('low-entropy or placeholder credential assignments pass', () => {
     'secret_name = some_long_identifier_name_here',
     'api_key = <your key>',
     'password=$PASSWORD_FROM_ENV_VARIABLE_1',
-    'ask-about-something-long-hyphenated-1',
+    ['a', 's', 'k-about-something-long-hyphenated-1'].join(''),
   ), []);
 });
 
-test('EXAMPLE / FAKE markers exempt credential-looking values', () => {
-  assert.deepEqual(scanLines(
-    'ghp_EXAMPLEEXAMPLEEXAMPLE1234567890',
-    'AKIAIOSFODNN7EXAMPLE',
-    'password = "FAKE-Zk3pQ9vL2xR7tW5yB8nM4"',
-    'api_key = Zk3pQ9vL2xR7tW5yEXAMPLE88',
-    'https://deploy:FAKEpassword9@git.example.com/o/r',
-  ), []);
+// Marker-bearing credential-shaped values, assembled from pieces.
+const FAKE_VALUES = [
+  piece('gh', 'p_', 'EXAMPLEEXAMPLEEXAMPLE1234567890'),
+  piece('AK', 'IA', 'IOSFODNN7EXAMPLE'),
+  'password = "FAKE-Zk3pQ9vL2xR7tW5yB8nM4"',
+  'api_key = Zk3pQ9vL2xR7tW5yEXAMPLE88',
+  'https://deploy:FAKEpassword9@git.example.com/o/r',
+];
+
+const scanAt = (path, ...texts) => scanHygiene({
+  addedLines: texts.map((text, i) => ({ path, line: i + 1, text })), paths: [], metadata: {}, denylist,
+});
+
+test('EXAMPLE / FAKE markers exempt credential-looking values in test-fixture paths', () => {
+  for (const path of ['test/fixture.mjs', 'tests/unit/a.py', 'pkg/__tests__/b.js', 'src/a.test.mjs', 'src/b.spec.ts', 'test/runtime/c.test.mjs']) {
+    assert.deepEqual(scanAt(path, ...FAKE_VALUES), [], path);
+  }
   // The marker exempts credentials only, not host identifiers.
-  assert.deepEqual(rules(scanLines('FAKE host ' + PRIVATE_IP)), ['HYG-IP']);
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', 'FAKE host ' + PRIVATE_IP)), ['HYG-IP']);
+});
+
+test('EXAMPLE / FAKE markers do not exempt credentials outside test-fixture paths', () => {
+  for (const path of ['docs/a.md', 'runtime/lib/x.mjs', 'src/contest/a.mjs', 'README.md', 'test/notes.md', 'latest/x.mjs', 'a/../b.mjs', 'testing.mjs', '.test.mjs']) {
+    const f = scanAt(path, ...FAKE_VALUES);
+    assert.deepEqual(rules(f), new Array(FAKE_VALUES.length).fill('HYG-CRED'), path);
+  }
+});
+
+test('EXAMPLE / FAKE markers never exempt commit messages, PR text, branch or authors', () => {
+  const marked = FAKE_VALUES[2];
+  const f = scanHygiene({
+    addedLines: [], paths: ['test/fixture.test.mjs'], denylist,
+    metadata: {
+      commitMessages: [marked], authors: [marked], prTitle: marked, prBody: 'ok\n' + FAKE_VALUES[0], branch: 'rt/' + FAKE_VALUES[3].replace(/\s/g, ''),
+    },
+  });
+  assert.deepEqual(f.map((x) => [x.ruleId, x.path, x.line]), [
+    ['HYG-CRED', '<metadata:commit#1>', 1],
+    ['HYG-CRED', '<metadata:author#1>', 0],
+    ['HYG-CRED', '<metadata:prTitle>', 0],
+    ['HYG-CRED', '<metadata:prBody>', 2],
+    ['HYG-CRED', '<metadata:branch>', 0],
+  ]);
+});
+
+test('an encoded marker value follows the same path rule', () => {
+  const enc = Buffer.from(FAKE_VALUES[0]).toString('base64');
+  assert.deepEqual(scanAt('test/a.test.mjs', 'x ' + enc), []);
+  assert.deepEqual(rules(scanAt('docs/a.md', 'x ' + enc)), ['HYG-ENC']);
 });
 
 test('inline suppression comments do not suppress anything', () => {

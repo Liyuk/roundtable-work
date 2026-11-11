@@ -28,10 +28,25 @@
 //   issue                { allowedPaths, allowChanges?, allowSkip? }
 //   metadata             { commitMessages, authors, prTitle, prBody, branch }
 //   denylist | hostRun   fixture denylist, or load from $RT_HOME (outside the repo)
+//                        The CLI defaults to host-run (production) semantics; see below.
 //   runner               injected async test runner (see `defaultRunner`)
 //   baseline             { cjkPathAllowlist, testFakes, frozenTokens, templates }
 //                        in git mode read from `runtime/gate0-baseline.json` at the base
 //   timeoutMs, runnerTimeoutMs, networkIsolated, depsDir, env
+//   (in diff mode)       base: { packageJson, lockfile, templates, sharedPrompt, verdictSource, baseline }
+//
+// Production semantics (host run). The CLI is a host run unless `--local` (alias
+// `--no-host-run`) is given: the denylist from $RT_HOME is required, the caller must
+// assert `--network-isolated`, and PR title / body / branch metadata must be supplied.
+// Any missing item is a block. `--local` is meant for local experiments and tests: it can
+// run the submitted tests with network access and without a denylist, so its output is
+// marked non-authoritative and must never be used as a gate result. The library entry
+// point `runGate0` keeps `hostRun` explicit (fixtures inject a denylist).
+//
+// Supplied metadata is additive: in git mode the real commit messages and the author and
+// committer identities of merge-base..HEAD are always collected from git, and the union of
+// the git-derived and the supplied values is scanned. Supplied values can never hide
+// anything that git reports.
 //
 // No-network enforcement: pure Node cannot sandbox the network. What this module
 // does: the test runner gets a scrubbed environment (no proxy, no registry, no
@@ -39,17 +54,34 @@
 // and a host run (`hostRun: true`) that does not assert `networkIsolated: true`
 // (the host runs Gate 0 inside a network-less namespace) is a BLOCK.
 //
+// Dependencies: when the base declares dependencies or has a lockfile, the host-supplied
+// `depsDir` must carry the lockfile it was installed from as `<depsDir>/package-lock.json`,
+// and its sha256 must equal the base lockfile blob. A missing or different copy is a block
+// (`G0-DEPS`).
+//
 // Known limitations (documented on purpose):
 //   - Frozen English tokens such as `done` or `review` are ordinary words; the
 //     check is a per-file word-boundary count that must not decrease, so
 //     rewording prose that contains them can be a false reject.
 //   - Frozen Chinese tokens are counted only when not adjacent to another Han
 //     character, so ordinary Chinese prose that merely contains them is ignored.
-//   - Test-case counting is a static textual count of test( / it( calls.
+//   - Test-case counting is static and heuristic: comments and string / template /
+//     regex literal contents are stripped, then test( / it( calls are counted. It does
+//     not execute code, so a call that is dead, conditional or generated is still counted
+//     once; the base test command run is the authority on what actually executes.
+//   - Disable markers (skip / only / pending forms) are matched on added lines of every
+//     non-Markdown file, so a prose use of one of those words in a comment can be a false
+//     reject (allowSkip in the issue overrides). In Markdown only the dotted call forms
+//     are matched.
+//   - The frozen-token registry is a union of base-side sources (verdict probes, template
+//     bullets and placeholders, backticked words in the shared prompt vocabulary section,
+//     `baseline.frozenTokens`, a built-in list). It is conservative, not a proof that
+//     every machine field is covered.
 
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -64,6 +96,7 @@ const execFileP = promisify(execFile);
 
 export const BASELINE_PATH = 'runtime/gate0-baseline.json';
 export const TEMPLATES_DIR = '.agents/skills/roundtable-work/templates/';
+export const SHARED_PROMPT_PATH = '.agents/skills/roundtable-work/prompts/shared.md';
 const DEFAULT_TIMEOUT_MS = 600000;
 const DEFAULT_RUNNER_TIMEOUT_MS = 300000;
 const MAX_BUFFER = 256 * 1024 * 1024;
@@ -78,6 +111,10 @@ const ZH = Object.freeze({
   FAILED: '\u5931\u8d25',
   UNKNOWN: '\u672a\u77e5',
   REVIEW_LABEL: '\u5ba1\u67e5\u7ed3\u8bba',
+  EXECUTED: '\u5df2\u6267\u884c',
+  READ: '\u5df2\u8bfb\u53d6',
+  SELF_REPORTED: '\u81ea\u8ff0',
+  NOT_RUN: '\u672a\u8fd0\u884c',
 });
 const FULLWIDTH_COLON = '\uff1a';
 
@@ -96,6 +133,12 @@ const TICKET_STATUS_WORDS = [
 ];
 const DELIVERY_STATUS_WORDS = [ZH.COMPLETE, ZH.PARTIAL, ZH.FAILED, ZH.BLOCK, ZH.UNKNOWN];
 const CONTINUATION_WORDS = ['continue', 'wait', 'ask', 'done', 'stop'];
+// Conservative built-in machine field names (a safety net when a base-side source is absent):
+// evidence-level words and the issue-card field names used by the machine contracts.
+const DEFAULT_FIELD_NAMES = [
+  ZH.EXECUTED, ZH.READ, ZH.SELF_REPORTED, ZH.NOT_RUN,
+  'allowedPaths', 'allowChanges', 'allowSkip',
+];
 // Candidate forms probed against parseVerdict; only accepted forms enter the registry.
 const VERDICT_PROBES = [
   ZH.PASS, ZH.REJECT, ZH.BLOCK, 'passed', 'rejected', 'blocked', 'returned',
@@ -225,24 +268,50 @@ export function deriveVerdictTokens(verdictSource) {
   return { tokens, chinese };
 }
 
-/** Field labels and placeholders from base templates (`- label:` bullets and `<...>`). */
+/**
+ * Field labels and placeholders from base templates, regardless of heading:
+ * every `- label:` / `- label (...)` bullet and every `<...>` placeholder.
+ */
 export function deriveTemplateTokens(templates) {
   const tokens = new Set();
+  const addLabel = (raw) => {
+    let name = raw.split(' (')[0].split(', ')[0].trim();
+    name = name.replace(/^`|`$/g, '').replace(/^\*\*|\*\*$/g, '').trim();
+    if (name.length >= 2 && name.length <= 80) tokens.add(name);
+  };
   for (const t of Array.isArray(templates) ? templates : []) {
     if (!t || typeof t.content !== 'string') continue;
-    const lines = t.content.split(/\r?\n/);
-    const requiredHeading = (l) => /^#{1,6}\s.*(?:Required|\u5fc5\u586b)/i.test(l);
-    const hasRequired = lines.some(requiredHeading);
-    let inRequired = !hasRequired;
-    for (const line of lines) {
-      if (/^#{1,6}\s/.test(line)) inRequired = !hasRequired || requiredHeading(line);
+    for (const line of t.content.split(/\r?\n/)) {
       const label = /^\s*[-*]\s+(.+?):(?:\s|$)/.exec(line);
-      if (label && inRequired) {
-        let name = label[1].split(' (')[0].split(', ')[0].trim();
-        name = name.replace(/^`|`$/g, '');
-        if (name.length >= 2 && name.length <= 80) tokens.add(name);
+      if (label) addLabel(label[1]);
+      else {
+        const paren = /^\s*[-*]\s+([^:()\n]{2,40}?)\s+\([^()\n]*\)\s*$/.exec(line);
+        if (paren && paren[1].trim().split(/\s+/).length <= 4) addLabel(paren[1]);
       }
       for (const ph of line.matchAll(/<[^<>\n]{1,40}>/g)) tokens.add(ph[0]);
+    }
+  }
+  return [...tokens];
+}
+
+const VOCAB_HEADING_RE = /^#{1,6}\s.*(?:status\s+vocabulary|\u72b6\u6001\u8bcd\u6c47|\u7edf\u4e00\u8bcd\u6c47)/i;
+
+/**
+ * Backticked machine words in the status-vocabulary section of the base shared prompt
+ * (ticket statuses, delegation events, delivery statuses, continuation words, evidence levels).
+ */
+export function deriveSharedPromptTokens(text) {
+  const tokens = new Set();
+  if (typeof text !== 'string') return [];
+  let inSection = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^#{1,6}\s/.test(line)) { inSection = VOCAB_HEADING_RE.test(line); continue; }
+    if (!inSection) continue;
+    for (const span of line.matchAll(/`([^`\n]{1,200})`/g)) {
+      for (const word of span[1].split(/[\s\u2192/|,;+]+|->|=>/)) {
+        const w = word.trim();
+        if (/^[A-Za-z][A-Za-z0-9_]+$/.test(w) || new RegExp(`^${HAN}{2,}$`, 'u').test(w)) tokens.add(w);
+      }
     }
   }
   return [...tokens];
@@ -252,12 +321,13 @@ export function deriveTemplateTokens(templates) {
  * Build the frozen-token registry.
  * Returns { tokens: string[], verdictLine: RegExp (global) }.
  */
-export function buildRegistry({ verdictSource, templates, extras } = {}) {
+export function buildRegistry({ verdictSource, templates, sharedPrompt, extras } = {}) {
   const verdict = deriveVerdictTokens(verdictSource);
   const set = new Set([
     ...TICKET_STATUS_WORDS, ...DELIVERY_STATUS_WORDS, ...CONTINUATION_WORDS,
-    ZH.REVIEW_LABEL, ...verdict.tokens,
+    ZH.REVIEW_LABEL, ...verdict.tokens, ...DEFAULT_FIELD_NAMES,
     ...deriveTemplateTokens(templates),
+    ...deriveSharedPromptTokens(sharedPrompt),
     ...(Array.isArray(extras) ? extras.filter((x) => typeof x === 'string' && x.length > 0) : []),
   ]);
   const tokens = [...set].sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
@@ -454,6 +524,8 @@ export async function collectGitDiff({ root, baseRef }) {
     files,
     base: {
       packageJson: await showBase('package.json'),
+      lockfile: (await showBase('package-lock.json')) ?? (await showBase('npm-shrinkwrap.json')),
+      sharedPrompt: await showBase(SHARED_PROMPT_PATH),
       verdictSource: await showBase('lib/verdict.mjs'),
       templates,
       baseline,
@@ -473,18 +545,93 @@ export function isTestFile(path) {
 }
 
 // Built from pieces so this file does not trip its own skip scan.
-// Covers the dotted forms and the option forms (`{ skip: true }`, `{ only: true }`, `{ skip }`).
+// Covers the dotted forms, the plain words and the option-object forms (with or without a value).
 const SKIP_RE = new RegExp(
   [
     `\\.${'sk'}ip\\b`, `\\.${'on'}ly\\b`, `\\b${'to'}do\\b`, `\\b${'x'}it\\b`,
-    `\\b${'sk'}ip\\s*:`, `\\b${'on'}ly\\s*:`, `\\{\\s*${'sk'}ip\\b`, `\\{\\s*${'on'}ly\\b`,
+    `\\b${'sk'}ip["']?\\s*:`, `\\b${'on'}ly["']?\\s*:`, `\\{\\s*${'sk'}ip\\b`, `\\{\\s*${'on'}ly\\b`,
   ].join('|'),
   'i',
 );
-const CASE_RE = /(?:^|[^\w.$])(?:test|it)(?:\.(?:only|skip|todo))?\s*\(/gm;
+// Built from pieces for the same reason: modifier names are not written out literally.
+const CASE_RE = new RegExp(`(?:^|[^\\w.$])(?:test|it)(?:\\.(?:${'on'}ly|${'sk'}ip|${'to'}do))?\\s*\\(`, 'gm');
+const MARKDOWN_RE = /\.(?:md|markdown|mdx)$/i;
+// Markdown prose may contain the plain words; only the dotted call forms count there.
+const MD_SKIP_RE = new RegExp(`\\.${'sk'}ip\\(|\\.${'on'}ly\\(`);
+const REGEX_PREV = '(,=:[!&|?{};+-*%<>~^';
+const REGEX_WORDS = new Set(['return', 'typeof', 'case', 'delete', 'void', 'throw', 'in', 'of', 'new', 'else', 'do', 'yield', 'await']);
+
+/**
+ * Blank out comments and the contents of string, template and regex literals (newlines
+ * and delimiters are kept) so a call that only appears in prose or data is not counted.
+ * A small hand-written scanner: heuristic for regex-vs-division, no parsing of the language.
+ */
+export function stripNonCode(source) {
+  const s = String(source);
+  const n = s.length;
+  const out = [];
+  const blank = (ch) => (ch === '\n' || ch === '\r' ? ch : ' ');
+  const tplStack = [];
+  let braces = 0;
+  let prev = '';
+  let word = '';
+  let i = 0;
+  // Template body: runs to the closing backtick or to the next `${`.
+  const template = () => {
+    while (i < n) {
+      const c = s[i];
+      if (c === '\\') { out.push(' '); i++; if (i < n) { out.push(blank(s[i])); i++; } continue; }
+      if (c === '`') { out.push(c); i++; prev = c; word = ''; return; }
+      if (c === '$' && s[i + 1] === '{') { out.push('${'); i += 2; tplStack.push(braces); braces = 0; prev = '{'; word = ''; return; }
+      out.push(blank(c)); i++;
+    }
+  };
+  while (i < n) {
+    const c = s[i];
+    const d = s[i + 1];
+    if (c === '/' && d === '/') { while (i < n && s[i] !== '\n') { out.push(' '); i++; } continue; }
+    if (c === '/' && d === '*') {
+      out.push('  '); i += 2;
+      while (i < n && !(s[i] === '*' && s[i + 1] === '/')) { out.push(blank(s[i])); i++; }
+      if (i < n) { out.push('  '); i += 2; }
+      continue;
+    }
+    if (c === '\'' || c === '"') {
+      out.push(c); i++;
+      while (i < n && s[i] !== c && s[i] !== '\n') {
+        if (s[i] === '\\' && i + 1 < n && s[i + 1] !== '\n') { out.push('  '); i += 2; } else { out.push(' '); i++; }
+      }
+      if (i < n && s[i] === c) { out.push(c); i++; }
+      prev = c; word = '';
+      continue;
+    }
+    if (c === '`') { out.push(c); i++; template(); continue; }
+    if (c === '{') { braces++; out.push(c); i++; prev = c; word = ''; continue; }
+    if (c === '}') {
+      out.push(c); i++; prev = c; word = '';
+      if (braces === 0 && tplStack.length) { braces = tplStack.pop(); template(); } else if (braces > 0) braces--;
+      continue;
+    }
+    if (c === '/' && (prev === '' || REGEX_PREV.includes(prev) || REGEX_WORDS.has(word))) {
+      out.push(c); i++;
+      let inClass = false;
+      while (i < n && s[i] !== '\n' && (inClass || s[i] !== '/')) {
+        if (s[i] === '\\' && i + 1 < n && s[i + 1] !== '\n') { out.push('  '); i += 2; continue; }
+        if (s[i] === '[') inClass = true; else if (s[i] === ']') inClass = false;
+        out.push(' '); i++;
+      }
+      if (i < n && s[i] === '/') { out.push('/'); i++; }
+      prev = ')'; word = '';
+      continue;
+    }
+    out.push(c); i++;
+    if (/[A-Za-z0-9_$]/.test(c)) { word += c; prev = c; } else if (!/\s/.test(c)) { word = ''; prev = c; }
+  }
+  return out.join('');
+}
 
 export function countTestCases(content) {
-  return countRegex(content, CASE_RE);
+  return countRegex(stripNonCode(content), CASE_RE);
 }
 
 /** Delta of test files / cases between base and head over the changed files. */
@@ -499,6 +646,31 @@ export function testStats(files) {
     if (f.status !== 'D' && isTestFile(f.path)) { headFiles++; headCases += countTestCases(f.headContent); }
   }
   return { baseFiles, headFiles, baseCases, headCases };
+}
+
+function declaresDependencies(pkg) {
+  const count = (o) => (o && typeof o === 'object' ? Object.keys(o).length : 0);
+  return count(pkg.dependencies) + count(pkg.devDependencies) + count(pkg.optionalDependencies) > 0;
+}
+
+const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+
+/**
+ * The host-supplied dependency directory must carry the lockfile it was installed from
+ * (`<depsDir>/package-lock.json`) and that copy must equal the base lockfile.
+ * No requirement when the base declares no dependencies and has no lockfile.
+ */
+export async function verifyDepsDir({ depsDir, baseLockfile, hasDeps }) {
+  const hasLock = typeof baseLockfile === 'string';
+  if (!hasDeps && !hasLock) return;
+  if (depsDir === undefined || depsDir === null || depsDir === '') {
+    if (hasDeps) throw new GateSignal('G0-DEPS');
+    return;
+  }
+  if (typeof depsDir !== 'string' || !hasLock) throw new GateSignal('G0-DEPS');
+  let supplied;
+  try { supplied = await readFile(join(depsDir, 'package-lock.json'), 'utf8'); } catch { throw new GateSignal('G0-DEPS'); }
+  if (sha256(supplied) !== sha256(baseLockfile)) throw new GateSignal('G0-DEPS');
 }
 
 /** Resolve the base test script into node steps (no shell): used by the default runner. */
@@ -565,16 +737,18 @@ export { nodeSatisfies };
  * `baseFiles`; lockfiles and CI config are NOT restored, because dependencies come
  * from the host-supplied `depsDir` and CI config is never executed here), pins
  * Node per the base `engines`, and runs the base test command as node steps (no shell).
- * Dependencies must be provided by the host as `depsDir` (base-lockfile install);
- * a base package that declares dependencies without `depsDir` is a block.
+ * Dependencies must be provided by the host as `depsDir` (base-lockfile install, carrying
+ * `<depsDir>/package-lock.json` equal to the base lockfile); a base package that declares
+ * dependencies without a matching `depsDir` is a block.
  * Output is never returned (it could carry identifiers): only the exit status.
  */
 export async function defaultRunner(spec) {
   if (!spec || typeof spec.root !== 'string') throw new GateSignal('G0-INPUT');
   const pkg = spec.basePackage || {};
   if (!nodeSatisfies(spec.engines && spec.engines.node)) throw new GateSignal('G0-NODE');
-  const hasDeps = Object.keys(pkg.dependencies || {}).length + Object.keys(pkg.devDependencies || {}).length > 0;
+  const hasDeps = declaresDependencies(pkg);
   if (hasDeps && !spec.depsDir) throw new GateSignal('G0-DEPS');
+  if (spec.depsDir) await verifyDepsDir({ depsDir: spec.depsDir, baseLockfile: spec.baseLockfile, hasDeps });
   const steps = resolveTestSteps(spec.scripts, spec.command);
   const tmp = await mkdtemp(join(tmpdir(), 'gate0-'));
   try {
@@ -690,7 +864,7 @@ export function checkDirection(files, registry, cjkPathAllowlist = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Rule 1 (static part): test counts and skip markers
+// Rule 1 (static part): test counts and disable markers
 // ---------------------------------------------------------------------------
 
 export function checkTestIntegrity(files, issue) {
@@ -701,10 +875,12 @@ export function checkTestIntegrity(files, issue) {
     findings.push(mk('G0-TEST-COUNT', '<tests>', 0, JSON.stringify(stats)));
   }
   if (issue.allowSkip !== true) {
+    // Every added line of every non-binary file is checked, not just recognized test files.
     for (const f of files) {
-      if (f.binary || f.status === 'D' || !isTestFile(f.path)) continue;
+      if (f.binary || f.status === 'D') continue;
+      const re = MARKDOWN_RE.test(f.path) ? MD_SKIP_RE : SKIP_RE;
       for (const l of f.added) {
-        if (SKIP_RE.test(l.text)) findings.push(mk('G0-TEST-SKIP', f.path, l.line, l.text));
+        if (re.test(l.text)) findings.push(mk('G0-TEST-SKIP', f.path, l.line, l.text));
       }
     }
   }
@@ -777,10 +953,13 @@ async function execute(opts, deadline) {
   const baseline = validateBaseline(opts.baseline !== undefined ? opts.baseline : base.baseline);
   const templates = baseline.templates ?? base.templates ?? [];
 
+  // Supplied metadata is additive: in git mode the real commit messages and identities are
+  // always scanned, together with whatever the caller supplied.
   const metadata = { ...(opts.metadata || {}) };
-  if (ctx.gitMeta) {
-    if (metadata.commitMessages === undefined) metadata.commitMessages = ctx.gitMeta.commitMessages;
-    if (metadata.authors === undefined) metadata.authors = ctx.gitMeta.authors;
+  for (const key of ['commitMessages', 'authors']) {
+    const supplied = metadata[key];
+    if (supplied !== undefined && !(Array.isArray(supplied) && supplied.every((x) => typeof x === 'string'))) throw new GateSignal('G0-INPUT');
+    if (ctx.gitMeta) metadata[key] = [...new Set([...ctx.gitMeta[key], ...(supplied || [])])];
   }
 
   const findings = [];
@@ -811,6 +990,7 @@ async function execute(opts, deadline) {
     try { basePackage = JSON.parse(String(base.packageJson)); } catch { throw new GateSignal('G0-INPUT'); }
     const scripts = basePackage && typeof basePackage.scripts === 'object' && basePackage.scripts ? basePackage.scripts : {};
     if (typeof scripts.test !== 'string' || !scripts.test.trim()) throw new GateSignal('G0-INPUT');
+    await verifyDepsDir({ depsDir: opts.depsDir, baseLockfile: base.lockfile, hasDeps: declaresDependencies(basePackage) });
     const runner = opts.runner || (opts.diff ? undefined : defaultRunner);
     if (typeof runner !== 'function') throw new GateSignal('G0-INPUT');
     const controller = new AbortController();
@@ -818,7 +998,7 @@ async function execute(opts, deadline) {
     const spec = {
       root: opts.root, baseRef: opts.baseRef, command: scripts.test, scripts,
       basePackage, engines: basePackage.engines || {}, env: buildRunnerEnv(opts.env || process.env),
-      timeoutMs: runnerTimeoutMs, signal: controller.signal, depsDir: opts.depsDir, baseFiles,
+      timeoutMs: runnerTimeoutMs, signal: controller.signal, depsDir: opts.depsDir, baseLockfile: base.lockfile, baseFiles,
       networkIsolated: opts.networkIsolated === true,
     };
     const result = await withTimeout(() => Promise.resolve(runner(spec)), runnerTimeoutMs, controller);
@@ -830,7 +1010,7 @@ async function execute(opts, deadline) {
   // Rules 3 and 4 need the registry
   let registry;
   await step(() => {
-    registry = buildRegistry({ verdictSource: base.verdictSource, templates, extras: baseline.frozenTokens });
+    registry = buildRegistry({ verdictSource: base.verdictSource, templates, sharedPrompt: base.sharedPrompt, extras: baseline.frozenTokens });
     return [];
   });
   if (registry) {
@@ -899,6 +1079,8 @@ export async function main(argv = process.argv.slice(2)) {
   const opts = {};
   let issuePath;
   let metaPath;
+  let explicitHost = false;
+  let local = false;
   try {
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i];
@@ -906,13 +1088,16 @@ export async function main(argv = process.argv.slice(2)) {
       else if (a === '--base') opts.baseRef = argv[++i];
       else if (a === '--issue') issuePath = argv[++i];
       else if (a === '--metadata') metaPath = argv[++i];
-      else if (a === '--host-run') opts.hostRun = true;
+      else if (a === '--host-run') explicitHost = true;
+      else if (a === '--local' || a === '--no-host-run') local = true;
       else if (a === '--network-isolated') opts.networkIsolated = true;
       else if (a === '--deps-dir') opts.depsDir = argv[++i];
       else if (a === '--timeout-ms') opts.timeoutMs = Number(argv[++i]);
       else throw new GateSignal('G0-INPUT');
     }
-    if (!issuePath) throw new GateSignal('G0-INPUT');
+    if (!issuePath || (explicitHost && local)) throw new GateSignal('G0-INPUT');
+    // Production (host-run) semantics are the default; --local is the explicit opt-out.
+    opts.hostRun = !local;
     opts.issue = await readJson(issuePath);
     if (metaPath) opts.metadata = await readJson(metaPath);
   } catch {
@@ -921,7 +1106,9 @@ export async function main(argv = process.argv.slice(2)) {
     return 2;
   }
   const result = await runGate0(opts);
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  // A local run is never authoritative: it may have run tests with network and no denylist.
+  const shown = local ? { ...result, mode: 'local', authoritative: false } : result;
+  process.stdout.write(`${JSON.stringify(shown)}\n`);
   return result.verdict === 'pass' ? 0 : result.verdict === 'reject' ? 1 : 2;
 }
 

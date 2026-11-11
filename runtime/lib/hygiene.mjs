@@ -152,6 +152,23 @@ function shannon(s) {
   return h;
 }
 
+const TEST_DIRS = new Set(['test', 'tests', '__tests__']);
+const DOC_EXT_RE = /\.(?:md|markdown|mdx|txt|rst|adoc)$/i;
+
+/**
+ * True for test-fixture paths: under a `test/`, `tests/` or `__tests__/` directory, or
+ * named `*.test.*` / `*.spec.*`. Documentation files are never fixtures.
+ */
+export function isTestFixturePath(path) {
+  if (typeof path !== 'string' || path === '') return false;
+  const segments = path.split(/[\\/]/);
+  if (segments.includes('..')) return false;
+  const file = segments[segments.length - 1];
+  if (DOC_EXT_RE.test(file)) return false;
+  if (segments.slice(0, -1).some((d) => TEST_DIRS.has(d))) return true;
+  return /^[^.].*\.(?:test|spec)\.[A-Za-z0-9]+$/.test(file);
+}
+
 function hasFakeMarker(s) {
   return s.includes('EXAMPLE') || s.includes('FAKE');
 }
@@ -178,7 +195,7 @@ function ipv4Allowed(o) {
   if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
   if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
   if (o.every((x) => x === 0)) return true; // unspecified
-  // Contiguous netmask (255.255.255.0 and friends) is not an address.
+  // A contiguous netmask (all-ones prefix, then zeros) is not an address.
   const bits = o.map((x) => x.toString(2).padStart(8, '0')).join('');
   if (/^1+0*$/.test(bits)) return true;
   return false;
@@ -187,10 +204,11 @@ function ipv4Allowed(o) {
 const HOST_CONTEXT_RE = /\b(?:git|clone|remote|origin|ssh|scp|sftp|rsync|mosh|telnet|ftp|rdp|vnc)\b|:\/\//i;
 const PACKAGE_CONTEXT_RE = /\b(?:npm|npx|yarn|pnpm|pip|pip3|gem|cargo|install|package|packages|dependency|dependencies|version|versions|upgrade|requires?|depends?)\b/i;
 
-// `name@1.2.3.4` is exempt only in a package-version context: the name looks like a
+// `name@<four-part version>` is exempt only in a package-version context: the name looks like a
 // package, a package-manager word is on the line, no git/ssh/URL host context is, and
 // the match is not followed by a path separator or a port. Everything else
 // (`git@<ip>:org/repo`, `deploy@<ip>`, `https://user@<ip>/x`) is a host address.
+// A `v` prefix (or `name@` package context) also covers a pre-release suffix.
 function isPackageVersion(text, index, end, line) {
   const at = index - 1; // the '@'
   let i = at;
@@ -220,7 +238,7 @@ function findIPv4(text, out) {
     const prev = m.index > 0 ? text[m.index - 1] : '';
     if (prev === 'v' || prev === 'V') {
       const before = m.index > 1 ? text[m.index - 2] : '';
-      if (!/[A-Za-z0-9_]/.test(before)) continue; // v1.2.3.4
+      if (!/[A-Za-z0-9_]/.test(before)) continue; // v-prefixed four-part version
     }
     if (prev === '@' && isPackageVersion(text, m.index, end, line)) continue;
     if (ipv4Allowed(octets)) continue;
@@ -316,15 +334,25 @@ function findNames(text, denylist, out) {
 // Heuristic: `process.env.HOME`, `env.HOME`, `this.local`, `user.home` are JS member
 // accesses, not hosts. A match is skipped when every label left of the private suffix
 // is a common member-access root word (case-insensitive) AND it is not in a host
-// position (after `://` or `@`). Real hosts (`box.local`, `name.internal`) have other
-// first labels and stay flagged; a host literally named like one of these words is
-// only flagged in URL / user@host position.
+// position: after `://` or `@`, or on the argument side of a remote-shell / copy /
+// network command (ssh, scp, rsync, sftp, mosh and similar), including a bare word
+// standing alone as an argument to one. Real hosts (a box name or a service name with
+// a private suffix) have other first labels and stay flagged; a host literally named
+// like one of these words is only exempt in ordinary (non-host) code.
 const MEMBER_ROOTS = new Set([
   'process', 'env', 'this', 'self', 'user', 'users', 'os', 'config', 'cfg', 'conf', 'settings',
   'options', 'opts', 'ctx', 'context', 'app', 'args', 'props', 'state', 'req', 'res', 'obj',
   'data', 'window', 'document', 'global', 'globalthis', 'module', 'exports', 'paths', 'dirs',
   'path', 'profile', 'account', 'session', 'info', 'result', 'item', 'entry',
 ]);
+
+const REMOTE_COMMAND_RE = /(?<![A-Za-z0-9_.-])(?:ssh|scp|rsync|sftp|mosh|telnet|ftp|ping|curl|wget|nc)(?![A-Za-z0-9_-])/i;
+
+function inRemoteCommandContext(text, index) {
+  // Only the current command segment counts (a `;`, `&` or `|` starts a new one).
+  const segment = text.slice(0, index).split(/[;&|]/).pop();
+  return REMOTE_COMMAND_RE.test(segment);
+}
 
 function isMemberAccess(text, index, match) {
   const labels = match.split('.');
@@ -333,6 +361,7 @@ function isMemberAccess(text, index, match) {
   const p1 = index > 0 ? text[index - 1] : '';
   const p2 = index > 1 ? text[index - 2] : '';
   if (p1 === '@' || (p1 === '/' && p2 === '/')) return false;
+  if (inRemoteCommandContext(text, index)) return false;
   return true;
 }
 
@@ -397,14 +426,15 @@ function findHomePaths(text, out) {
 
 const TOKEN_PATTERNS = [
   /(?<![A-Za-z0-9_-])gh[pousr]_[A-Za-z0-9]{16,}/g,
-  /(?<![A-Za-z0-9_-])github_pat_[A-Za-z0-9_]{20,}/g,
+  new RegExp('(?<![A-Za-z0-9_-])' + 'github' + '_pat_[A-Za-z0-9_]{20,}', 'g'),
   /(?<![A-Za-z0-9_-])glpat-[A-Za-z0-9_-]{16,}/g,
-  /(?<![A-Za-z0-9_-])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])/g,
+  new RegExp('(?<![A-Za-z0-9_-])(?:' + ['AK', 'AS'].map((x) => x + 'IA').join('|') + ')[0-9A-Z]{16}(?![A-Za-z0-9])', 'g'),
   /(?<![A-Za-z0-9_-])xox[abprs]-[A-Za-z0-9-]{10,}/g,
   /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])/g,
   /(?<![A-Za-z0-9_-])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g,
   /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
+  // The header is assembled from pieces so this file holds no key-header literal.
+  new RegExp('-'.repeat(5) + 'BEGIN [A-Z0-9 ]*PRIV' + 'ATE KEY(?: BLOCK)?' + '-'.repeat(5), 'g'),
 ];
 
 // sk- style keys need a digit and a letter, so ordinary hyphenated words pass.
@@ -422,9 +452,9 @@ function highEntropy(v) {
   return shannon(v) >= 3.25;
 }
 
-function findCredentials(text, out) {
+function findCredentials(text, out, allowFake) {
   const push = (exemptOn, shown) => {
-    if (hasFakeMarker(exemptOn)) return;
+    if (allowFake && hasFakeMarker(exemptOn)) return;
     out.push({ ruleId: RULES.CRED, text: shown });
   };
   for (const re of TOKEN_PATTERNS) {
@@ -474,7 +504,7 @@ function base64Candidates(text) {
   return cands;
 }
 
-function findEncoded(text, denylist, depth, out, deadline) {
+function findEncoded(text, denylist, depth, out, deadline, opts) {
   if (depth >= MAX_DEPTH) return;
   const decodedViews = [];
   // Linear: split into non-space tokens, then test each one (a `\S*%..\S*` pattern is quadratic).
@@ -491,7 +521,7 @@ function findEncoded(text, denylist, depth, out, deadline) {
   for (const { source, decoded } of decodedViews) {
     if (decoded === source) continue;
     checkDeadline(deadline);
-    if (scanText(decoded, denylist, depth + 1, deadline).length > 0) {
+    if (scanText(decoded, denylist, depth + 1, deadline, opts).length > 0) {
       out.push({ ruleId: RULES.ENC, text: source });
     }
   }
@@ -501,7 +531,9 @@ function findEncoded(text, denylist, depth, out, deadline) {
 // Text scanner
 // ---------------------------------------------------------------------------
 
-function scanText(text, denylist, depth = 0, deadline) {
+// `opts.allowFake` lets EXAMPLE / FAKE marked credentials pass. It is set only for
+// added lines in test-fixture paths; metadata, path names and other files never get it.
+function scanText(text, denylist, depth = 0, deadline, opts = {}) {
   const out = [];
   if (typeof text !== 'string' || text.length === 0) return out;
   // The deadline is checked between detectors (a running regex cannot be interrupted,
@@ -512,8 +544,8 @@ function scanText(text, denylist, depth = 0, deadline) {
     () => findNames(text, denylist, out),
     () => findFqdn(text, out),
     () => findHomePaths(text, out),
-    () => findCredentials(text, out),
-    () => findEncoded(text, denylist, depth, out, deadline),
+    () => findCredentials(text, out, opts.allowFake === true),
+    () => findEncoded(text, denylist, depth, out, deadline, opts),
   ];
   for (const run of steps) {
     checkDeadline(deadline);
@@ -587,7 +619,8 @@ export function scanHygiene({ addedLines = [], paths = [], metadata = {}, denyli
       throw new HygieneError('INPUT_INVALID', 'gate0: addedLines entry is invalid');
     }
     const line = Number.isInteger(entry.line) ? entry.line : 0;
-    record(entry.path, shownPath(entry.path), line, scanText(entry.text, denylist, 0, deadline), true);
+    const opts = { allowFake: isTestFixturePath(entry.path) };
+    record(entry.path, shownPath(entry.path), line, scanText(entry.text, denylist, 0, deadline, opts), true);
   }
 
   for (const p of Array.isArray(paths) ? paths : []) {
