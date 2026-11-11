@@ -22,4 +22,4 @@
 
 ## Recorded by Chief (not sent to executor)
 
-- Sent, delivered, received, started, returned timestamps and harness receipts / attempt ID:
+- Sent, delivered, acknowledged, started, returned timestamps and harness receipts / attempt ID:

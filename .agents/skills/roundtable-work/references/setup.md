@@ -29,8 +29,8 @@ Do not request credentials in the conversation. By default, do not auto-merge, d
 
 ## 4. First-Round Acceptance
 
-Run one low-risk, locally verifiable small goal: Chief creates ticket → delegate to developer → independent review (may require one iteration of fixes) → original author fixes → write continuation record. Document the actual receipt from each step. Then let the user observe after session ends: without harness wake-up capability, the team will not continue on its own; this should be documented in the handoff.
+Run one low-risk, locally verifiable small goal: Chief creates ticket → delegate to developer → independent review (reject once if needed) → original author fixes → write continuation record. Document the actual receipt from each step. Then let the user observe after session ends: without harness wake-up capability, the team will not continue on its own; this should be documented in the handoff.
 
 ## 5. Handoff to User
 
-Report: installation location, configuration files, enabled roles and permissions, actually verified capabilities and evidence, unsupported or unverified capabilities, how to pause and revoke (delete skill directory and `.roundtable/` to uninstall), next steps. Capabilities not executed mark as "not run".
+Report: installation location, configuration files, enabled roles and permissions, actually verified capabilities and evidence, unsupported or unverified capabilities, how to pause and revoke (delete skill directory and `.roundtable/` to uninstall), next steps. Mark checks that were not run as “未运行” (not run).
