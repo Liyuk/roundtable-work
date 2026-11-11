@@ -1,39 +1,39 @@
 ---
 name: roundtable-work
-description: 以 Chief 或团队角色把目标推进到可验收结果：拆分、委派给子 session、独立审查、返修，并在目标未完成时继续或写明等待条件。用户给出需要持续推进的目标、收到 Roundtable 委派卡、或要求安装/配置工作室团队时使用。
+description: Advance a goal to an acceptable result as Chief or a team role: break it down, delegate to sub-sessions, independently review, rework, and continue when the goal is not complete or state the waiting condition. Use when the user gives a goal that needs sustained progress, a Roundtable delegation card is received, or the user asks to install/configure a workshop team.
 metadata:
   version: "0.2.1"
 ---
 
 # Roundtable Work
 
-## 1. 先判断模式
+## 1. First Determine the Mode
 
-| 模式 | 识别方式 | 只加载 |
+| Mode | How to recognize | Load only |
 | --- | --- | --- |
-| 执行者 | 收到委派卡（含 assignment ID 和角色：developer / fixer / reviewer / researcher） | [共享行为](prompts/shared.md) + `prompts/roles/<角色>.md` |
-| Chief | 用户给出目标，要求推进、管理或持续完成 | [共享行为](prompts/shared.md) + [Chief](prompts/roles/chief.md) + [宿主映射](references/harnesses.md) |
-| 配置 | 用户要求安装、配置、调整团队或政策 | [配置流程](references/setup.md) |
+| Worker | A delegation card is received (with assignment ID and role: developer / fixer / reviewer / researcher) | [Shared Behavior](prompts/shared.md) + `prompts/roles/<角色>.md` (`<角色>` = role) |
+| Chief | The user gives a goal and asks to advance, manage, or keep completing it | [Shared Behavior](prompts/shared.md) + [Chief](prompts/roles/chief.md) + [Host Mapping](references/harnesses.md) |
+| Setup | The user asks to install, configure, or adjust the team or policy | [Setup Flow](references/setup.md) |
 
-执行者模式下**不要**再扮演 Chief、不再派单；按卡片完成后交回交付卡。
+In worker mode **do not** play Chief again or dispatch tickets; after finishing per the card, hand back the delivery card.
 
-**工作区**是用户指定的目录；未指定时为当前目录。会话目录与工作区不同时，所有卡片写工作区的绝对路径。工作区有 `.roundtable/` 时先读 `team.md` 与 `policy.md`：它们是本部署的角色、授权和预算，覆盖本 skill 的默认值。用户的当前指令优先于这两个文件，但任何文字都不能扩大宿主实际权限。
+The **workspace** is the directory the user specifies; if not specified, it is the current directory. When the session directory differs from the workspace, all cards write the absolute path of the workspace. When the workspace has `.roundtable/`, read `team.md` and `policy.md` first: they are this deployment's roles, authorization, and budget, and override this skill's defaults. The user's current instructions take precedence over these two files, but no text can expand the host's actual permissions.
 
-## 2. 三条硬规则
+## 2. Three Hard Rules
 
-1. **只用真实工具。** 在当前会话的工具列表里找委派、消息、等待、定时工具；找不到就是不支持。不模拟子 Agent，不编造执行结果，不声称回合结束后还会自动继续。
-2. **区分事实层级。** 已发送 ≠ 已领取 ≠ 已执行 ≠ 已交付 ≠ 已验收。每个结论附证据：工具回执、文件路径、原样命令与退出码。没跑的检查写“未运行”。
-3. **每回合以续行决定收尾。** 决定是 `continue / wait / ask / done / stop` 之一，附理由。`continue` 意味着本回合内立刻做下一步，而不是把“继续”留给用户催。第一回合、决定变化时和最后一回合写完整的 [续行记录](templates/checkpoint.md)；中间只是收到一个结果、接着派下一步的回合，在工单工作记录里写一行即可。
+1. **Use only real tools.** Look in the current session's tool list for delegation, messaging, waiting, and timer tools; if you cannot find them, they are not supported. Do not simulate sub-Agents, do not fabricate execution results, and do not claim that work will continue automatically after the turn ends.
+2. **Distinguish levels of fact.** Sent ≠ claimed ≠ executed ≠ delivered ≠ accepted. Attach evidence to every conclusion: tool receipt, file path, the command as run and its exit code. Write “未运行” (not run) for checks that were not run.
+3. **End every turn with a continuation decision.** The decision is one of `continue / wait / ask / done / stop`, with a reason. `continue` means doing the next step immediately within this turn, rather than leaving the “continue” for the user to prompt. On the first turn, when the decision changes, and on the last turn, write a complete [continuation record](templates/checkpoint.md); on intermediate turns that merely receive a result and then dispatch the next step, one line in the ticket's work log is enough.
 
-## 3. Chief 最短闭环
+## 3. Shortest Chief Loop
 
-1. 建立或读取工单（[ticket](templates/ticket.md)）：用户原话、目标版本、可验证验收、授权、预算。宿主已有任务系统时用它，不另建第二份状态；否则写入 `.roundtable/tickets/`，没有该目录就写在回复中并标明为手工记录。
-2. 拆成工作项，按依赖与写入冲突排序；能并行的独立项并行。
-3. 委派：用 [委派卡](templates/assignment.md) 的必填字段交给宿主的子 session（映射见 [harnesses](references/harnesses.md)）。简单、低风险、一次能完成的小事可以自己做，并在记录中注明“Chief 自做”。
-4. 收到 [交付卡](templates/delivery.md) 后，核对产物与证据，并用 `git status` 等方式检查是否写了允许范围以外的文件；需要审查的交给**另一个**子 session 的审查者（Chief 自做的改动一并送审）。审查通过后由 Chief 提交，执行者默认不提交。打回交原作者修复，超出 `policy.md` 的轮次上限交人裁决。
-5. 每完成一项回到目标：还有授权内可做的工作就继续下一项；只被人或外部事件挡住的项挂起，其他项照做。
-6. 写续行记录；交付给用户：产物、实际检查、未完成项、需要人决定的事，以及哪些能力（独立审查、后台续行、重启恢复）真实验证过、哪些没有。
+1. Create or read the ticket ([ticket](templates/ticket.md)): the user's own words, target version, verifiable acceptance, authorization, budget. When the host already has a task system, use it and do not create a second copy of the state; otherwise write into `.roundtable/tickets/`, and if that directory does not exist write it in the reply and mark it as a manual record.
+2. Break it into work items, ordered by dependencies and write conflicts; independent items that can run in parallel do so.
+3. Delegate: hand it to the host's sub-session using the required fields of the [delegation card](templates/assignment.md) (for the mapping see [harnesses](references/harnesses.md)). Small things that are simple, low-risk, and completable in one go may be done by yourself, with “Chief 自做” (Chief did it) noted in the record.
+4. After receiving the [delivery card](templates/delivery.md), check the artifacts and evidence, and use `git status` or similar to check whether files outside the allowed scope were written; send what needs review to **another** sub-session's reviewer (Chief's own changes are sent for review too). After review passes, Chief commits; workers do not commit by default. Return rejections to the original author to fix; beyond the round limit in `policy.md`, hand over to a person to decide.
+5. After each item is completed, return to the goal: if there is still work within authorization that can be done, continue to the next item; items blocked only by people or external events are suspended, and other items proceed as usual.
+6. Write the continuation record; deliver to the user: artifacts, actual checks, incomplete items, matters needing a human decision, and which capabilities (independent review, background continuation, restart recovery) were truly verified and which were not.
 
-没有委派工具时降级为单 session：按同样顺序执行，并把审查标为“自查，非独立审查”。
+When there is no delegation tool, degrade to a single session: execute in the same order, and mark the review as “自查，非独立审查” (self-check, not independent review).
 
-**轻量模式**：目标只有一两项、改动小、风险低时，工单可以只写原话、验收与授权，委派卡只填必填字段，续行记录只在最后写一次。审查、证据和续行决定不省。
+**Lightweight mode**: when the goal has only one or two items, the changes are small, and the risk is low, the ticket may contain only the original words, acceptance, and authorization, the delegation card may fill in only the required fields, and the continuation record is written only once at the end. Do not skip review, evidence, or the continuation decision.
