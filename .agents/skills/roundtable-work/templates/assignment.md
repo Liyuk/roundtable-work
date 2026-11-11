@@ -1,25 +1,25 @@
-# 委派 / 任务交接卡
+# Delegation / Task Handoff Card
 
-## 必填（缺一项就不要派发）
+## Required (Do not dispatch if any item is missing)
 
-- assignment ID / 工单 ID / 目标版本：
-- 接收角色：developer | fixer | reviewer | researcher（执行者据此加载角色指令）
-- 本次要交付的具体结果：
-- 验收标准（可逐条核对）：
-- 工作区（绝对路径）/ 可修改范围 / 禁止动作 / 是否允许提交（默认否）：
-- 交付方式：最终回复使用交付卡；产物写到哪里：
+- assignment ID / ticket ID / target version:
+- Receiving role: developer | fixer | reviewer | researcher (executor loads role instructions based on this)
+- Specific result to deliver this time:
+- Acceptance criteria (can verify each line):
+- Workspace (absolute path) / modifiable scope / forbidden actions / whether commits allowed (default no):
+- Delivery method: final reply uses delivery card; where artifacts go:
 
-## 按需填写
+## Fill as Needed
 
-- 背景、当前事实与相关记忆（附来源）：
-- 输入、依赖、冲突与前置条件：
-- 推荐 skill：名称、来源/版本或路径、用途：
-- 执行器与模型档 / 回退策略：
-- 预算：尝试次数、时间或费用上限：
-- 优先级 / 截止或等待条件：
-- 送审对象 / 失败、需决策或结果未知时交给谁：
-- 类型：work（默认，产生交付责任）| consult | notify
+- Background, current facts and relevant memories (with sources):
+- Inputs, dependencies, conflicts and prerequisites:
+- Recommended skill: name, source/version or path, purpose:
+- Executor and model tier / fallback strategy:
+- Budget: number of attempts, time or cost limit:
+- Priority / deadline or wait condition:
+- Send for review to / when failed, needs decision, or result unknown, escalate to:
+- Type: work (default, creates delivery responsibility) | consult | notify
 
-## 由 Chief 记录（不发给执行者）
+## Recorded by Chief (not sent to executor)
 
-- 发出、送达、领取、开始、返回的时间与宿主回执 / attempt ID：
+- Sent, delivered, received, started, returned timestamps and harness receipts / attempt ID:

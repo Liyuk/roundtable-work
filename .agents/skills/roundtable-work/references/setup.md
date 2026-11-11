@@ -1,36 +1,36 @@
-# 在工作区配置 Roundtable Work
+# Configuring Roundtable Work in the Workspace
 
-适用于“把团队装到这个项目 / 配置团队 / 调整政策”。只做能验证的步骤；做不到的写成缺口，不声称已安装。
+Applicable to "setting up the team in this project / configure team / adjust policy". Only perform verifiable steps; if something cannot be done, document it as a gap without claiming it's already installed.
 
-## 1. 检查现状（只读）
+## 1. Check Current State (Read-only)
 
-- 工作区是否已有 `.roundtable/team.md`、`.roundtable/policy.md`；有就读取并在其基础上修改，不覆盖。
-- 本 skill 安装在哪些宿主目录：`.claude/skills/roundtable-work/`（Claude Code）、`.agents/skills/roundtable-work/`（Codex 等）。Claude Code 子代理在 `.claude/agents/rt-*.md`。
-- 若能访问 Roundtable Work 源仓库，可运行 `node <源仓库>/scripts/install.mjs --target <工作区> --dry-run` 预览，再去掉 `--dry-run` 安装；`node <源仓库>/scripts/doctor.mjs --target <工作区>` 检查结果。
-- 对照 [宿主映射](harnesses.md) 列出当前会话真实可用的委派、消息、等待和唤醒工具。
+- Check if the workspace already has `.roundtable/team.md`, `.roundtable/policy.md`; if present, read and modify based on them, do not overwrite.
+- Where is this skill installed: `.claude/skills/roundtable-work/` (Claude Code), `.agents/skills/roundtable-work/` (Codex, etc.). Claude Code sub-agents are in `.claude/agents/rt-*.md`.
+- If you can access the Roundtable Work source repository, you can run `node <source repo>/scripts/install.mjs --target <workspace> --dry-run` to preview, then remove `--dry-run` to install; run `node <source repo>/scripts/doctor.mjs --target <workspace>` to verify the results.
+- Compare against [Harness Capabilities Mapping](harnesses.md) to document which delegation, messaging, wait, and wake-up tools are actually available in the current session.
 
-## 2. 收集配置
+## 2. Collect Configuration
 
-已有事实不再问。缺失且影响授权或验收的，逐项问用户：
+Already-existing facts do not need to be asked again. If missing and affecting authorization or acceptance, ask users for each item:
 
-1. 团队服务哪个工作区，长期目标与验收是什么？
-2. 哪些动作无需确认，哪些必须先问（合并、发布、对外消息、删除）？
-3. 需要哪些角色；Chief 可以自主开几个临时 session？
-4. 预算与停止条件是否沿用默认值？
-5. 是否启用外部事件或定时巡检？默认都不启用。
+1. Which workspace does the team serve; what are the long-term goals and acceptance criteria?
+2. Which actions require no confirmation, which ones require asking first (merge, release, external messaging, delete)?
+3. What roles are needed; how many temporary sessions can Chief autonomously open?
+4. Should budget and stop conditions follow default values?
+5. Should external events or periodic health checks be enabled? Default is no for both.
 
-不在对话中索取凭据。默认不自动合并、部署或对外发送消息。
+Do not request credentials in the conversation. By default, do not auto-merge, deploy, or send messages externally.
 
-## 3. 写入配置
+## 3. Write Configuration
 
-- 没有 `.roundtable/` 时用本 skill 的 [team](../templates/team.md) 与 [policy](../templates/policy.md) 模板创建；创建 `tickets/`、`state/`、`memory/` 目录。
-- 已有文件：先展示拟修改的差异，经用户同意再改；无法解释的现有设置保留。
-- `.roundtable/` 可能包含项目私有信息，是否提交到 Git 由用户决定。
+- Without `.roundtable/`, create it using this skill's [team](../templates/team.md) and [policy](../templates/policy.md) templates; create `tickets/`, `state/`, `memory/` directories.
+- Already has files: first show the diff of proposed changes, then modify only after user agrees; preserve settings that cannot be explained.
+- `.roundtable/` may contain project-private information; whether to commit to Git is up to the user.
 
-## 4. 首轮验收
+## 4. First-Round Acceptance
 
-用一个低风险、可在本地验证的小目标跑一遍：Chief 建工单 → 委派开发 → 独立审查（必要时打回一次）→ 原作者返修 → 写续行记录。记录每一步的真实回执。然后让用户在会话结束后观察：没有宿主唤醒能力时，团队不会自己继续，这一点要写进交接。
+Run one low-risk, locally verifiable small goal: Chief creates ticket → delegate to developer → independent review (may require one iteration of fixes) → original author fixes → write continuation record. Document the actual receipt from each step. Then let the user observe after session ends: without harness wake-up capability, the team will not continue on its own; this should be documented in the handoff.
 
-## 5. 交接给用户
+## 5. Handoff to User
 
-报告：安装位置、配置文件、启用的角色与权限、实际验证过的能力及证据、未支持或未验证的能力、如何暂停与撤销（删除 skill 目录和 `.roundtable/` 即可卸载）、下一步建议。未运行的检查标“未运行”。
+Report: installation location, configuration files, enabled roles and permissions, actually verified capabilities and evidence, unsupported or unverified capabilities, how to pause and revoke (delete skill directory and `.roundtable/` to uninstall), next steps. Capabilities not executed mark as "not run".
