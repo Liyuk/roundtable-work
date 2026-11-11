@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Roundtable Work: a synthetic walkthrough</title>
+<meta name="description" content="A static, synthetic walkthrough of the Roundtable Work workflow: a human goal, a Chief, executor roles, checks, an independent review, a pull request and a human merge.">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to main content</a>
+<header class="site-header">
+<div class="wrap">
+<p class="eyebrow">Static demo</p>
+<h1>Roundtable Work: a synthetic walkthrough</h1>
+<p class="lead">A role-based workflow for agents: a human sets the goal, a Chief coordinates, executors do the work, checks and an independent review follow, and a human decides on the merge.</p>
+<p class="banner" role="note"><strong>Synthetic data.</strong> Everything in this walkthrough is invented: the people, the fictional Notekeep app, the task, the IDs and the results. It is not taken from any real project, issue, log, diff or machine. It illustrates the documented workflow; it does not show a live system, and it does not promise 24/7 operation or that any failure can be recovered from.</p>
+<nav aria-label="Page sections">
+<ul class="nav-list">
+<li><a href="#what">What it is</a></li>
+<li><a href="#flow">The flow</a></li>
+<li><a href="#roles">Roles</a></li>
+<li><a href="#walkthrough">Walkthrough</a></li>
+<li><a href="#failures">When things go wrong</a></li>
+<li><a href="#controls">Pause controls</a></li>
+<li><a href="#claims">Implemented vs planned</a></li>
+<li><a href="#limits">Limits</a></li>
+</ul>
+</nav>
+</div>
+</header>
+<main id="main" tabindex="-1">
+<div class="wrap">
+
+<section id="what" aria-labelledby="what-h">
+<h2 id="what-h">What it is</h2>
+<p>Roundtable Work is a skill and configuration for existing agent hosts. One Chief owns the goal, the other roles work in separate sessions, and handoffs use a ticket, a delegation card, a delivery card and a checkpoint record. It has no background runtime of its own, and this page is an explanation, not a live system.</p>
+<h3>How every Chief turn ends</h3>
+<p>Each turn ends with exactly one continuation decision.</p>
+<dl class="defs">
+<div><dt><code>continue</code></dt><dd>Do the next step now, in this turn.</dd></div>
+<div><dt><code>wait</code></dt><dd>Wait for a named event and say how the wake-up would happen. Other independent work can go on.</dd></div>
+<div><dt><code>ask</code></dt><dd>A human decision is needed for one item. Only that item is suspended.</dd></div>
+<div><dt><code>done</code></dt><dd>Every acceptance item has evidence.</dd></div>
+<div><dt><code>stop</code></dt><dd>The budget is spent, there is no progress, the risk is too high or authorization is gone.</dd></div>
+</dl>
+</section>
+
+<section id="flow" aria-labelledby="flow-h">
+<h2 id="flow-h">The flow at a glance</h2>
+<p>Text first: nine stages, in order.</p>
+<ol class="flow">
+<li>Human goal</li>
+<li>Chief</li>
+<li>Developer</li>
+<li>Test gate</li>
+<li>Scope gate</li>
+<li>Independent reviewer</li>
+<li>Chief commit</li>
+<li>Pull request</li>
+<li>Human merge (outside the demo)</li>
+</ol>
+<p>Checks before review are called the <em>test gate</em> and the <em>scope gate</em> in this demo. They are instructions that an agent follows, not an automated enforcement engine. Independent review means a separate session judges the delivery. Its verdict line is <span class="contract" lang="zh-Hans">审查结论：通过 | 打回 | 阻塞</span> (approved | rejected | blocked).</p>
+</section>
+
+<section id="roles" aria-labelledby="roles-h">
+<h2 id="roles-h">Roles</h2>
+<p>A role is not a model. A separate session gives a fresh viewpoint, but a different model or name is not proof of quality.</p>
+<ul class="roles" role="list">
+<li class="role">
+<h3>Sample Requester</h3>
+<p class="role-tag">Role: <code>human</code></p>
+<p>Sets the goal, the acceptance and the limits. Can correct, pause or stop at any time. Merging is a human decision.</p>
+</li>
+<li class="role">
+<h3>Chief (demo)</h3>
+<p class="role-tag">Role: <code>chief</code></p>
+<p>The main contact. Writes the ticket, splits and delegates the work, reads the results, and ends every turn with one decision.</p>
+</li>
+<li class="role">
+<h3>Researcher (demo)</h3>
+<p class="role-tag">Role: <code>researcher</code></p>
+<p>Answers a bounded question with sources and separates what was observed from what was inferred.</p>
+</li>
+<li class="role">
+<h3>Developer (demo)</h3>
+<p class="role-tag">Role: <code>developer</code></p>
+<p>Turns a delegated task into a verifiable artifact and reports in a delivery card. Does not commit by default.</p>
+</li>
+<li class="role">
+<h3>Independent Reviewer (demo)</h3>
+<p class="role-tag">Role: <code>reviewer</code></p>
+<p>Judges the delivery against the original goal and acceptance, in a session separate from the author’s.</p>
+<p>The first line of its card is the verdict: <span class="contract" lang="zh-Hans">审查结论：通过 | 打回 | 阻塞</span> (approved | rejected | blocked).</p>
+</li>
+<li class="role">
+<h3>Fixer (demo)</h3>
+<p class="role-tag">Role: <code>fixer</code></p>
+<p>Handles a delegated bug: reproduces it with a failing check first, then fixes it.</p>
+</li>
+</ul>
+</section>
+
+<section id="walkthrough" aria-labelledby="walk-h">
+<h2 id="walk-h">Walkthrough</h2>
+<h3>The scenario</h3>
+<p>Notekeep dark-mode toggle: a synthetic Roundtable Work walkthrough. The task, the people and every ID are invented. This page follows 17 steps, from a human goal to a pull request that a human decides on.</p>
+<p class="banner" role="note"><strong>Synthetic data.</strong> This is not a recording of a real run.</p>
+<h4 class="legend-h">How to read the markers</h4>
+<ul class="legend" role="list">
+<li><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span></li>
+<li><span class="badge badge-wait"><span aria-hidden="true">◐</span> Waiting or asking</span></li>
+<li><span class="badge badge-reject"><span aria-hidden="true">✕</span> Sent back or stopped</span></li>
+<li><span class="badge badge-ok"><span aria-hidden="true">✓</span> Review passed</span></li>
+</ul>
+<p class="legend-note">Every marker has a symbol and a text label; colour is never the only signal.</p>
+<noscript><p class="banner" role="note">JavaScript is off. The interactive stepper is not shown. Every step is listed below in full, in order.</p></noscript>
+
+<div class="stepper" id="stepper" data-stepper hidden>
+<h3 id="stepper-h">Interactive stepper</h3>
+<div class="stepper-bar">
+<p class="step-count" id="step-count" data-total="17">Step 1 of 17</p>
+<div class="controls" role="group" aria-label="Walkthrough controls">
+<button type="button" class="btn" data-action="prev">Previous</button>
+<button type="button" class="btn btn-primary" data-action="next">Next</button>
+<button type="button" class="btn" data-action="play" aria-describedby="playback-note"><span aria-hidden="true" data-play-icon>▶</span> <span data-play-label>Play</span></button>
+<button type="button" class="btn" data-action="restart">Restart</button>
+</div>
+<p class="note" id="playback-note"><strong>Demo playback only</strong> — pauses the animation on this page and nothing else.</p>
+<p class="note" id="motion-note" hidden>Playback is off because your system asks for reduced motion. Use Previous and Next. The same information is shown as text.</p>
+<p class="note">Keyboard: Tab to a button, then Enter or Space. Optional: the Left and Right arrow keys also move between steps while focus is inside this panel.</p>
+</div>
+<div class="walk">
+<div class="diagram" data-kind="flow" aria-hidden="true">
+<div class="stage">
+<div class="ring"></div>
+<div class="ticket"><span class="ticket-label">Ticket state</span><code data-ticket-state>queued</code><span class="ticket-decision" data-ticket-decision></span></div>
+<div class="node slot-0" data-actor="requester" data-slot="0">
+<span class="node-shape" aria-hidden="true">◯</span>
+<span class="node-label">Human</span>
+<span class="now">Now</span>
+</div>
+<div class="node slot-1" data-actor="chief" data-slot="1">
+<span class="node-shape" aria-hidden="true">◆</span>
+<span class="node-label">Chief</span>
+<span class="now">Now</span>
+</div>
+<div class="node slot-2" data-actor="researcher" data-slot="2">
+<span class="node-shape" aria-hidden="true">◇</span>
+<span class="node-label">Researcher</span>
+<span class="now">Now</span>
+</div>
+<div class="node slot-3" data-actor="developer" data-slot="3">
+<span class="node-shape" aria-hidden="true">■</span>
+<span class="node-label">Developer</span>
+<span class="now">Now</span>
+</div>
+<div class="node slot-4" data-actor="reviewer" data-slot="4">
+<span class="node-shape" aria-hidden="true">▲</span>
+<span class="node-label">Reviewer</span>
+<span class="now">Now</span>
+</div>
+<div class="node slot-5" data-actor="fixer" data-slot="5">
+<span class="node-shape" aria-hidden="true">▼</span>
+<span class="node-label">Fixer</span>
+<span class="now">Now</span>
+</div>
+<div class="token slot-0" data-token><span class="token-lines"></span></div>
+</div>
+<div class="outside" data-outside><span class="outside-title">Outside the demo</span><span>Human merge decision. No control here.</span></div>
+</div>
+<div class="detail" id="step-detail" tabindex="-1" role="group" aria-label="Current step details"></div>
+</div>
+<div role="group" aria-label="Jump to a key step">
+<ul class="jumps" role="list">
+<li><button type="button" class="btn btn-small" data-goto="s05">Step 5: ask the human</button></li>
+<li><button type="button" class="btn btn-small" data-goto="s10">Step 10: review sent back</button></li>
+<li><button type="button" class="btn btn-small" data-goto="s14">Step 14: review passed</button></li>
+<li><button type="button" class="btn btn-small" data-goto="s17">Step 17: human decision</button></li>
+</ul>
+</div>
+<div role="group" aria-label="All steps">
+<ol class="dots">
+<li><button type="button" class="dot dot-flow" data-goto="s01" aria-label="Go to step 1: A human states a goal"><span aria-hidden="true">1</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s02" aria-label="Go to step 2: Chief writes the ticket"><span aria-hidden="true">2</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s03" aria-label="Go to step 3: Researcher answers a small question"><span aria-hidden="true">3</span></button></li>
+<li><button type="button" class="dot dot-wait" data-goto="s04" aria-label="Go to step 4: Chief hands the work to a developer"><span aria-hidden="true">4</span></button></li>
+<li><button type="button" class="dot dot-wait" data-goto="s05" aria-label="Go to step 5: Chief asks the human one question"><span aria-hidden="true">5</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s06" aria-label="Go to step 6: The human answers"><span aria-hidden="true">6</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s07" aria-label="Go to step 7: Developer returns a delivery card"><span aria-hidden="true">7</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s08" aria-label="Go to step 8: Test gate"><span aria-hidden="true">8</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s09" aria-label="Go to step 9: Scope gate"><span aria-hidden="true">9</span></button></li>
+<li><button type="button" class="dot dot-reject" data-goto="s10" aria-label="Go to step 10: Independent review: sent back"><span aria-hidden="true">10</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s11" aria-label="Go to step 11: The original author fixes the findings"><span aria-hidden="true">11</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s12" aria-label="Go to step 12: Test gate again"><span aria-hidden="true">12</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s13" aria-label="Go to step 13: Scope gate again"><span aria-hidden="true">13</span></button></li>
+<li><button type="button" class="dot dot-ok" data-goto="s14" aria-label="Go to step 14: Independent review: approved"><span aria-hidden="true">14</span></button></li>
+<li><button type="button" class="dot dot-flow" data-goto="s15" aria-label="Go to step 15: Chief commits on a feature branch"><span aria-hidden="true">15</span></button></li>
+<li><button type="button" class="dot dot-wait" data-goto="s16" aria-label="Go to step 16: Chief opens a pull request"><span aria-hidden="true">16</span></button></li>
+<li><button type="button" class="dot dot-wait" data-goto="s17" aria-label="Go to step 17: A human decides whether to merge"><span aria-hidden="true">17</span></button></li>
+</ol>
+</div>
+<p class="visually-hidden" id="live" role="status" aria-live="polite" aria-atomic="true"></p>
+</div>
+
+<h3 id="all-steps-h">All steps in order</h3>
+<details class="all-steps" id="all-steps" open>
+<summary>Full text of all 17 steps</summary>
+<ol class="steps" id="step-list" role="list">
+<li id="step-s01" class="step" data-step="s01" data-actor="requester" data-phase="goal" data-kind="flow" data-title="A human states a goal" data-actor-name="Sample Requester" data-state="queued">
+<h4 class="step-title"><span class="step-no">Step 1</span> A human states a goal</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Sample Requester</span> <span class="phase">Phase: <code>goal</code></span></p>
+<p class="step-summary">Sample Requester asks for a dark-mode toggle in the fictional Notekeep app and lists what would count as done. The human sets the direction, the acceptance and the limits of authority.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>goal text (synthetic): add a dark-mode toggle to Notekeep</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>queued</code></dd></div>
+</dl>
+</li>
+<li id="step-s02" class="step" data-step="s02" data-actor="chief" data-phase="ticket" data-kind="flow" data-title="Chief writes the ticket" data-actor-name="Chief (demo)" data-state="queued" data-decision="continue">
+<h4 class="step-title"><span class="step-no">Step 2</span> Chief writes the ticket</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>ticket</code></span></p>
+<p class="step-summary">Chief turns the goal into ticket DEMO-001 with the original wording, four checkable acceptance items, the allowed scope, and a budget (at most 2 attempts per assignment, at most 2 review rejections before a human decides).</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>ticket DEMO-001</li>
+<li>acceptance 1: the toggle switches between light and dark themes</li>
+<li>acceptance 2: the choice is kept after a reload</li>
+<li>acceptance 3: the control works with a keyboard and has an accessible name</li>
+<li>acceptance 4: the first visit follows the system color preference</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>queued</code></dd></div>
+<div><dt>Decision</dt><dd><code>continue</code></dd></div>
+</dl>
+</li>
+<li id="step-s03" class="step" data-step="s03" data-actor="researcher" data-phase="consult" data-kind="flow" data-title="Researcher answers a small question" data-actor-name="Researcher (demo)" data-state="assigned">
+<h4 class="step-title"><span class="step-no">Step 3</span> Researcher answers a small question</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Researcher (demo)</span> <span class="phase">Phase: <code>consult</code></span></p>
+<p class="step-summary">Chief asks one bounded question: does Notekeep already store any theme setting? The Researcher reports, with sources, that it has none, and separates what was observed from what was inferred.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>delivery card DEMO-001-res (findings and sources, synthetic)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>assigned</code></dd></div>
+</dl>
+</li>
+<li id="step-s04" class="step" data-step="s04" data-actor="chief" data-phase="delegation" data-kind="wait" data-title="Chief hands the work to a developer" data-actor-name="Chief (demo)" data-state="working" data-decision="wait">
+<h4 class="step-title"><span class="step-no">Step 4</span> Chief hands the work to a developer</h4>
+<p class="step-meta"><span class="badge badge-wait"><span aria-hidden="true">◐</span> Waiting or asking</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>delegation</code></span></p>
+<p class="step-summary">Chief sends delegation card DEMO-001-dev with the target version, acceptance, workspace, allowed files and a no-commit rule. The host only reports started and returned, so Chief records sent+started and later returned, and marks the other delegation events as not confirmed.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>delegation card DEMO-001-dev</li>
+<li>allowed files: the theme module and its test (fictional)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>working</code></dd></div>
+<div><dt>Decision</dt><dd><code>wait</code></dd></div>
+</dl>
+</li>
+<li id="step-s05" class="step" data-step="s05" data-actor="chief" data-phase="clarification" data-kind="wait" data-title="Chief asks the human one question" data-actor-name="Chief (demo)" data-state="waiting_person" data-decision="ask">
+<h4 class="step-title"><span class="step-no">Step 5</span> Chief asks the human one question</h4>
+<p class="step-meta"><span class="badge badge-wait"><span aria-hidden="true">◐</span> Waiting or asking</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>clarification</code></span></p>
+<p class="step-summary">Open question Q1: on the very first visit, follow the system preference or start in light mode? Chief recommends following the system preference, which is easy to reverse, and keeps other work going. Only the item that needs the human is suspended.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>question Q1 with two options and a recommendation</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>waiting_person</code></dd></div>
+<div><dt>Decision</dt><dd><code>ask</code></dd></div>
+</dl>
+</li>
+<li id="step-s06" class="step" data-step="s06" data-actor="requester" data-phase="answer" data-kind="flow" data-title="The human answers" data-actor-name="Sample Requester" data-state="working" data-decision="continue">
+<h4 class="step-title"><span class="step-no">Step 6</span> The human answers</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Sample Requester</span> <span class="phase">Phase: <code>answer</code></span></p>
+<p class="step-summary">Sample Requester accepts the recommendation: follow the system preference. The acceptance item that was provisionally treated as met is now confirmed.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>answer to Q1 (synthetic)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>working</code></dd></div>
+<div><dt>Decision</dt><dd><code>continue</code></dd></div>
+</dl>
+</li>
+<li id="step-s07" class="step" data-step="s07" data-actor="developer" data-phase="delivery" data-kind="flow" data-title="Developer returns a delivery card" data-actor-name="Developer (demo)" data-state="working">
+<h4 class="step-title"><span class="step-no">Step 7</span> Developer returns a delivery card</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Developer (demo)</span> <span class="phase">Phase: <code>delivery</code></span></p>
+<p class="step-summary">The Developer reports what changed, the checks it ran, and what it did not do. It did not commit, because executors do not commit by default.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>delivery card DEMO-001-dev (revision 1)</li>
+<li>changed files: 2 (fictional)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>working</code></dd></div>
+</dl>
+</li>
+<li id="step-s08" class="step" data-step="s08" data-actor="chief" data-phase="test-gate" data-kind="flow" data-title="Test gate" data-actor-name="Chief (demo)" data-state="working" data-gate="test gate: pass">
+<h4 class="step-title"><span class="step-no">Step 8</span> Test gate</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>test-gate</code></span></p>
+<p class="step-summary">Chief does not rely on the Developer's own report. It reads the evidence and runs the final full check itself. In this synthetic run the check passes.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>check run (synthetic): full test command, exit status 0</li>
+</ul>
+<dl class="facts">
+<div><dt>Gate result</dt><dd>test gate: pass</dd></div>
+<div><dt>Ticket state</dt><dd><code>working</code></dd></div>
+</dl>
+</li>
+<li id="step-s09" class="step" data-step="s09" data-actor="chief" data-phase="scope-gate" data-kind="flow" data-title="Scope gate" data-actor-name="Chief (demo)" data-state="review" data-gate="scope gate: pass">
+<h4 class="step-title"><span class="step-no">Step 9</span> Scope gate</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>scope-gate</code></span></p>
+<p class="step-summary">Chief compares the changed files with the allowed files, for example from the version-control status. Nothing outside the allowed scope was written.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>scope comparison (synthetic): 2 changed, 2 allowed</li>
+</ul>
+<dl class="facts">
+<div><dt>Gate result</dt><dd>scope gate: pass</dd></div>
+<div><dt>Ticket state</dt><dd><code>review</code></dd></div>
+</dl>
+</li>
+<li id="step-s10" class="step" data-step="s10" data-actor="reviewer" data-phase="review" data-kind="reject" data-title="Independent review: sent back" data-actor-name="Independent Reviewer (demo)" data-state="working" data-decision="continue" data-gate="independent review: rejected">
+<h4 class="step-title"><span class="step-no">Step 10</span> Independent review: sent back</h4>
+<p class="step-meta"><span class="badge badge-reject"><span aria-hidden="true">✕</span> Sent back or stopped</span> <span class="actor">Actor: Independent Reviewer (demo)</span> <span class="phase">Phase: <code>review</code></span></p>
+<p class="step-summary">A separate reviewer session checks the delivery against the ticket, not against the author's claim of success. The first line of its card is the verdict. Finding 1: the toggle has no accessible name (acceptance 3). Finding 2: the choice is lost after a reload (acceptance 2). Each finding names a trigger and a direction for the fix.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>review card DEMO-001-rev (round 1)</li>
+<li>verdict line: <span class="contract" lang="zh-Hans">审查结论：打回</span> (rejected)</li>
+</ul>
+<dl class="facts">
+<div><dt>Gate result</dt><dd>independent review: <span class="contract" lang="zh-Hans">审查结论：打回</span> (rejected)</dd></div>
+<div><dt>Ticket state</dt><dd><code>working</code></dd></div>
+<div><dt>Decision</dt><dd><code>continue</code></dd></div>
+</dl>
+</li>
+<li id="step-s11" class="step" data-step="s11" data-actor="developer" data-phase="rework" data-kind="flow" data-title="The original author fixes the findings" data-actor-name="Developer (demo)" data-state="working">
+<h4 class="step-title"><span class="step-no">Step 11</span> The original author fixes the findings</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Developer (demo)</span> <span class="phase">Phase: <code>rework</code></span></p>
+<p class="step-summary">Chief returns the findings to the original Developer. The Developer adds an accessible name, stores the choice, adds a test for each finding, and returns a new delivery card that answers each finding. This is review rejection 1 of at most 2 under the default budget.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>delivery card DEMO-001-dev (revision 2)</li>
+<li>two new tests, one per finding (fictional)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>working</code></dd></div>
+</dl>
+</li>
+<li id="step-s12" class="step" data-step="s12" data-actor="chief" data-phase="test-gate" data-kind="flow" data-title="Test gate again" data-actor-name="Chief (demo)" data-state="working" data-gate="test gate: pass">
+<h4 class="step-title"><span class="step-no">Step 12</span> Test gate again</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>test-gate</code></span></p>
+<p class="step-summary">Chief runs the full check on the new version. Because behavior and tests changed, the work must be reviewed again.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>check run (synthetic): full test command, exit status 0</li>
+</ul>
+<dl class="facts">
+<div><dt>Gate result</dt><dd>test gate: pass</dd></div>
+<div><dt>Ticket state</dt><dd><code>working</code></dd></div>
+</dl>
+</li>
+<li id="step-s13" class="step" data-step="s13" data-actor="chief" data-phase="scope-gate" data-kind="flow" data-title="Scope gate again" data-actor-name="Chief (demo)" data-state="review" data-gate="scope gate: pass">
+<h4 class="step-title"><span class="step-no">Step 13</span> Scope gate again</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>scope-gate</code></span></p>
+<p class="step-summary">Chief repeats the scope comparison on the new version. Still inside the allowed files.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>scope comparison (synthetic): 2 changed, 2 allowed</li>
+</ul>
+<dl class="facts">
+<div><dt>Gate result</dt><dd>scope gate: pass</dd></div>
+<div><dt>Ticket state</dt><dd><code>review</code></dd></div>
+</dl>
+</li>
+<li id="step-s14" class="step" data-step="s14" data-actor="reviewer" data-phase="review" data-kind="ok" data-title="Independent review: approved" data-actor-name="Independent Reviewer (demo)" data-state="ready" data-gate="independent review: approved">
+<h4 class="step-title"><span class="step-no">Step 14</span> Independent review: approved</h4>
+<p class="step-meta"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Review passed</span> <span class="actor">Actor: Independent Reviewer (demo)</span> <span class="phase">Phase: <code>review</code></span></p>
+<p class="step-summary">The reviewer re-checks the affected items and the likely regressions against the new version. Every acceptance item now has evidence.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>review card DEMO-001-rev (round 2)</li>
+<li>verdict line: <span class="contract" lang="zh-Hans">审查结论：通过</span> (approved)</li>
+</ul>
+<dl class="facts">
+<div><dt>Gate result</dt><dd>independent review: <span class="contract" lang="zh-Hans">审查结论：通过</span> (approved)</dd></div>
+<div><dt>Ticket state</dt><dd><code>ready</code></dd></div>
+</dl>
+</li>
+<li id="step-s15" class="step" data-step="s15" data-actor="chief" data-phase="commit" data-kind="flow" data-title="Chief commits on a feature branch" data-actor-name="Chief (demo)" data-state="ready">
+<h4 class="step-title"><span class="step-no">Step 15</span> Chief commits on a feature branch</h4>
+<p class="step-meta"><span class="badge badge-flow"><span aria-hidden="true">●</span> Normal flow</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>commit</code></span></p>
+<p class="step-summary">Only after the review passes, Chief commits the change on a feature branch. The Developer never committed. Nothing is merged.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>commit demo-commit-0001 on branch demo/DEMO-001 (fictional)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>ready</code></dd></div>
+</dl>
+</li>
+<li id="step-s16" class="step" data-step="s16" data-actor="chief" data-phase="pull-request" data-kind="wait" data-title="Chief opens a pull request" data-actor-name="Chief (demo)" data-state="ready" data-decision="wait">
+<h4 class="step-title"><span class="step-no">Step 16</span> Chief opens a pull request</h4>
+<p class="step-meta"><span class="badge badge-wait"><span aria-hidden="true">◐</span> Waiting or asking</span> <span class="actor">Actor: Chief (demo)</span> <span class="phase">Phase: <code>pull-request</code></span></p>
+<p class="step-summary">In this synthetic setup the deployment policy allows Chief to open a pull request. The description states the problem, the checks that were actually run, the checks not run, and the remaining risks. Chief then waits for a human; whether a wake-up on merge exists depends on the host.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>pull request DEMO-PR-1 (fictional, no real link)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>ready</code></dd></div>
+<div><dt>Decision</dt><dd><code>wait</code></dd></div>
+</dl>
+</li>
+<li id="step-s17" class="step" data-step="s17" data-actor="requester" data-phase="human-merge" data-kind="wait" data-title="A human decides whether to merge" data-actor-name="Sample Requester" data-state="waiting_person">
+<h4 class="step-title"><span class="step-no">Step 17</span> A human decides whether to merge</h4>
+<p class="step-meta"><span class="badge badge-wait"><span aria-hidden="true">◐</span> Waiting or asking</span> <span class="actor">Actor: Sample Requester</span> <span class="phase">Phase: <code>human-merge</code></span></p>
+<p class="step-summary">Merging is a human-only step and happens outside this demo. The demo has no merge control and performs no privileged action. Only after a human merges and the evidence is checked could the ticket move to done.</p>
+<p class="label">Artifacts</p>
+<ul class="artifacts">
+<li>human decision (outside the demo)</li>
+</ul>
+<dl class="facts">
+<div><dt>Ticket state</dt><dd><code>waiting_person</code></dd></div>
+</dl>
+</li>
+</ol>
+</details>
+
+<h3 id="moments-h">Key moments</h3>
+<div class="moments">
+<article class="moment" aria-labelledby="moment-ask">
+<h4 id="moment-ask">Ask the human</h4>
+<p><span class="badge badge-wait"><span aria-hidden="true">◐</span> Waiting or asking</span></p>
+<p>Open question Q1: on the very first visit, follow the system preference or start in light mode? Chief recommends following the system preference, which is easy to reverse, and keeps other work going. Only the item that needs the human is suspended.</p>
+<ul>
+<li><a href="#step-s05" data-step="s05">Step 5</a>: Chief asks the human one question (state <code>waiting_person</code>, decision <code>ask</code>).</li>
+<li><a href="#step-s06" data-step="s06">Step 6</a>: The human answers (state <code>working</code>, decision <code>continue</code>).</li>
+</ul>
+</article>
+<article class="moment" aria-labelledby="moment-reject">
+<h4 id="moment-reject">Rejection, fix and approval</h4>
+<p><span class="badge badge-reject"><span aria-hidden="true">✕</span> Sent back or stopped</span></p>
+<p>The reviewer sends the work back, the original author fixes it, and a second review passes. The verdict line is shown exactly as the reviewer writes it.</p>
+<ul>
+<li><a href="#step-s10" data-step="s10">Step 10</a>: Independent review: sent back (state <code>working</code>, decision <code>continue</code>). Verdict line: <span class="contract" lang="zh-Hans">审查结论：打回</span> (rejected).</li>
+<li><a href="#step-s11" data-step="s11">Step 11</a>: The original author fixes the findings (state <code>working</code>).</li>
+<li><a href="#step-s14" data-step="s14">Step 14</a>: Independent review: approved (state <code>ready</code>). Verdict line: <span class="contract" lang="zh-Hans">审查结论：通过</span> (approved).</li>
+</ul>
+</article>
+<article class="moment" aria-labelledby="moment-merge">
+<h4 id="moment-merge">Human merge</h4>
+<p><span class="badge badge-wait"><span aria-hidden="true">◐</span> Waiting or asking</span></p>
+<p>Merging is a human-only step and happens outside this demo. The demo has no merge control and performs no privileged action. Only after a human merges and the evidence is checked could the ticket move to done. No button on this page performs a merge or any other privileged action.</p>
+<ul>
+<li><a href="#step-s17" data-step="s17">Step 17</a>: A human decides whether to merge (state <code>waiting_person</code>).</li>
+</ul>
+</article>
+</div>
+</section>
+
+<section id="failures" aria-labelledby="fail-h">
+<h2 id="fail-h">When things go wrong</h2>
+<p>These branches show what the Chief does. They never say that recovery will succeed.</p>
+<table class="grid" role="table">
+<caption>Failure branches in the synthetic scenario</caption>
+<thead role="rowgroup">
+<tr role="row"><th scope="col" role="columnheader">ID</th><th scope="col" role="columnheader">Trigger</th><th scope="col" role="columnheader">What the Chief does</th><th scope="col" role="columnheader">Outcome</th></tr>
+</thead>
+<tbody role="rowgroup">
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f01</th><td role="cell" data-label="Trigger">The host cannot start a separate reviewer session.</td><td role="cell" data-label="What the Chief does">Chief does not approve its own work. Any same-session check is labelled a self-check, not an independent review. The ticket stays short of done and Chief asks the human whether to accept a self-check or to wait for a reviewer.</td><td role="cell" data-label="Outcome">Review stays pending. The human decides; independence is not claimed in the meantime.</td></tr>
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f02</th><td role="cell" data-label="Trigger">The reviewer sends the work back more times than the configured limit (default 2 rounds).</td><td role="cell" data-label="What the Chief does">Chief stops further automatic rework and hands the disagreement to the human with the findings and the evidence.</td><td role="cell" data-label="Outcome">A human decides whether to continue, change the acceptance or abandon the work.</td></tr>
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f03</th><td role="cell" data-label="Trigger">A test gate fails.</td><td role="cell" data-label="What the Chief does">Chief does not accept the work and does not send it for review. The failing output goes back to the original author within the attempt budget.</td><td role="cell" data-label="Outcome">The work may pass on a later attempt. If attempts run out, Chief stops and reports (see f04).</td></tr>
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f04</th><td role="cell" data-label="Trigger">The attempt budget for an assignment is used up (default 2 attempts).</td><td role="cell" data-label="What the Chief does">Chief records stop for the affected work, reports what was tried, and states the decision it needs from the human.</td><td role="cell" data-label="Outcome">The work halts. Recovery, if any, starts from a human decision.</td></tr>
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f05</th><td role="cell" data-label="Trigger">Two turns in a row produce no new fact and no new artifact.</td><td role="cell" data-label="What the Chief does">Chief records stop instead of repeating the same step.</td><td role="cell" data-label="Outcome">The work halts and is reported. Nothing is retried automatically.</td></tr>
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f06</th><td role="cell" data-label="Trigger">A scope gate finds a file written outside the allowed files.</td><td role="cell" data-label="What the Chief does">Chief does not accept the work. The out-of-scope change is reported, not silently kept, and the human or Chief decides whether it is reverted or re-authorized.</td><td role="cell" data-label="Outcome">The work is held until the scope question is settled.</td></tr>
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f07</th><td role="cell" data-label="Trigger">The result of an external action is unknown, for example a request that may or may not have been sent.</td><td role="cell" data-label="What the Chief does">The state is marked unknown. Chief checks the real state first and does not blindly repeat the action.</td><td role="cell" data-label="Outcome">The action is retried or escalated only after the actual state is known; some outcomes may stay unknown.</td></tr>
+<tr role="row"><th scope="row" role="rowheader" data-label="ID">f08</th><td role="cell" data-label="Trigger">The session ends while Chief is waiting for an event.</td><td role="cell" data-label="What the Chief does">A turn ending does not wake anything. Only a wake-up mechanism the host really supports can resume the work, and this has not been verified. Otherwise the human re-engages and Chief re-checks the facts before continuing.</td><td role="cell" data-label="Outcome">Work may sit idle until a human or a supported host event resumes it.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="controls" aria-labelledby="ctl-h">
+<h2 id="ctl-h">Pause controls</h2>
+<p>The first five entries are real controls described by the repository instructions. The last one is a visual control on this page only.</p>
+<dl class="defs">
+<div class=""><dt>Human pauses, corrects or stops</dt><dd>The human can send a correction, pause or stop at any time. Chief handles the correction before new work. Whether a sub-session that is already running can be interrupted depends on the host.</dd></div>
+<div class=""><dt><code>wait</code></dt><dd>Chief names the specific event it is waiting for and how it would be woken. Unrelated work can continue. It is not a promise that a wake-up will happen.</dd></div>
+<div class=""><dt><code>ask</code></dt><dd>Only the item that needs a human decision is suspended, with a concrete question and a recommendation. Other work continues.</dd></div>
+<div class=""><dt><code>stop</code></dt><dd>Used when the budget is spent, no progress is made, risk exceeds the limit or authorization is lost. Chief stops the related attempts and reports the reason and the needed decision.</dd></div>
+<div class=""><dt>Human merge</dt><dd>Merge and deploy always need a human decision under the default policy. The demo itself has no merge button.</dd></div>
+<div class="is-demo"><dt>Demo playback pause <span class="badge badge-wait"><span aria-hidden="true">◐</span> Visual control only</span></dt><dd>A visual control on this page that pauses or steps its animation. It changes nothing outside the page and does not stand for any real system control.</dd></div>
+</dl>
+</section>
+
+<section id="claims" aria-labelledby="claims-h">
+<h2 id="claims-h">Implemented today vs planned</h2>
+<p>Implemented means written down in the repository as instructions, templates, scripts or CI. It does not mean that a background service exists, and it does not mean the behavior was measured in a live run. Planned rows mark the boundary and are not claims.</p>
+<table class="grid" role="table">
+<caption>Statements, their status and the repository path that backs them</caption>
+<thead role="rowgroup">
+<tr role="row"><th scope="col" role="columnheader">Statement</th><th scope="col" role="columnheader">Status</th><th scope="col" role="columnheader">Evidence</th></tr>
+</thead>
+<tbody role="rowgroup">
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The skill defines five roles with separate instructions: Chief, developer, fixer, reviewer and researcher.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/SKILL.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">Work is handed over with structured templates: ticket, delegation card, delivery card and checkpoint record.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/SKILL.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">Every Chief turn ends with one of five continuation decisions: continue, wait, ask, done or stop.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/SKILL.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The Chief instructions require reading the evidence in a delivery, checking for writes outside the allowed scope, and running the final full check before acceptance.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/prompts/roles/chief.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The reviewer instructions require the first line of a review card to be the verdict line, and state that an independent session or a different model is not proof of correctness.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/prompts/roles/reviewer.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The Chief instructions require a review to be done by a different session than the author; a review by the same session is called a self-check.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/prompts/roles/chief.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">Executors do not commit by default; the Chief commits after a review passes.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/SKILL.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The policy template sets default budgets: 2 attempts per assignment, 2 review rejections before a human decides, and stop after 2 turns without progress.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/templates/policy.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The policy template lists merging, publishing and deploying as actions that need the user's approval first.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.agents/skills/roundtable-work/templates/policy.md</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The repository ships an installer and a read-only doctor script; the doctor reports background wake-up as unverified.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>scripts/doctor.mjs</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">The repository's own CI workflow runs the install and test commands on pushes and pull requests.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>.github/workflows/check.yml</code></td></tr>
+<tr role="row" class="implemented"><th scope="row" role="rowheader" data-label="Statement">Contributions use a pull request that links an issue and reports the checks actually run and those not run.</th><td role="cell" data-label="Status"><span class="badge badge-ok"><span aria-hidden="true">✓</span> Implemented</span></td><td role="cell" data-label="Evidence"><code>CONTRIBUTING.md</code></td></tr>
+<tr role="row" class="planned"><th scope="row" role="rowheader" data-label="Statement">Waking the Chief in the background after a turn ends, which depends on the host and has not been verified.</th><td role="cell" data-label="Status"><span class="badge badge-wait"><span aria-hidden="true">◌</span> Planned, not claimed</span></td><td role="cell" data-label="Evidence">No path: planned only</td></tr>
+<tr role="row" class="planned"><th scope="row" role="rowheader" data-label="Statement">A loop that turns external events into issues and queued work, described only as a candidate design.</th><td role="cell" data-label="Status"><span class="badge badge-wait"><span aria-hidden="true">◌</span> Planned, not claimed</span></td><td role="cell" data-label="Evidence">No path: planned only</td></tr>
+<tr role="row" class="planned"><th scope="row" role="rowheader" data-label="Statement">Restart recovery with an outbox, idempotency keys and lease fencing, described only as a design.</th><td role="cell" data-label="Status"><span class="badge badge-wait"><span aria-hidden="true">◌</span> Planned, not claimed</span></td><td role="cell" data-label="Evidence">No path: planned only</td></tr>
+<tr role="row" class="planned"><th scope="row" role="rowheader" data-label="Statement">A static, accessible demo site built from this data, deployed through a reviewed workflow.</th><td role="cell" data-label="Status"><span class="badge badge-wait"><span aria-hidden="true">◌</span> Planned, not claimed</span></td><td role="cell" data-label="Evidence">No path: planned only</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="limits" aria-labelledby="limits-h">
+<h2 id="limits-h">Limits</h2>
+<ul class="limits">
+<li>This is a synthetic walkthrough, not a recording of a real run.</li>
+<li>Roundtable Work is a skill and configuration for existing agent hosts. It has no background runtime of its own, and the demo makes no claim of 24/7 operation.</li>
+<li>A turn ending is not a wake-up. Resuming without a person depends on host features that have not been verified here.</li>
+<li>Nothing here promises that any failure can be recovered from; some work will stop and need a person.</li>
+<li>Independent review reduces shared blind spots but is not proof of correctness.</li>
+<li>Test and scope gates are Chief verification steps described in instructions and performed by an agent; they are not automatically enforced by a runtime.</li>
+<li>The demo performs no merge, deploy or other privileged action. Merging is a human decision outside the demo.</li>
+<li>The default budgets are template defaults that a deployment may change.</li>
+</ul>
+</section>
+
+</div>
+</main>
+<footer class="site-footer">
+<div class="wrap">
+<p>Synthetic content only. This page has no forms, no cookies and no stored data, and it makes no network requests. Merging and deploying are human decisions outside this page.</p>
+<p><a href="#main">Back to the top of the content</a></p>
+</div>
+</footer>
+</body>
+</html>
