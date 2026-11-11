@@ -12,6 +12,7 @@
     "check": "node scripts/check.mjs",
     "test": "node --test && npm run check",
     "doctor": "node scripts/doctor.mjs",
-    "setup": "node scripts/install.mjs"
+    "setup": "node scripts/install.mjs",
+    "build:site": "node scripts/build-site.mjs"
   }
 }
