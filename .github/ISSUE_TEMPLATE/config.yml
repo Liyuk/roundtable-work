@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 讨论想法或新功能
+  - name: Discuss an idea or new feature
     url: https://github.com/Liyuk/roundtable-work/discussions
-    about: 新想法和一般性功能请先发起 Discussion，再拆分为 Issue。
+    about: Please start a Discussion for new ideas and general features first, then split it into Issues.

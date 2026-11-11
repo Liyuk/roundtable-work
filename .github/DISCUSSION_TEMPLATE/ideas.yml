@@ -2,16 +2,16 @@ body:
   - type: textarea
     id: problem
     attributes:
-      label: 想解决什么问题？
+      label: What problem do you want to solve?
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: 想法、备选方案与预期结果
+      label: Idea, alternatives, and expected outcome
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
-      label: 如何判断方案有效？
+      label: How will we know the approach works?

@@ -1,46 +1,46 @@
-# Chief 的组织调整与多层汇报
+# Chief's organizational adjustment and multi-layer reporting
 
-目标：让 Chief 在项目与授权范围内，依据实际工作自主调整团队规模、角色和工作流，并让信息逐级压缩但关键风险不会消失。此方案为提案；组织调整必须满足部署者预设边界。
+Goal: let Chief, within the project and authorization scope, autonomously adjust team size, roles and workflow based on the actual work, and let information be compressed level by level without key risks disappearing. This approach is a proposal; organizational adjustments must satisfy the boundaries preset by the deployer.
 
-## 决策输入与节奏
+## Decision inputs and cadence
 
-每次组织结构重大变化、积压跨过阈值或复盘时重新评估；也可配置有预算的低频周期评估。工作室预设不新增定时轮询，先由交付/阻塞/资源事件触发；如需周期评估，应明确启用。每次检查：待办类型和优先级、真实排队/运行/等待时间、依赖和文件冲突、失败与返工、审查容量、资源与模型成本、上下文/交接开销、可用工具及用户关注点。
+Reassess at each major change in organizational structure, when the backlog crosses a threshold, or at a retrospective; a low-frequency periodic assessment with a budget can also be configured. The studio preset adds no scheduled polling: it is triggered first by delivery/blocking/resource events, and a periodic assessment should be enabled explicitly if needed. At each check: pending work types and priorities, real queuing/running/waiting times, dependencies and file conflicts, failures and rework, review capacity, resource and model cost, context/handoff overhead, available tools and the user's concerns.
 
-区别“认领未结束”和实际工作：挂起任务不算持续执行。短时闲置不自动触发裁员；积压不自动证明要扩员，先排查是否等待人、缺授权、运行器失败或资源饱和。每次决策写明证据窗口、置信度、预计收益、成本和回滚条件。
+Distinguish "claim not yet ended" from actual work: a suspended task does not count as continuous execution. Short-term idleness does not automatically trigger downsizing; a backlog does not automatically prove that headcount should grow, so first check whether it is waiting on a person, lacking authorization, a runner failure or resource saturation. Each decision states the evidence window, confidence, expected benefit, cost and rollback conditions.
 
-## 增加、减少与调整角色
+## Adding, reducing and adjusting roles
 
-| 情况 | 可选决策 | 验证与保护 |
+| Situation | Possible decisions | Verification and safeguards |
 | --- | --- | --- |
-| 独立任务排队增长、资源足、无写冲突 | 临时扩工作会话；若长期持续，再提议增加长期 Bot | 设上限、工作范围和观察期；同一角色 session 可复用身份，不必每次创建新 Bot |
-| 新能力缺口反复出现 | 提议新增专业角色或为现有角色增加技能 | 先检查已有能力；新权限需事先授权，不能自授 |
-| 交接重叠、消息量高、职责不清 | 合并职责、调整负责范围或减少汇报层级 | 保留独立审查和清晰 owner；先试点再调整 |
-| 长期无可执行工作或资源紧张 | 停止创建新 session、暂停角色或减少并发 | 等已领任务交接/完成；不杀未知状态的外部动作 |
-| 多次无进展或失败 | 诊断任务/工具/模型；必要时改派或变更工作流 | 标记 attempt、保留上下文；不以停用角色掩盖故障 |
+| Independent tasks queue up, resources suffice, no write conflicts | Temporarily expand work sessions; if it persists, propose adding a long-term Bot | Set a cap, a work scope and an observation period; sessions of the same role can reuse the identity, so a new Bot need not be created each time |
+| A new capability gap keeps recurring | Propose a new specialist role or add a skill to an existing role | Check existing capabilities first; new permissions require prior authorization and cannot be self-granted |
+| Handoffs overlap, message volume is high, responsibilities are unclear | Merge responsibilities, adjust the scope of ownership or reduce reporting layers | Keep independent review and a clear owner; pilot before adjusting |
+| No executable work for a long time or resources are tight | Stop creating new sessions, pause roles or reduce concurrency | Wait until claimed tasks are handed off/completed; do not kill external actions whose state is unknown |
+| Repeated lack of progress or failure | Diagnose the task/tool/model; reassign or change the workflow if necessary | Mark the attempt and keep the context; do not mask a fault by disabling a role |
 
-长期角色启停、人员设定、结构变更可在用户预先授予的范围内自主执行；新账号、扩大权限、突破预算、对外身份及安全政策变更必须依配置授权。若授权不足则形成提案而非执行。每次调整生成组织决策记录：旧结构、证据、候选方案、决定、影响的任务、负责人、生效时间、验证指标及回滚方式。
+Starting and stopping long-term roles, persona settings and structural changes can be executed autonomously within the scope the user has granted in advance; new accounts, expanded permissions, exceeding the budget, external identities and security policy changes must follow configured authorization. If authorization is insufficient, form a proposal instead of executing. Each adjustment produces an organizational decision record: the old structure, evidence, candidate options, decision, affected tasks, owner, effective time, verification metrics and rollback method.
 
-移除角色顺序：停止接新单 → 清点未完成 assignment 与未读消息 → 完成交接或安全取消 → 核实进程与外部动作 → 撤销不再需要的凭据/权限 → 保留审计与必要记忆 → 标记退役。退役不删除历史证据。新增角色按 [创建流程](02-team-and-sessions.md)执行。
+Order for removing a role: stop accepting new tickets → take stock of unfinished assignments and unread messages → complete the handoff or cancel safely → verify processes and external actions → revoke credentials/permissions that are no longer needed → keep the audit trail and necessary memory → mark as retired. Retirement does not delete historical evidence. Adding a role follows the [creation process](02-team-and-sessions.md).
 
-## 多层组织与信息过滤
+## Multi-layer organization and information filtering
 
 ```text
-人 ↔ Chief ↔ 领域负责人 ↔ 执行者 / 审查者
-                 ↘ 任务卡与工单事件 ↗
+Person ↔ Chief ↔ Domain lead ↔ Executor / Reviewer
+                 ↘ Assignment cards and ticket events ↗
 ```
 
-小团队默认 Chief 直管，确有协调范围扩大、跨领域依赖或 Chief 信息过载时才增加中间负责人；层级有成本。每项任务仍有一个 owner；上级负责分配/裁决，下级对实际产出负责。报告卡最低字段：目标与版本、结论、实测证据链接、未完成、风险、等待对象、需要上级的决定、建议、有效期限。
+A small team defaults to Chief managing directly; intermediate leads are added only when the coordination scope really grows, there are cross-domain dependencies or Chief is overloaded with information; layers have a cost. Each task still has one owner; the upper level is responsible for assignment/arbitration and the lower level for the actual output. Minimum fields of a report card: goal and version, conclusion, links to measured evidence, unfinished items, risks, who is being waited on, decisions needed from the upper level, recommendations, validity period.
 
-| 信息 | 向上处理 |
+| Information | Upward handling |
 | --- | --- |
-| 普通运行与可独立处理的交接 | 写入工单；上级按需读取摘要 |
-| 子任务交付和无争议结果 | 上报一次，保留原始证据，按关联关系汇总 |
-| 必改、安全/权限、钱、冲突、预算耗尽、无进展 | 立即升级给有权处理的负责人，标记时限与影响 |
-| 需要人判断、超出授权或外部副作用未知 | 路由至 Chief，由 Chief 汇总最小必要信息给人 |
-| 自我改进建议 | 进入候选池并附证据，避免每条建议都打断人 |
+| Ordinary operation and handoffs that can be handled independently | Write to the ticket; the upper level reads summaries as needed |
+| Subtask deliveries and uncontested results | Report once, keep the original evidence, and aggregate by association |
+| Must-fix items, security/permissions, money, conflicts, exhausted budget, no progress | Escalate immediately to the lead with authority to handle it, marking the deadline and impact |
+| Needs a person's judgment, exceeds authorization or has unknown external side effects | Route to Chief, who aggregates the minimum necessary information for the person |
+| Self-improvement suggestions | Enter the candidate pool with evidence, so that not every suggestion interrupts a person |
 
-过滤是压缩，不是丢弃：保留原文和溯源；禁止把失败合并成“正常”、把未知变通过或把风险埋入普通摘要。上级可下钻，并为已发送/收到/处理分别留证。若汇总者失联，未处理升级事件到期回到有权上级；避免死锁和循环转发。
+Filtering is compression, not discarding: keep the original text and provenance; it is forbidden to merge failures into "normal", turn unknowns into passes or bury risks in an ordinary summary. The upper level can drill down, and keeps separate evidence for sent/received/handled. If the aggregator is unreachable, unhandled escalation events return to the upper level with authority when they expire; avoid deadlocks and circular forwarding.
 
-## 工作流如何变化
+## How the workflow changes
 
-Chief 观察排队、返工、审核时长、人工介入与质量，根据实际瓶颈提出变更，如“开发直接提审，抄送负责人”。先在一个工作流/小样本试验；比较质量、成本与人工干预，未改善或导致遗漏则回滚。改变审查门槛、权限或生产边界要按明确授权，不允许由工作流优化自行放宽。角色和工作流版本写入每次 assignment，旧任务如何迁移需单独决定。
+Chief observes queuing, rework, review duration, human intervention and quality, and proposes changes based on the actual bottleneck, such as "developers submit directly for review, copying the lead". Trial it first in one workflow/a small sample; compare quality, cost and human intervention, and roll back if there is no improvement or it causes omissions. Changing review thresholds, permissions or the production boundary requires explicit authorization, and must not be loosened by workflow optimization on its own. The role and workflow versions are written into every assignment; how old tasks are migrated needs a separate decision.

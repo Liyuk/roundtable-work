@@ -1,35 +1,35 @@
-# 外部事件、连续队列与可替换记忆
+# External events, the continuous queue, and replaceable memory
 
-状态：候选设计。任何 webhook、队列、存储或唤醒机制必须由选定宿主或后续实现提供，本仓库目前不包含接收服务。
+Status: candidate design. Any webhook, queue, storage, or wake-up mechanism must be provided by the chosen host or by a later implementation; this repository currently contains no receiving service.
 
-## 外界怎么介入
+## How the outside world gets involved
 
-用户可以通过对话继续修正目标，也可以配置 GitHub、其他系统 webhook、计时事件等来源。每种来源先通过对应适配器核验发送方与作用范围，再把输入翻译为统一事件：`source / source_event_id / event_type / actor / resource / occurred_at / received_at / payload_ref / trust / correlation`。存储原始输入的引用和接收记录，按来源与事件 ID 去重；重试和乱序必须可见。
+The user can keep refining the goal through conversation, and can also configure sources such as GitHub, other systems' webhooks, and timer events. Each source first verifies the sender and scope through its adapter, then translates the input into a unified event: `source / source_event_id / event_type / actor / resource / occurred_at / received_at / payload_ref / trust / correlation`. A reference to the raw input and a receipt record are stored, and events are de-duplicated by source and event ID; retries and out-of-order delivery must be visible.
 
-以 GitHub 为例：issue 建立、评论、PR 审查和 CI 都可作为事件来源；实际监听方式（webhook、宿主连接器、通知 API 或人工导入）由部署时选择。若使用 webhook，需要真实接收服务验证签名、限制来源、快速确认、持久入队、重试和幂等；不能因为测试里写了 `webhook` 就声称收到了真实请求。
+Take GitHub as an example: issue creation, comments, PR reviews, and CI can all be event sources; the actual way of listening (webhook, host connector, notification API, or manual import) is chosen at deployment time. If a webhook is used, a real receiving service is needed to verify signatures, restrict sources, acknowledge quickly, enqueue durably, retry, and stay idempotent; you cannot claim that a real request was received just because a test wrote `webhook`.
 
-事件进入后 Chief 判断：关联已有工单、按授权新建工单、只作为上下文、忽略、或向用户请求决定。明确指向已有工作的后续优先交给其 owner；无法判定关联时不凭主题近似自动合并。外部文本本身不会扩大权限。用户修改目标时产生新版本，记录已投递、已读取、已采用，并复核旧产物。人随时能暂停、纠正或取消工作；该操作与计划事件一样需留痕。
+Once an event arrives, the Chief decides: link it to an existing ticket, create a new ticket within the granted authority, treat it as context only, ignore it, or ask the user for a decision. A follow-up that clearly points to existing work goes to that work's owner first; when no link can be determined, events are not merged automatically on topic similarity alone. External text by itself does not expand permissions. When the user changes the goal, a new version is produced, recording what was delivered, read, and adopted, and old artifacts are rechecked. People can pause, correct, or cancel work at any time; that action must be recorded just like a planned event.
 
-## 队列持续处理
+## Continuous queue processing
 
-每次唤醒 Chief 先处理用户纠偏、到达的子任务结果和紧急失败，再依授权、优先级、依赖与资源选择可以推进的工作。一个任务等待外部审查或用户输入时，只挂起它；其他不冲突任务可以继续。结果触发验收或返修，完成后重新检查目标和队列，不要求用户逐项催促。队列空、无授权工作、预算耗尽或明确终止时休眠/停止并登记下一触发条件。
+On each wake-up the Chief first handles user corrections, returned sub-task results, and urgent failures, then picks the work that can move forward according to authority, priority, dependencies, and resources. When one task is waiting for external review or user input, only that task is suspended; other non-conflicting tasks may continue. A result triggers acceptance or rework, and once it is done the goal and the queue are rechecked, without requiring the user to chase item by item. When the queue is empty, there is no authorized work, the budget is exhausted, or work is explicitly terminated, the Chief sleeps/stops and records the next trigger condition.
 
-去重、领取和状态的实际保障依赖宿主，不能假设已存在；提供多个调度者时先指定唯一状态和调度权威，避免同一事件建立两个任务。高风险或未知外部副作用先核对后重试。
+The actual guarantees for de-duplication, claiming, and state depend on the host and must not be assumed to exist; when multiple schedulers are provided, first designate a single authority for state and scheduling, so that the same event does not create two tasks. For high-risk operations or unknown external side effects, check first and then retry.
 
-## 什么时间写记忆与召回
+## When to write memory and when to recall it
 
-**记忆库开放选择**：可以使用宿主自带记忆、Markdown 文件、数据库或独立记忆库；不预选具体库。先检验它的持久化、按范围访问、来源与版本、删除/撤销、可导出、冲突处理和重启行为；不能用库的检索结果替代任务状态与授权。
+**The memory store is an open choice**: host-provided memory, Markdown files, a database, or a standalone memory store can be used; no specific store is preselected. First verify its persistence, scoped access, source and versioning, deletion/revocation, exportability, conflict handling, and restart behavior; the store's retrieval results cannot replace task state and authorization.
 
-| 时机 | 动作 | 示例 |
+| When | Action | Example |
 | --- | --- | --- |
-| 目标修订或用户作出长期决定 | 记录目标版本和用户决定；仅适合复用的部分进入记忆候选 | 输出风格、反复强调的边界 |
-| 任务交付、审查、失败或返修 | 将可复用的教训连同证据、适用范围和不确定性保存为候选 | 一类交接常遗漏的上下文 |
-| 组织或工作流变化 | 记录理由、观察窗口、评估结果和回滚条件 | 临时扩容后队列变化 |
-| 接到任务、派单、失败、审查、目标修订 | 按目标、任务类型、项目及角色检索相关记忆 | 修订上游需求时查依赖和旧验收 |
-| 已配置的定时唤醒 | Chief 回顾待复核记忆、旧目标和尚未完成事项 | 每日工作开始时查看前日遗留 |
+| The goal is revised or the user makes a long-term decision | Record the goal version and the user's decision; only the parts suitable for reuse become memory candidates | Output style, boundaries the user keeps stressing |
+| A task is delivered, reviewed, fails, or is reworked | Save reusable lessons, together with evidence, scope of applicability, and uncertainty, as candidates | Context that a certain kind of handoff often omits |
+| The organization or workflow changes | Record the reason, observation window, evaluation result, and rollback condition | Queue changes after a temporary capacity increase |
+| A task is received, dispatched, fails, is reviewed, or the goal is revised | Retrieve relevant memory by goal, task type, project, and role | When revising an upstream requirement, check dependencies and the old acceptance criteria |
+| A configured scheduled wake-up | The Chief reviews memory pending re-check, old goals, and unfinished items | At the start of each day's work, check what was left over from the previous day |
 
-候选记忆先标为观察或假设，不能因一次体验就变成通用规则。保存来源、权限、时间、版本和过期/撤销条件；按宿主可用能力记录召回、注入及是否被应用。用户可设置周期与随机抽样；随机只发现候选，定时器是唤醒来源，记忆检索本身不唤醒已停止的进程。敏感材料不写入公开仓库。
+Candidate memory is first labeled as an observation or hypothesis, and one experience must not turn it into a general rule. Save the source, permissions, time, version, and expiry/revocation conditions; according to the capabilities the host offers, record recall, injection, and whether it was applied. The user can set the period and random sampling; randomness only discovers candidates, a timer is a wake-up source, and memory retrieval by itself does not wake a stopped process. Sensitive material is not written to a public repository.
 
-## 演练和缺口
+## Trial run and gaps
 
-[连续队列演练](../practice/2026-11-10-queue-trial.md)记录当前会话里真实发生的操作、模拟事件和没有验证的部分。需要后续在选定宿主中完成：真实 webhook 验签/接收、重复投递与恢复、进程重启、定时唤醒、独立记忆库持久化和实际用户输入。
+The [continuous queue trial](../practice/2026-11-10-queue-trial.md) records the operations that actually happened in the current session, the simulated events, and the parts that were not verified. The following still need to be done later on the chosen host: real webhook signature verification/receipt, duplicate delivery and recovery, process restart, scheduled wake-up, persistence of a standalone memory store, and real user input.

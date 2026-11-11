@@ -1,23 +1,23 @@
-# 连续队列与中途修订：会话内演练
+# Continuous queue and mid-course revision: an in-session rehearsal
 
-日期：2026-11-10。工作内容是虚构活动，不涉及真实项目或账号。使用当前会话中的多 Agent 工具，Chief 为主会话，执行者与独立审查者为子代理。
+Date: 2026-11-10. The work was a fictional event and involved no real project or account. It used the multi-agent tools in the current session, with the Chief as the main session and the executor and independent reviewer as subagents.
 
-## 实际执行
+## What was actually executed
 
-1. Chief 创建执行者 session，提交三个顺序任务：Q1 编写虚构活动需求及验收；Q2 依据 Q1 写交付核对清单；Q3 暂停，等待后续信息。
-2. 执行者在系统临时目录创建 Q1、Q2，报告完成与下一步，并提出一条记忆候选：上游需求变化后复核下游清单。这是单次观察，未验证为普适经验。
-3. Chief 用后续消息注入模拟外部事件 EVT-1 与人工修订：新增活动人数上限。这里的“事件”是对话内测试输入，**不是实际 webhook**。
-4. 同一执行者 session 收到后续任务，修改 Q1 与 Q2，再生成 Q3 总结，说明修订和记忆候选的使用。
-5. Chief 创建独立审查者；审查者实际读取三个文件，确认 Q2 引用 Q1，人数约束同步出现在需求和清单，Q3 说明了目标变化。Chief 根据其报告汇总。
+1. The Chief created an executor session and submitted three sequential tasks: Q1 write the requirements and acceptance for a fictional event; Q2 write a delivery checklist based on Q1; Q3 pause and wait for later information.
+2. The executor created Q1 and Q2 in the system temporary directory, reported completion and the next step, and proposed one memory candidate: re-check the downstream checklist when upstream requirements change. This is a single observation and has not been verified as a general lesson.
+3. The Chief used a follow-up message to inject a simulated external event EVT-1 together with a manual revision: add an attendee cap to the event. The "event" here is a test input within the conversation, **not an actual webhook**.
+4. The same executor session received a follow-up task, modified Q1 and Q2, and then produced a Q3 summary explaining the revision and the use of the memory candidate.
+5. The Chief created an independent reviewer; the reviewer actually read the three files and confirmed that Q2 referenced Q1, that the attendee-cap constraint appeared in both the requirements and the checklist, and that Q3 explained the change of goal. The Chief compiled the summary from its report.
 
-## 实际观察与限制
+## Actual observations and limitations
 
-- 本次在活动会话里执行了连续队列、跨角色交接、目标变化以及同一 session 的上下文复用；后续任务由 Chief 显式发送，不能证明没有 Chief 干预的自动调度。
-- 未保存变更前快照或带时间的独立事件日志；因此最终文件只能证明最终一致性，不能单独证明完整先后顺序、去重或修订已在每个阶段被处理。
-- 未运行 HTTP 接收器，未验证 GitHub webhook、签名、事件重放、长时间常驻或进程重启；没有模拟真实外部账号写操作。
-- 记忆候选来自执行者同一 session 的上下文，没有验证独立记忆库存取、跨会话召回、定时召回或删除。
-- 演练的原始临时文件位于本机系统临时目录，不作为可移植产物；以上是人工整理的工作记录。
+- This run executed a continuous queue, cross-role handoff, a change of goal, and context reuse within the same session inside an active conversation; follow-up tasks were sent explicitly by the Chief, so it cannot prove automatic scheduling without Chief intervention.
+- No pre-change snapshot or timestamped independent event log was saved; therefore the final files can only prove final consistency, and cannot by themselves prove the full order of events, deduplication, or that the revision was handled at every stage.
+- No HTTP receiver was run, and GitHub webhooks, signatures, event replay, long-running residency, or process restarts were not verified; no write operations on real external accounts were simulated.
+- The memory candidate came from the context of the executor's own session; independent memory store access, cross-session recall, timed recall, or deletion were not verified.
+- The original temporary files of the rehearsal are located in the local system temporary directory and are not a portable artifact; the above is a work record compiled by hand.
 
-## 后续可复现测试
+## Reproducible follow-up tests
 
-选择实际宿主后，记录每个事件的来源 ID、时间、派发/领取/完成回执、目标版本与产物快照；分别做重复 webhook、用户中途停止、任务失败、主 session 空闲唤醒、宿主重启和记忆库重新加载实验。每项注明观察结果，不能把候选设计当通过。
+After choosing an actual harness, record for each event its source ID, time, dispatch/claim/completion receipts, target version, and artifact snapshot; run separate experiments for duplicate webhooks, the user stopping midway, task failure, waking an idle main session, harness restart, and reloading the memory store. Note the observed result for each, and do not treat a candidate design as passed.

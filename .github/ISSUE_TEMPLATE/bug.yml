@@ -1,21 +1,21 @@
 name: Bug report
-description: 直接报告可复现的问题；修复 PR 应关联此 Issue。
+description: Report a reproducible problem directly; the fix PR should link to this Issue.
 title: "[Bug] "
 labels: ["bug"]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: 问题与影响
+      label: Problem and impact
     validations:
       required: true
   - type: textarea
     id: reproduce
     attributes:
-      label: 复现步骤、预期和实际结果
+      label: Reproduction steps, expected and actual results
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
-      label: 版本、环境与相关证据（请勿包含敏感信息）
+      label: Version, environment, and relevant evidence (do not include sensitive information)

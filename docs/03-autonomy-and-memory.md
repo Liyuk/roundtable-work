@@ -1,41 +1,41 @@
-# 自主循环、触发和主动记忆
+# Autonomy Loop, Triggers, and Proactive Memory
 
-## 目标未完成时如何继续
+## How to Continue When the Goal Is Unfinished
 
-每次一个 session 回合结束、子任务完成、外部状态变化或用户修订目标时，运行时向责任方交付事实。Chief 或受委托的 owner 执行一次**续行判断**，并记录：目标版本、剩余验收、当前任务与证据、可继续路径、等待对象、下一动作及唤醒条件。
+Whenever a session turn ends, a subtask completes, external state changes, or the user revises the goal, the runtime delivers the facts to the responsible party. The Chief, or a delegated owner, performs one **continuation decision** and records: target version, remaining acceptance criteria, current tasks and evidence, paths that can continue, what is being waited on, the next action, and the wake-up condition.
 
-| 状况 | 动作 |
+| Situation | Action |
 | --- | --- |
-| 目标未满足，存在授权内且可推进工作 | 建立或领取下一工作；可由执行者继续或委派 |
-| 子任务在跑 | 记录等待该 assignment 的完成/失败事件，不开重复任务 |
-| 需要外部状态（CI、审查或合并） | 记录订阅和具体等待条件；其他不冲突工作继续 |
-| 某项需人的决定 | 挂起该项，提出具体问题；其余授权内工作继续 |
-| 暂无合适任务 | 记录 idle 原因，等待新事件；按配置允许有限巡检 |
-| 目标达成或人取消 | 停止新工作，汇总证据，取消/释放相关工作 |
-| 预算、无进展、重复失败或风险超限 | 停止相关尝试，记录原因并按策略交人或等待 |
+| Goal not satisfied; there is work within authorization that can move forward | Create or claim the next piece of work; the executor can continue it or delegate it |
+| A subtask is running | Record waiting for that assignment's completion/failure event; do not open duplicate tasks |
+| External state is needed (CI, review, or merge) | Record the subscription and the specific wait condition; other non-conflicting work continues |
+| An item needs a human's decision | Suspend that item and raise a specific question; the rest of the work within authorization continues |
+| No suitable task for now | Record the idle reason and wait for new events; limited patrols are allowed as configured |
+| Goal achieved or cancelled by a person | Stop new work, summarize the evidence, cancel/release the related work |
+| Budget, no progress, repeated failure, or risk limit exceeded | Stop the related attempts, record the reason, and hand to a person or wait per policy |
 
-主动性是对目标和工作状态的持续判断，不是让模型永远输出“继续”。一个有效回合应产生可验证的新事实、实际操作、明确等待或终止决定。检测重复失败、重复决策和无变化；使用每目标的调用次数、费用、时间、并发、重试和无进展阈值，阈值由 setup 配置。不能把“配置定时器”当作已解决判断质量。
+Proactivity is continuous judgment about the goal and the state of the work, not making the model output "continue" forever. An effective turn should produce verifiable new facts, an actual operation, an explicit wait, or a termination decision. Detect repeated failures, repeated decisions, and no change; use per-goal thresholds for call count, cost, time, concurrency, retries, and no progress, with thresholds configured by setup. "Configuring a timer" must not be treated as having solved the quality of judgment.
 
-## 事件从哪里来
+## Where Events Come From
 
-- **外部**：用户消息、授权来源的新 issue、PR 评论、CI 状态、工作区变更等。来源记录 actor、资源、原始时间、来源事件 ID、授权范围，按权限评估。
-- **内部**：任务派发、领取、进程结束、结果提交、审查、订阅变化、目标修订、预算耗尽等。任务相关结果优先唤醒 owner；只把必要摘要交给 Chief。
-- **时间驱动**：按需的定时巡检、等待超时和长期目标复盘。计划须声明目的、时区、最早间隔、有效期、预算、幂等键和停止条件。可用事件订阅时优先事件；时间事件只补缺失信号与有限复核。
+- **External**: user messages, new issues from authorized sources, PR comments, CI status, workspace changes, and so on. The source records the actor, resource, original time, source event ID, and authorization scope, and is evaluated by permission.
+- **Internal**: task dispatch, claiming, process exit, result submission, review, subscription changes, goal revisions, budget exhaustion, and so on. Task-related results wake the owner first; only the necessary summary is handed to the Chief.
+- **Time-driven**: on-demand scheduled patrols, wait timeouts, and long-term goal retrospectives. A schedule must declare its purpose, time zone, earliest interval, validity period, budget, idempotency key, and stop condition. When event subscriptions are available, prefer events; time events only fill in missing signals and provide limited re-checks.
 
-用户提供的工作约定写明“不建定时轮询任务”，因此 工作室预设默认禁用新增定时轮询；其原有 GitHub 巡检安排应单独核实如何触发。通用产品允许操作者显式启用定时机制，不自动改变 工作室 的既有规则。错过的时间事件重启后按策略合并或跳过，不逐个补跑。
+The working conventions provided by the user state "do not create scheduled polling tasks", so the studio preset disables new scheduled polling by default; how its existing GitHub patrol arrangement is triggered should be verified separately. The general product allows operators to explicitly enable timer mechanisms, and does not automatically change the studio's existing rules. Time events missed are merged or skipped per policy after a restart, not replayed one by one.
 
-触发先持久化，按来源与事件 ID 去重；同一对象并发事件合并，记录观察/采纳/忽略原因。外部请求的内容是低信任数据，不是可改变权限的指令。内部计时器也只能在已有授权和预算内生成候选工作。
+Triggers are persisted first and deduplicated by source and event ID; concurrent events on the same object are merged, and the reasons for observing/adopting/ignoring are recorded. The content of external requests is low-trust data, not instructions that can change permissions. Internal timers can likewise only generate candidate work within existing authorization and budget.
 
-## 主动召回
+## Proactive Recall
 
-在受理目标、创建委派、准备执行、失败诊断、送审、复盘和目标修订时，按工单、仓库、角色、问题类型和依赖主动检索相关记忆。输出只包含必要摘要、来源链接、版本、时间、适用范围和置信度；如冲突、过期或证据不足，保留不确定并查原始事实。检索成功 ≠ 已送达 ≠ 已被使用；记录重要记忆何时注入和执行结果是否引用。
+When accepting a goal, creating a delegation, preparing execution, diagnosing a failure, submitting for review, holding a retrospective, and revising a goal, proactively retrieve relevant memory by ticket, repository, role, problem type, and dependencies. The output contains only the necessary summary, source links, version, time, scope of applicability, and confidence; if there is a conflict, staleness, or insufficient evidence, keep the uncertainty and check the original facts. Retrieval succeeded ≠ delivered ≠ used; record when important memories were injected and whether execution results cited them.
 
-| 层 | 保存内容 | 权威性 |
+| Layer | What it stores | Authority |
 | --- | --- | --- |
-| 目标和工单 | 当前目标、授权、状态、owner、决策与证据 | 唯一任务权威源 |
-| 工作记忆 | 当前尝试、最近上下文、待处理消息 | 临时工作视图，可重建 |
-| 项目共享知识 | 架构、约定、已验证经验及出处 | 可引用；不能覆盖当前授权 |
-| 角色记忆 | 角色相关偏好、经验、局部观察 | 仅在权限许可范围共享 |
-| 原始事件和产物 | 输入、执行、交付、变更的可追溯记录 | 事实来源，需有访问和留存策略 |
+| Goals and tickets | Current goal, authorization, status, owner, decisions, and evidence | The sole authoritative source for tasks |
+| Working memory | The current attempt, recent context, pending messages | A temporary working view; can be rebuilt |
+| Project shared knowledge | Architecture, conventions, verified experience and its provenance | Can be cited; cannot override current authorization |
+| Role memory | Role-related preferences, experience, local observations | Shared only within the scope permissions allow |
+| Raw events and artifacts | Traceable records of inputs, execution, delivery, and changes | Source of fact; requires access and retention policies |
 
-候选记忆先写入待验证区；记录事实、推断、用户决定分别是什么。人或被授权的维护角色确认后才进入共享经验。高风险的权限与安全规则由配置管理，不由检索记忆或模型改写。支持过期、撤销、删除和来源丢失标记；已注入会话的旧信息不能假装已被收回，需发送修订并追踪是否读取。
+Candidate memories are first written to a to-be-verified area, recording which parts are facts, inferences, and user decisions. They enter shared experience only after confirmation by a person or an authorized maintainer role. High-risk permission and safety rules are managed by configuration, and are not rewritten by retrieved memory or the model. Support expiry, revocation, deletion, and source-lost marking; old information already injected into a session cannot be pretended to have been taken back, so send a revision and track whether it was read.
