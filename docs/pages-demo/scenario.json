@@ -1,0 +1,373 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "title": "Notekeep dark-mode toggle: a synthetic Roundtable Work walkthrough",
+  "disclaimer": "Everything in this walkthrough is invented: the people, the fictional Notekeep app, the task, the IDs and the results. It is not taken from any real project, issue, log, diff or machine. It illustrates the documented workflow; it does not show a live system, and it does not promise 24/7 operation or that any failure can be recovered from.",
+  "actors": [
+    { "id": "requester", "role": "human", "displayName": "Sample Requester" },
+    { "id": "chief", "role": "chief", "displayName": "Chief (demo)" },
+    { "id": "researcher", "role": "researcher", "displayName": "Researcher (demo)" },
+    { "id": "developer", "role": "developer", "displayName": "Developer (demo)" },
+    { "id": "reviewer", "role": "reviewer", "displayName": "Independent Reviewer (demo)" },
+    { "id": "fixer", "role": "fixer", "displayName": "Fixer (demo)" }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "actor": "requester",
+      "phase": "goal",
+      "title": "A human states a goal",
+      "summary": "Sample Requester asks for a dark-mode toggle in the fictional Notekeep app and lists what would count as done. The human sets the direction, the acceptance and the limits of authority.",
+      "artifacts": ["goal text (synthetic): add a dark-mode toggle to Notekeep"],
+      "state": "queued"
+    },
+    {
+      "id": "s02",
+      "actor": "chief",
+      "phase": "ticket",
+      "title": "Chief writes the ticket",
+      "summary": "Chief turns the goal into ticket DEMO-001 with the original wording, four checkable acceptance items, the allowed scope, and a budget (at most 2 attempts per assignment, at most 2 review rejections before a human decides).",
+      "artifacts": [
+        "ticket DEMO-001",
+        "acceptance 1: the toggle switches between light and dark themes",
+        "acceptance 2: the choice is kept after a reload",
+        "acceptance 3: the control works with a keyboard and has an accessible name",
+        "acceptance 4: the first visit follows the system color preference"
+      ],
+      "state": "queued",
+      "decision": "continue"
+    },
+    {
+      "id": "s03",
+      "actor": "researcher",
+      "phase": "consult",
+      "title": "Researcher answers a small question",
+      "summary": "Chief asks one bounded question: does Notekeep already store any theme setting? The Researcher reports, with sources, that it has none, and separates what was observed from what was inferred.",
+      "artifacts": ["delivery card DEMO-001-res (findings and sources, synthetic)"],
+      "state": "assigned"
+    },
+    {
+      "id": "s04",
+      "actor": "chief",
+      "phase": "delegation",
+      "title": "Chief hands the work to a developer",
+      "summary": "Chief sends delegation card DEMO-001-dev with the target version, acceptance, workspace, allowed files and a no-commit rule. The host only reports started and returned, so Chief records sent+started and later returned, and marks the other delegation events as not confirmed.",
+      "artifacts": ["delegation card DEMO-001-dev", "allowed files: the theme module and its test (fictional)"],
+      "state": "working",
+      "decision": "wait"
+    },
+    {
+      "id": "s05",
+      "actor": "chief",
+      "phase": "clarification",
+      "title": "Chief asks the human one question",
+      "summary": "Open question Q1: on the very first visit, follow the system preference or start in light mode? Chief recommends following the system preference, which is easy to reverse, and keeps other work going. Only the item that needs the human is suspended.",
+      "artifacts": ["question Q1 with two options and a recommendation"],
+      "state": "waiting_person",
+      "decision": "ask"
+    },
+    {
+      "id": "s06",
+      "actor": "requester",
+      "phase": "answer",
+      "title": "The human answers",
+      "summary": "Sample Requester accepts the recommendation: follow the system preference. The acceptance item that was provisionally treated as met is now confirmed.",
+      "artifacts": ["answer to Q1 (synthetic)"],
+      "state": "working",
+      "decision": "continue"
+    },
+    {
+      "id": "s07",
+      "actor": "developer",
+      "phase": "delivery",
+      "title": "Developer returns a delivery card",
+      "summary": "The Developer reports what changed, the checks it ran, and what it did not do. It did not commit, because executors do not commit by default.",
+      "artifacts": ["delivery card DEMO-001-dev (revision 1)", "changed files: 2 (fictional)"],
+      "state": "working"
+    },
+    {
+      "id": "s08",
+      "actor": "chief",
+      "phase": "test-gate",
+      "title": "Test gate",
+      "summary": "Chief does not rely on the Developer's own report. It reads the evidence and runs the final full check itself. In this synthetic run the check passes.",
+      "artifacts": ["check run (synthetic): full test command, exit status 0"],
+      "gate": { "name": "test gate", "result": "pass" },
+      "state": "working"
+    },
+    {
+      "id": "s09",
+      "actor": "chief",
+      "phase": "scope-gate",
+      "title": "Scope gate",
+      "summary": "Chief compares the changed files with the allowed files, for example from the version-control status. Nothing outside the allowed scope was written.",
+      "artifacts": ["scope comparison (synthetic): 2 changed, 2 allowed"],
+      "gate": { "name": "scope gate", "result": "pass" },
+      "state": "review"
+    },
+    {
+      "id": "s10",
+      "actor": "reviewer",
+      "phase": "review",
+      "title": "Independent review: sent back",
+      "summary": "A separate reviewer session checks the delivery against the ticket, not against the author's claim of success. The first line of its card is the verdict. Finding 1: the toggle has no accessible name (acceptance 3). Finding 2: the choice is lost after a reload (acceptance 2). Each finding names a trigger and a direction for the fix.",
+      "artifacts": ["review card DEMO-001-rev (round 1)", "verdict line: 审查结论：打回 (rejected)"],
+      "gate": { "name": "independent review", "result": "审查结论：打回 (rejected)" },
+      "state": "working",
+      "decision": "continue"
+    },
+    {
+      "id": "s11",
+      "actor": "developer",
+      "phase": "rework",
+      "title": "The original author fixes the findings",
+      "summary": "Chief returns the findings to the original Developer. The Developer adds an accessible name, stores the choice, adds a test for each finding, and returns a new delivery card that answers each finding. This is review rejection 1 of at most 2 under the default budget.",
+      "artifacts": ["delivery card DEMO-001-dev (revision 2)", "two new tests, one per finding (fictional)"],
+      "state": "working"
+    },
+    {
+      "id": "s12",
+      "actor": "chief",
+      "phase": "test-gate",
+      "title": "Test gate again",
+      "summary": "Chief runs the full check on the new version. Because behavior and tests changed, the work must be reviewed again.",
+      "artifacts": ["check run (synthetic): full test command, exit status 0"],
+      "gate": { "name": "test gate", "result": "pass" },
+      "state": "working"
+    },
+    {
+      "id": "s13",
+      "actor": "chief",
+      "phase": "scope-gate",
+      "title": "Scope gate again",
+      "summary": "Chief repeats the scope comparison on the new version. Still inside the allowed files.",
+      "artifacts": ["scope comparison (synthetic): 2 changed, 2 allowed"],
+      "gate": { "name": "scope gate", "result": "pass" },
+      "state": "review"
+    },
+    {
+      "id": "s14",
+      "actor": "reviewer",
+      "phase": "review",
+      "title": "Independent review: approved",
+      "summary": "The reviewer re-checks the affected items and the likely regressions against the new version. Every acceptance item now has evidence.",
+      "artifacts": ["review card DEMO-001-rev (round 2)", "verdict line: 审查结论：通过 (approved)"],
+      "gate": { "name": "independent review", "result": "审查结论：通过 (approved)" },
+      "state": "ready"
+    },
+    {
+      "id": "s15",
+      "actor": "chief",
+      "phase": "commit",
+      "title": "Chief commits on a feature branch",
+      "summary": "Only after the review passes, Chief commits the change on a feature branch. The Developer never committed. Nothing is merged.",
+      "artifacts": ["commit demo-commit-0001 on branch demo/DEMO-001 (fictional)"],
+      "state": "ready"
+    },
+    {
+      "id": "s16",
+      "actor": "chief",
+      "phase": "pull-request",
+      "title": "Chief opens a pull request",
+      "summary": "In this synthetic setup the deployment policy allows Chief to open a pull request. The description states the problem, the checks that were actually run, the checks not run, and the remaining risks. Chief then waits for a human; whether a wake-up on merge exists depends on the host.",
+      "artifacts": ["pull request DEMO-PR-1 (fictional, no real link)"],
+      "state": "ready",
+      "decision": "wait"
+    },
+    {
+      "id": "s17",
+      "actor": "requester",
+      "phase": "human-merge",
+      "title": "A human decides whether to merge",
+      "summary": "Merging is a human-only step and happens outside this demo. The demo has no merge control and performs no privileged action. Only after a human merges and the evidence is checked could the ticket move to done.",
+      "artifacts": ["human decision (outside the demo)"],
+      "state": "waiting_person"
+    }
+  ],
+  "failureRecovery": [
+    {
+      "id": "f01",
+      "trigger": "The host cannot start a separate reviewer session.",
+      "handling": "Chief does not approve its own work. Any same-session check is labelled a self-check, not an independent review. The ticket stays short of done and Chief asks the human whether to accept a self-check or to wait for a reviewer.",
+      "outcome": "Review stays pending. The human decides; independence is not claimed in the meantime."
+    },
+    {
+      "id": "f02",
+      "trigger": "The reviewer sends the work back more times than the configured limit (default 2 rounds).",
+      "handling": "Chief stops further automatic rework and hands the disagreement to the human with the findings and the evidence.",
+      "outcome": "A human decides whether to continue, change the acceptance or abandon the work."
+    },
+    {
+      "id": "f03",
+      "trigger": "A test gate fails.",
+      "handling": "Chief does not accept the work and does not send it for review. The failing output goes back to the original author within the attempt budget.",
+      "outcome": "The work may pass on a later attempt. If attempts run out, Chief stops and reports (see f04)."
+    },
+    {
+      "id": "f04",
+      "trigger": "The attempt budget for an assignment is used up (default 2 attempts).",
+      "handling": "Chief records stop for the affected work, reports what was tried, and states the decision it needs from the human.",
+      "outcome": "The work halts. Recovery, if any, starts from a human decision."
+    },
+    {
+      "id": "f05",
+      "trigger": "Two turns in a row produce no new fact and no new artifact.",
+      "handling": "Chief records stop instead of repeating the same step.",
+      "outcome": "The work halts and is reported. Nothing is retried automatically."
+    },
+    {
+      "id": "f06",
+      "trigger": "A scope gate finds a file written outside the allowed files.",
+      "handling": "Chief does not accept the work. The out-of-scope change is reported, not silently kept, and the human or Chief decides whether it is reverted or re-authorized.",
+      "outcome": "The work is held until the scope question is settled."
+    },
+    {
+      "id": "f07",
+      "trigger": "The result of an external action is unknown, for example a request that may or may not have been sent.",
+      "handling": "The state is marked unknown. Chief checks the real state first and does not blindly repeat the action.",
+      "outcome": "The action is retried or escalated only after the actual state is known; some outcomes may stay unknown."
+    },
+    {
+      "id": "f08",
+      "trigger": "The session ends while Chief is waiting for an event.",
+      "handling": "A turn ending does not wake anything. Only a wake-up mechanism the host really supports can resume the work, and this has not been verified. Otherwise the human re-engages and Chief re-checks the facts before continuing.",
+      "outcome": "Work may sit idle until a human or a supported host event resumes it."
+    }
+  ],
+  "pauseControls": [
+    {
+      "id": "p01",
+      "label": "Human pauses, corrects or stops",
+      "effect": "The human can send a correction, pause or stop at any time. Chief handles the correction before new work. Whether a sub-session that is already running can be interrupted depends on the host."
+    },
+    {
+      "id": "p02",
+      "label": "wait",
+      "effect": "Chief names the specific event it is waiting for and how it would be woken. Unrelated work can continue. It is not a promise that a wake-up will happen."
+    },
+    {
+      "id": "p03",
+      "label": "ask",
+      "effect": "Only the item that needs a human decision is suspended, with a concrete question and a recommendation. Other work continues."
+    },
+    {
+      "id": "p04",
+      "label": "stop",
+      "effect": "Used when the budget is spent, no progress is made, risk exceeds the limit or authorization is lost. Chief stops the related attempts and reports the reason and the needed decision."
+    },
+    {
+      "id": "p05",
+      "label": "Human merge",
+      "effect": "Merge and deploy always need a human decision under the default policy. The demo itself has no merge button."
+    },
+    {
+      "id": "p06",
+      "label": "Demo playback pause",
+      "effect": "A visual control on the future demo page that pauses or steps its animation. It changes nothing outside the page and does not stand for any real system control."
+    }
+  ],
+  "claims": [
+    {
+      "id": "c01",
+      "text": "The skill defines five roles with separate instructions: Chief, developer, fixer, reviewer and researcher.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/SKILL.md"
+    },
+    {
+      "id": "c02",
+      "text": "Work is handed over with structured templates: ticket, delegation card, delivery card and checkpoint record.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/SKILL.md"
+    },
+    {
+      "id": "c03",
+      "text": "Every Chief turn ends with one of five continuation decisions: continue, wait, ask, done or stop.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/SKILL.md"
+    },
+    {
+      "id": "c04",
+      "text": "The Chief instructions require reading the evidence in a delivery, checking for writes outside the allowed scope, and running the final full check before acceptance.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/prompts/roles/chief.md"
+    },
+    {
+      "id": "c05",
+      "text": "The reviewer instructions require the first line of a review card to be the verdict line, and state that an independent session or a different model is not proof of correctness.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/prompts/roles/reviewer.md"
+    },
+    {
+      "id": "c06",
+      "text": "The Chief instructions require a review to be done by a different session than the author; a review by the same session is called a self-check.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/prompts/roles/chief.md"
+    },
+    {
+      "id": "c07",
+      "text": "Executors do not commit by default; the Chief commits after a review passes.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/SKILL.md"
+    },
+    {
+      "id": "c08",
+      "text": "The policy template sets default budgets: 2 attempts per assignment, 2 review rejections before a human decides, and stop after 2 turns without progress.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/templates/policy.md"
+    },
+    {
+      "id": "c09",
+      "text": "The policy template lists merging, publishing and deploying as actions that need the user's approval first.",
+      "status": "implemented",
+      "evidence": ".agents/skills/roundtable-work/templates/policy.md"
+    },
+    {
+      "id": "c10",
+      "text": "The repository ships an installer and a read-only doctor script; the doctor reports background wake-up as unverified.",
+      "status": "implemented",
+      "evidence": "scripts/doctor.mjs"
+    },
+    {
+      "id": "c11",
+      "text": "The repository's own CI workflow runs the install and test commands on pushes and pull requests.",
+      "status": "implemented",
+      "evidence": ".github/workflows/check.yml"
+    },
+    {
+      "id": "c12",
+      "text": "Contributions use a pull request that links an issue and reports the checks actually run and those not run.",
+      "status": "implemented",
+      "evidence": "CONTRIBUTING.md"
+    },
+    {
+      "id": "c13",
+      "text": "Waking the Chief in the background after a turn ends, which depends on the host and has not been verified.",
+      "status": "planned"
+    },
+    {
+      "id": "c14",
+      "text": "A loop that turns external events into issues and queued work, described only as a candidate design.",
+      "status": "planned"
+    },
+    {
+      "id": "c15",
+      "text": "Restart recovery with an outbox, idempotency keys and lease fencing, described only as a design.",
+      "status": "planned"
+    },
+    {
+      "id": "c16",
+      "text": "A static, accessible demo site built from this data, deployed through a reviewed workflow.",
+      "status": "planned"
+    }
+  ],
+  "limits": [
+    "This is a synthetic walkthrough, not a recording of a real run.",
+    "Roundtable Work is a skill and configuration for existing agent hosts. It has no background runtime of its own, and the demo makes no claim of 24/7 operation.",
+    "A turn ending is not a wake-up. Resuming without a person depends on host features that have not been verified here.",
+    "Nothing here promises that any failure can be recovered from; some work will stop and need a person.",
+    "Independent review reduces shared blind spots but is not proof of correctness.",
+    "Test and scope gates are Chief verification steps described in instructions and performed by an agent; they are not automatically enforced by a runtime.",
+    "The demo performs no merge, deploy or other privileged action. Merging is a human decision outside the demo.",
+    "The default budgets are template defaults that a deployment may change."
+  ]
+}
