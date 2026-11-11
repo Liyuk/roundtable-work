@@ -31,8 +31,9 @@ test('doctor reports observed executables without asserting runtime capability',
   assert.equal(result.installation, undefined);
 });
 
-test('doctor --target reports what the installer put in a workspace', () => {
+test('doctor --target reports what the installer put in a workspace', (t) => {
   const target = mkdtempSync(join(tmpdir(), 'rtw-doctor-'));
+  t.after(() => rmSync(target, { recursive: true, force: true }));
   assert.ok(run(cli, ['--target', target]).installation.skills.every((s) => !s.installed));
   run(installer, ['--target', target]);
   const inst = run(cli, ['--target', target]).installation;
