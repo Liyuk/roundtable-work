@@ -108,6 +108,23 @@ test('ask writes the exact comment and rt:ask through the injected client, then 
   assert.deepEqual(tracker.events.slice(-2), [['removeLabel', 8, 'rt:ask'], ['removeLabel', 8, 'rt:blocked']]);
 }));
 
+test('metadata-free pause accepts an owner reply in the same tracker timestamp second only', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  await store.update('21', state => {
+    state.status = 'waiting_person';
+    state.pause = { kind: 'ask', pausedAt: Date.parse('2026-01-02T12:00:00.750Z'), commentId: null, commentCreatedAt: null };
+  });
+  const issue = { number: 21, author: { login: 'owner' } };
+  const olderReply = { id: 30, author: issue.author, createdAt: '2026-01-02T11:59:59Z' };
+  const nonOwnerReply = { id: 31, author: { login: 'other' }, createdAt: '2026-01-02T12:00:00Z' };
+  assert.equal(await resumeAfterOwnerReply({ issue, comments: [olderReply, nonOwnerReply], store, client: tracker }), false);
+  assert.equal((await store.load('21')).status, 'waiting_person');
+
+  const sameSecondReply = { id: 32, author: issue.author, createdAt: '2026-01-02T12:00:00Z', body: 'Proceed' };
+  assert.equal(await resumeAfterOwnerReply({ issue, comments: [olderReply, nonOwnerReply, sameSecondReply], store, client: tracker }), true);
+  assert.equal((await store.load('21')).status, 'queued');
+}));
+
 test('a second ask waits for a reply to its own comment', async () => fixture(async root => {
   const store = await createStateStore({ workRoot: root });
   const comments = [];

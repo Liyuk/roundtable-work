@@ -76,9 +76,14 @@ export async function resumeAfterOwnerReply({ issue, comments, store, client, no
   const owner = issue?.author?.login;
   if (typeof owner !== 'string' || !owner) return false;
   const pausedAt = Date.parse(state.pause.commentCreatedAt ?? '') || state.pause.pausedAt;
+  const hasPauseCommentId = state.pause.commentId != null;
+  // Tracker timestamps have second precision. Without the pause comment ID,
+  // include replies in the pause's second so a same-second owner reply is not
+  // lost to the millisecond pause timestamp recorded locally.
+  const replyCutoff = hasPauseCommentId ? pausedAt : Math.floor(pausedAt / 1000) * 1000;
   const replied = comments.some(comment => comment?.author?.login?.toLowerCase() === owner.toLowerCase()
-    && Date.parse(comment.createdAt ?? '') > pausedAt
-    && (state.pause.commentId == null || Number(comment.id) > Number(state.pause.commentId)));
+    && (hasPauseCommentId ? Date.parse(comment.createdAt ?? '') > replyCutoff : Date.parse(comment.createdAt ?? '') >= replyCutoff)
+    && (!hasPauseCommentId || Number(comment.id) > Number(state.pause.commentId)));
   if (!replied) return false;
   await store.update(id, current => {
     current.status = 'queued'; current.phase = null; current.checkpoint = null; current.pause = undefined;
