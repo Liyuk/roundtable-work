@@ -7,6 +7,7 @@
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isEntry } from './entry.mjs';
 
 export const ALLOWED_FILES = ['index.html', 'styles.css', 'app.js'];
 
@@ -69,4 +70,4 @@ function main() {
   } else console.log(`Site validation passed: ${ALLOWED_FILES.join(', ')} only; no external references or host/secret patterns.`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (isEntry(import.meta.url)) main();

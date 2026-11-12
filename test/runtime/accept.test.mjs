@@ -937,7 +937,7 @@ test('Gate 0 imports nothing network-ish and calls no model', () => {
     assert.ok(specs.length > 0);
     for (const s of specs) assert.ok(allowed.has(s), `unexpected import in ${file}: ${s}`);
     assert.ok(!/\bfetch\s*\(|XMLHttpRequest|WebSocket|node:(?:http|https|net|dns|tls|dgram|http2)/.test(src), file);
-    assert.ok(!/anthropic|openai|haiku|sonnet|opus/i.test(src), file);
+    assert.ok(!new RegExp(['anthropic', 'openai', ['hai', 'ku'].join(''), 'sonnet', 'opus'].join('|'), 'i').test(src), file);
   }
 });
 
@@ -2073,7 +2073,16 @@ test('added markdown disable markers are rejected without call syntax', async ()
   for (const marker of ['test.' + 'skip', 'to' + 'do', 'x' + 'it']) {
     const result = await run([addFile('docs/markers.md', marker)]);
     assert.ok(result.findings.some((finding) => finding.ruleId === 'G0-TEST-SKIP'));
+    const allowed = await run([addFile('docs/markers.md', marker)], { issue: { ...DOCS_ISSUE, allowSkip: true } });
+    assert.ok(!allowed.findings.some((finding) => finding.ruleId === 'G0-TEST-SKIP'));
   }
+});
+
+test('allowed paths are matched case-sensitively for both sides of a rename', () => {
+  const issue = { allowedPaths: ['docs/Guide.md'] };
+  assert.ok(checkScope([edit('docs/guide.md', '', 'text')], issue).some((f) => f.ruleId === 'G0-SCOPE-PATH'));
+  assert.ok(checkScope([edit('docs/Guide.md', '', 'text', { status: 'R', oldPath: 'docs/guide.md' })], issue).some((f) => f.ruleId === 'G0-SCOPE-PATH'));
+  assert.deepEqual(checkScope([edit('docs/Guide.md', '', 'text')], issue), []);
 });
 
 test('a verdict line in a fence cannot be replaced by a prose copy', async () => {
@@ -2107,4 +2116,14 @@ test('default runner rejects a conditional that prevents an existing case from e
     const result = await runGate0({ root: dir, baseRef: 'main', issue: { allowedPaths: ['test/**'] }, denylist: FIXTURE_DENY, metadata: { prTitle: 't', branch: 'b' } });
     assert.ok(result.findings.some((finding) => finding.ruleId === 'G0-TEST-COUNT'), JSON.stringify(result));
   });
+});
+
+test('host isolation claim alone must not permit submitted tests to run', async () => {
+  let called = false;
+  const runner = async () => { called = true; return { exitCode: 0 }; };
+  const result = await run([edit('docs/a.md', 'old\n', 'new\n')], {
+    hostRun: true, networkIsolated: true, env: HOST_ENV, runner,
+  });
+  assert.equal(called, false);
+  assert.equal(result.verdict, 'block');
 });

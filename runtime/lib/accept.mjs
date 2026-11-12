@@ -73,9 +73,8 @@
 //     not execute code, so a call that is dead, conditional or generated is still counted
 //     once; the base test command run is the authority on what actually executes.
 //   - Disable markers (skip / only / pending forms) are matched on added lines of every
-//     non-Markdown file, so a prose use of one of those words in a comment can be a false
-//     reject (allowSkip in the issue overrides). In Markdown only the dotted call forms
-//     are matched.
+//     file, so a prose use of one of those words can be a false reject (allowSkip in the
+//     issue overrides).
 //   - The frozen-token registry is a union of base-side sources (verdict probes, template
 //     bullets and placeholders, backticked words in the shared prompt vocabulary section,
 //     `baseline.frozenTokens`, a built-in list). It is conservative, not a proof that
@@ -1206,7 +1205,7 @@ export function checkScope(files, issue) {
   const check = (path, kind) => {
     if (pathAnomaly(path) || /[\u0000-\u001f]/.test(path)) { findings.push(mk('G0-SCOPE-PATH', path, 0, `anomaly:${kind}`)); return; }
     const f = FOLD(path);
-    if (!matchesAny(path, issue.allowedPaths) && !matchesAny(f, issue.allowedPaths.map(FOLD))) findings.push(mk('G0-SCOPE-PATH', path, 0, kind));
+    if (!matchesAny(path, issue.allowedPaths)) findings.push(mk('G0-SCOPE-PATH', path, 0, kind));
     for (const p of PROTECTED) {
       if ((p.test(path) || p.test(f)) && allow[p.flag] !== true) findings.push(mk('G0-SCOPE-PROTECTED', path, 0, p.flag));
     }

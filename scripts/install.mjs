@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
+import { isEntry } from './entry.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 export const skillSource = join(root, '.agents', 'skills', 'roundtable-work');
@@ -159,6 +160,6 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.filename === resolve(process.argv[1])) {
+if (isEntry(import.meta.url)) {
   main().catch((error) => { console.error(`install: ${error.message}`); process.exitCode = 1; });
 }

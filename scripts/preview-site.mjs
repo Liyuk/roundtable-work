@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isEntry } from './entry.mjs';
 
 export const HOST = '127.0.0.1';
 export const DEFAULT_PORT = 4173;
@@ -65,4 +66,4 @@ function main() {
   server.listen(port, HOST, () => console.log(`Previewing site/ at http://${HOST}:${server.address().port}/ (Ctrl+C to stop)`));
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (isEntry(import.meta.url)) main();

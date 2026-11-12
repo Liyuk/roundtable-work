@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isEntry } from './entry.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scenarioPath = join(root, 'docs', 'pages-demo', 'scenario.json');
@@ -353,4 +354,4 @@ function main() {
   if (stale) process.exitCode = 1;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (isEntry(import.meta.url)) main();

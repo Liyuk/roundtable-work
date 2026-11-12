@@ -897,6 +897,13 @@ test('an all-lowercase high-entropy credential value fails; ordinary lowercase v
   ), []);
 });
 
+test('uppercase credentials with digits and underscores are rejected', () => {
+  const value = piece('K9QW_', 'J7VM_', 'P2TR_', 'N8GF_', 'D4SY');
+  for (const path of ['src/config.mjs', 'docs/a.md']) {
+    assert.deepEqual(rules(scanAt(path, piece('to', 'ken = ', value))), ['HYG-CRED']);
+  }
+});
+
 test('an all-uppercase high-entropy credential value fails; reference-like and low-entropy values pass', () => {
   const RANDOM_UPPER = piece('KZQW', 'JXVM', 'PBTR', 'NHGF', 'DLSY', 'CEUA');
   for (const a of [
@@ -1151,4 +1158,66 @@ test('H-79: a 500 KB line is scanned in bounded time and still finds a late secr
   const f = scanLines('x'.repeat(500000) + ' ' + piece('gh', 'p_', 'Zk3pQ9vL2xR7tW5yB8nM4cD6fH1jK0aS'));
   assert.deepEqual(rules(f), ['HYG-CRED']);
   assert.ok(Date.now() - t0 < 10000);
+});
+
+import { readdir, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+const repo = fileURLToPath(new URL('../../', import.meta.url));
+
+async function walk(dir) {
+  const out = [];
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...await walk(p));
+    else out.push(p);
+  }
+  return out;
+}
+
+async function sources() {
+  const files = [...await walk(join(repo, 'runtime')), ...await walk(join(repo, 'test', 'runtime'))];
+  const doc = join(repo, 'docs', 'runtime-modules.md');
+  files.push(doc);
+  const result = [];
+  for (const f of files) {
+    try { result.push({ file: f.slice(repo.length), text: await readFile(f, 'utf8') }); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
+  return result;
+}
+
+// This file names the forbidden patterns, so it is excluded from its own scan.
+const scanned = async () => (await sources()).filter((s) => !s.file.endsWith('hygiene.test.mjs'));
+const runtimeOnly = async () => (await scanned()).filter((s) => s.file.startsWith('runtime/'));
+
+const subprocessAllowed = (file) => file === 'runtime/lib/accept.mjs';
+
+test('only Gate 0 may run subprocesses', () => {
+  assert.equal(subprocessAllowed('runtime/lib/accept.mjs'), true);
+  assert.equal(subprocessAllowed('runtime/lib/other.mjs'), false);
+  assert.equal(subprocessAllowed('runtime/lib/accept.mjs.extra'), false);
+});
+
+test('runtime code restricts subprocesses and never touches the network', async () => {
+  const files = await runtimeOnly();
+  assert.ok(files.length >= 5);
+  for (const { file, text } of files) {
+    if (!subprocessAllowed(file)) assert.doesNotMatch(text, /child_process/, file);
+    assert.doesNotMatch(text, /\bgh\s+(issue|pr|api|repo|release|label)\b/, file);
+    assert.doesNotMatch(text, /node:(https?|net|dgram|tls)\b|\bfetch\(/, file);
+  }
+});
+
+test('runtime code has no model-name references in code, tests or docs', async () => {
+  for (const { file, text } of await scanned()) assert.doesNotMatch(text, new RegExp(['hai', 'ku'].join(''), 'i'), file);
+});
+
+test('runtime code has no absolute home directories', async () => {
+  for (const { file, text } of await scanned()) assert.doesNotMatch(text, /\/home\/[a-z_][\w-]*|\/Users\/\w+/i, file);
+});
+
+test('runtime reuses lib/verdict.mjs instead of forking a verdict parser', async () => {
+  const classify = (await runtimeOnly()).find((s) => s.file.endsWith('classify.mjs'));
+  assert.match(classify.text, /from '\.\.\/\.\.\/lib\/verdict\.mjs'/);
+  for (const { file, text } of await runtimeOnly()) assert.doesNotMatch(text, /===\s*'通过'|===\s*'打回'/, file);
 });
