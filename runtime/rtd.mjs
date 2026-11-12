@@ -213,6 +213,11 @@ export async function runQueue({
 
     try {
       let phase = PHASES[PHASES.indexOf(state.checkpoint?.phase ?? null) + 1] ?? PHASES[0];
+      // retryDeveloper persists the counter before the stop status. A crash between those writes
+      // must not start another developer attempt, while later checkpointed phases may still resume.
+      if (phase === 'developing' && state.attempts.developer >= maxDeveloperAttempts) {
+        return await finish('stop', 'developer_budget_exhausted', 'developer_budget_exhausted', 'stop');
+      }
       for (;;) {
         // After a lost lock nothing is written for this issue: not even beginPhase (the wake's first step and
         // the check after each handler already ran a real refresh, this only reads the shared flag).

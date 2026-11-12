@@ -387,10 +387,7 @@ for (const hungPhase of ['developing', 'testing']) {
       late = await Promise.allSettled([a.recordArtifacts({ output: 'late.txt' }), a.heartbeat()]);
       return { exitCode: 0, output: 'late' };
     };
-    // Injected clock: the abandoned handler keeps lock and lease until their TTL, which the test then lets pass.
-    let skew = 0;
-    const now = () => Date.now() + skew;
-    const first = await runQueue({ workRoot: root, queue: ['A'], handler, now, phaseTimeoutMs: 60, graceMs: 30, maxDeveloperAttempts: 3 });
+    const first = await runQueue({ workRoot: root, queue: ['A'], handler, phaseTimeoutMs: 60, graceMs: 30, maxDeveloperAttempts: 3 });
     assert.equal(first.status, 'ok');
     assert.equal(first.abandonedHandler, true);
     assert.equal(invocations, 1, 'no second handler invocation started in the same wake');
@@ -411,15 +408,26 @@ for (const hungPhase of ['developing', 'testing']) {
       assert.equal(r.status, 'rejected');
       assert.match(r.reason.message, /phase closed/);
     }
-    const after = JSON.parse(await readFile(stateFile(root, 'A'), 'utf8'));
+    // Handler completion precedes asynchronous lease and lock release. Wait for both, with a real-time bound.
+    const deadline = Date.now() + 5000;
+    let after;
+    let lockReleased = false;
+    do {
+      after = JSON.parse(await readFile(stateFile(root, 'A'), 'utf8'));
+      const lockDir = join(root, 'rtd.lock.d');
+      const epoch = (await readdir(lockDir)).filter((n) => /^epoch-\d+$/.test(n)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6))).at(-1);
+      lockReleased = JSON.parse(await readFile(join(lockDir, epoch), 'utf8')).released === true;
+      if (after.lease === null && lockReleased) break;
+      await sleep(10);
+    } while (Date.now() < deadline);
     const expected = JSON.parse(before);
     assert.equal(after.lease, null, 'the settled handler releases its lease');
+    assert.equal(lockReleased, true, 'the settled handler releases its lock');
     expected.lease = null;
     assert.deepEqual(after, expected, 'late recordArtifacts / heartbeat wrote nothing');
 
-    skew = 10 * 60_000; // lock (5 min) and lease (1 min) have expired
-    const second = await runQueue({ workRoot: root, queue: ['A'], handler, now });
-    assert.equal(second.outcomes[0].status, 'done', 'the next wake after expiry resumes and finishes');
+    const second = await runQueue({ workRoot: root, queue: ['A'], handler });
+    assert.equal(second.outcomes[0].status, 'done', 'the next wake after cleanup resumes and finishes');
     assert.equal(second.abandonedHandler, undefined);
   }));
 }
