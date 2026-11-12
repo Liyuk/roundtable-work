@@ -9,7 +9,7 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
   const repository = repo ? ['--repo', repo] : [];
   return {
     async getOwner(options) {
-      const result = await run(['repo', 'view', ...repository, '--json', 'owner'], options);
+      const result = await run(['repo', 'view', ...(repo ? [repo] : []), '--json', 'owner'], options);
       if (!result?.owner?.login) throw new TypeError('Repository owner is missing');
       return result.owner.login;
     },

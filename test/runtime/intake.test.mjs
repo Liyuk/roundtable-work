@@ -52,6 +52,35 @@ test('listed dependencies block selection until closed', async () => {
     }
   }
 });
+test('task-list dependencies block selection until closed', async () => {
+  for (const marker of ['- [ ] ', '- [x] ', '* [X] ', '+ [ ] ']) {
+    for (const phrase of ['Depends on', 'Blocked by']) {
+      const candidate = issue(1, ['type:bug'], { body: `${marker}${phrase} #42` });
+      let state = 'OPEN';
+      const provider = createIntakeProvider({
+        getOwner: async () => 'owner',
+        listIssues: async () => [candidate],
+        getIssue: async () => { if (state === 'MISSING') throw new Error('not found'); return { state }; },
+      });
+      for (state of ['OPEN', 'MISSING']) assert.deepEqual((await readQueue(provider)).items, [], `${marker}${phrase}: ${state}`);
+      state = 'CLOSED';
+      assert.deepEqual((await readQueue(provider)).items.map(item => item.id), ['1'], `${marker}${phrase}: CLOSED`);
+    }
+  }
+});
+test('GitHub adapter uses the selected repository for each read', async () => {
+  const calls = [];
+  const fixtures = [{ owner: { login: 'selected-owner' } }, [], { state: 'CLOSED' }];
+  const reader = createGitHubReader({ repo: 'selected-owner/selected-repo', run: async args => { calls.push(args); return fixtures[calls.length - 1]; } });
+  assert.equal(await reader.getOwner(), 'selected-owner');
+  await reader.listIssues();
+  await reader.getIssue(42);
+  assert.deepEqual(calls, [
+    ['repo', 'view', 'selected-owner/selected-repo', '--json', 'owner'],
+    ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,body,url'],
+    ['issue', 'view', '42', '--repo', 'selected-owner/selected-repo', '--json', 'state'],
+  ]);
+});
 test('orders by bug, priority, self, age and extracts series', () => {
   const result = select([issue(1), issue(2, ['type:feature', 'priority:p2']), issue(3, ['type:feature', 'priority:p1']), issue(4, ['type:feature', 'priority:p0']), issue(5, ['type:bug']), issue(6, ['type:bug', 'priority:p2']), issue(7, ['type:bug', 'priority:p2', 'rt:self']), issue(8, ['type:bug', 'priority:p2', 'rt:self'], { createdAt: '2020-01-01T00:00:00Z', title: '[Pages] build' })]);
   assert.deepEqual(result.issues.map(i => i.id), ['8','7','6','5','4','3','2','1']);
