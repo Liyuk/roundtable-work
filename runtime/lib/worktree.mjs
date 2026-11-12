@@ -28,11 +28,19 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
   async function create(rawId) {
     const id = assertSafeId(rawId);
     const path = await pathFor(id);
+    const branch = `rt/${id}-pi`;
     const existing = await list();
-    if (existing.includes(path)) return { path, branch: `rt/${id}-pi`, existing: true };
+    if (existing.includes(path)) {
+      const { stdout } = await execFile('git', ['-C', path, 'branch', '--show-current'], { maxBuffer: 1024 * 1024 });
+      const checkedOutBranch = stdout.trim();
+      if (checkedOutBranch !== branch) {
+        throw new Error(`Existing worktree at ${path} is on branch ${checkedOutBranch || '(detached HEAD)'}, expected ${branch}`);
+      }
+      return { path, branch, existing: true };
+    }
     await confinement.resolve('worktrees', id);
-    await execFile('git', ['-C', repoRoot, 'worktree', 'add', '-b', `rt/${id}-pi`, path, baseBranch], { maxBuffer: 1024 * 1024 });
-    return { path, branch: `rt/${id}-pi`, existing: false };
+    await execFile('git', ['-C', repoRoot, 'worktree', 'add', '-b', branch, path, baseBranch], { maxBuffer: 1024 * 1024 });
+    return { path, branch, existing: false };
   }
 
   async function acquire(rawId, owner = `worker-${process.pid}`) {
