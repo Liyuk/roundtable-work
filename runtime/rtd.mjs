@@ -12,11 +12,19 @@ import { classify } from './lib/classify.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 export const EXIT_LOCKED = 75;
+export const EXIT_LOCK_LOST = 76;
+
+/** Process exit code for a `runQueue` result: 0 ok, 75 locked (another pass is running), 76 lock lost (pass aborted). */
+export function exitCodeFor(result) {
+  if (result?.status === 'locked') return EXIT_LOCKED;
+  if (result?.status === 'lock_lost') return EXIT_LOCK_LOST;
+  return 0;
+}
 
 /**
  * One pass over the queue: each runnable issue gets at most one wake.
  *
- * `handler({ item, phase, stage, state, heartbeat, recordArtifacts })` performs one phase and returns
+ * `handler({ item, phase, stage, state, heartbeat, recordArtifacts, signal })` performs one phase and returns
  * `{ exitCode, timedOut, output, scopeMismatch, humanBlock, artifacts, changedFiles }`.
  * It must not delete worktree / diff / output artifacts; it reports their paths (returned or via
  * `recordArtifacts`, which persists them immediately so a crash cannot lose the record).
@@ -27,19 +35,26 @@ export const EXIT_LOCKED = 75;
  * scope mismatch (`out-of-scope`), not a developer failure.
  *
  * Liveness contract: the single-flight lock has a lease of `lockTtlMs`. It is renewed at the start of
- * every phase and by every `heartbeat()` call, so a handler that runs longer than `lockTtlMs / 2`
- * must call `heartbeat()` at least that often. A handler that does not may find its lock taken over
- * by another process. Known limitation: there is no automatic lock renewal while a handler runs. When the lock is lost (a refresh fails) the wake is aborted: no further handler
- * runs, nothing more is recorded for the interrupted phase, the other process's lock is left alone,
+ * every phase, by every `heartbeat()` call, and automatically on an unref'd timer while a handler runs
+ * (every `max(lockRenewMinMs, floor(lockTtlMs / 3))` ms, `lockRenewMinMs` defaults to 1000), so a quiet
+ * handler keeps the lock and no other process can run the same queue meanwhile. `heartbeat()` stays
+ * available as an extra liveness signal for the per-issue lease. When the lock is lost (a refresh fails
+ * or throws) the `signal` passed to the handler is aborted and the wake is aborted once the handler
+ * settles: no further handler runs, nothing more is recorded for the interrupted phase (the handler's
+ * own `recordArtifacts()` / `heartbeat()` calls reject), the other process's lock is left alone,
  * per-issue state and artifacts are kept, and the issue lease is released only if it is still ours.
  * The pass then returns `{ status:'lock_lost', outcomes, skipped }` (outcomes holds finished issues
- * and the interrupted one with `status:'lock_lost'`).
+ * and the interrupted one with `status:'lock_lost'`). The CLI exits 0 for `ok`, 75 (`EXIT_LOCKED`) for
+ * `locked` and 76 (`EXIT_LOCK_LOST`) for `lock_lost`, see `exitCodeFor()`.
+ *
+ * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE`. `--handler` is trusted operator code,
+ * deliberately outside work-root confinement (only paths under the work root are confined).
  *
  * @returns {Promise<{status:'locked', holder:object} | {status:'lock_lost', outcomes:object[], skipped:object[]} | {status:'ok', outcomes:object[], skipped:object[]}>}
  */
 export async function runQueue({
   workRoot, queue, handler, now = Date.now, owner = `rtd-${process.pid}`,
-  leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000, lockTtlMs = 5 * 60_000,
+  leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000, lockTtlMs = 5 * 60_000, lockRenewMinMs = 1000,
   maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
@@ -84,7 +99,15 @@ export async function runQueue({
         .then(() => out(status, { class: cls, reason, decision }));
 
     let lockLost = false;
-    const refreshLock = async () => { if (!lockLost && !(await lock.refresh())) lockLost = true; return !lockLost; };
+    const abort = new AbortController();
+    const refreshLock = async () => {
+      if (!lockLost) {
+        let ok = false;
+        try { ok = await lock.refresh(); } catch { /* an unusable lock counts as lost */ }
+        if (!ok) { lockLost = true; abort.abort(new Error('single-flight lock lost')); }
+      }
+      return !lockLost;
+    };
     const lost = () => out('lock_lost', { reason: 'lock_lost', decision: 'wait' });
 
     try {
@@ -94,19 +117,34 @@ export async function runQueue({
         if (!(await refreshLock())) return lost();
         state = await store.load(id);
         const heartbeat = async () => {
+          if (lockLost) throw new Error('single-flight lock lost');
           await store.heartbeat(id, owner);
           if (!(await refreshLock())) throw new Error('single-flight lock lost');
         };
-        const recordArtifacts = (artifacts) => store.recordArtifacts(id, artifacts);
+        const recordArtifacts = async (artifacts) => {
+          if (lockLost) throw new Error('single-flight lock lost');
+          return store.recordArtifacts(id, artifacts);
+        };
+
+        // Renew the lock while the handler runs, so a quiet handler never lets the lease expire.
+        let renewing = null;
+        const timer = setInterval(() => {
+          if (renewing || lockLost) return;
+          renewing = refreshLock().finally(() => { renewing = null; });
+        }, Math.max(lockRenewMinMs, Math.floor(lockTtlMs / 3)));
+        timer.unref();
 
         let step;
         try {
-          step = { ...(await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts })) };
+          step = { ...(await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal: abort.signal })) };
         } catch (err) {
           // A path escape from the handler's own recordArtifacts() is a scope problem, not a developer failure.
           step = err instanceof PathEscapeError
             ? { scopeMismatch: true, output: `handler error: ${err.message}` }
             : { exitCode: 1, output: `handler error: ${err?.message ?? err}` };
+        } finally {
+          clearInterval(timer);
+          await renewing;
         }
         if (lockLost || !(await refreshLock())) return lost();
         try {
@@ -157,13 +195,13 @@ async function main(argv) {
     return 2;
   }
   if (!args['work-root'] || !args.queue || !args.handler) {
-    console.error('usage: rtd.mjs --work-root DIR --queue FILE --handler MODULE');
+    console.error('usage: rtd.mjs --work-root DIR --queue FILE --handler MODULE (MODULE is trusted operator code, not confined to the work root)');
     return 2;
   }
   const { default: handler } = await import(pathToFileURL(resolve(args.handler)).href);
   const result = await runQueue({ workRoot: args['work-root'], queue: args.queue, handler });
   console.log(JSON.stringify(result));
-  return result.status === 'locked' ? EXIT_LOCKED : 0;
+  return exitCodeFor(result);
 }
 
 const invoked = (() => {
