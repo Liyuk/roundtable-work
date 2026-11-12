@@ -179,6 +179,7 @@ function blockCodeOf(err) {
   if (err instanceof GateSignal) return err.ruleId;
   if (err instanceof HygieneError) {
     if (err.code === 'TIMEOUT') return 'G0-TIMEOUT';
+    if (err.code === 'LIMIT') return 'G0-LIMIT';
     return /^DENYLIST_/.test(String(err.code)) ? 'G0-DENYLIST' : 'G0-INPUT';
   }
   return 'G0-INTERNAL';
@@ -538,21 +539,28 @@ function escapeBytes(buf) {
   return s;
 }
 const LFS_HEADER = 'version https://git-lfs.github.com/spec/v1';
+// Total characters of printable runs (all views) one binary blob may contribute. Runs are never
+// truncated or dropped: above the cap the gate blocks (G0-LIMIT). The hygiene scanner splits
+// long runs into overlapping windows itself, so a run of any length below the cap is scanned whole.
+const MAX_BINARY_CHARS = 4 * 1024 * 1024;
 
 /**
  * Printable runs of a binary blob (strings(1) style, UTF-8 and UTF-16LE views), as
- * pseudo added lines, so text hiding inside binary content is scanned (never skipped).
+ * pseudo added lines, so text hiding inside binary content is scanned (never skipped, never
+ * truncated). Fails closed (G0-LIMIT) when the runs add up to more than MAX_BINARY_CHARS.
  */
-export function binaryStrings(buf) {
+export function binaryStrings(buf, maxChars = MAX_BINARY_CHARS) {
   const views = [buf.toString('utf8'), buf.toString('utf16le'), buf.subarray(1).toString('utf16le')];
   const out = [];
   const seen = new Set();
+  let total = 0;
   for (const v of views) {
     for (const seg of v.split(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]+/)) {
       if (seg.length < 4 || seen.has(seg)) continue;
       seen.add(seg);
-      out.push({ line: out.length + 1, text: seg.slice(0, MAX_MD_LINE) });
-      if (out.length >= 5000) return out;
+      total += seg.length;
+      if (total > maxChars) throw new GateSignal('G0-LIMIT');
+      out.push({ line: out.length + 1, text: seg });
     }
   }
   return out;
@@ -1296,13 +1304,38 @@ const HTML_TAGS = new Set([
 const PLACEHOLDER_RE = /(?<![\p{L}\p{N}_])<([\p{L}\p{N}](?:[^<>=/@\n"'`]{0,38}[\p{L}\p{N}])?)>/gu;
 
 /**
- * Placeholders of one file's BASE content (the per-file frozen set). Code files are left out:
- * generics and comparisons are not placeholders there; Markdown, text and data files are in.
+ * Placeholder matches of a text with their start offsets. In code files (CODE_FILE_RE) only
+ * matches located entirely inside a string, template literal or comment count, found with the
+ * same literal scanner as the test counter (stripNonCode blanks exactly those spans). A regex
+ * literal (blanked between two slashes) is skipped too. Code outside literals (generics,
+ * comparisons, shifts, arrows, JSX) is therefore never a placeholder; Markdown, text and data
+ * files use every match.
+ */
+function placeholderMatches(path, text) {
+  const all = [...String(text).matchAll(PLACEHOLDER_RE)];
+  if (!CODE_FILE_RE.test(String(path))) return all;
+  const code = stripNonCode(text);
+  if (code.length !== String(text).length) return all; // cannot map offsets: freeze more, never less
+  return all.filter((m) => {
+    const a = m.index;
+    const b = a + m[0].length;
+    if (!/^ +$/.test(code.slice(a, b))) return false;
+    let l = a - 1;
+    while (l >= 0 && code[l] === ' ') l--;
+    let r = b;
+    while (r < code.length && code[r] === ' ') r++;
+    return !(code[l] === '/' && code[r] === '/');
+  });
+}
+
+/**
+ * Placeholders of one file's BASE content (the per-file frozen set), Markdown, text, data and
+ * code files alike (code files: only inside strings, template literals and comments).
  */
 export function filePlaceholders(f) {
   const out = new Set();
-  if (CODE_FILE_RE.test(String(f.path)) || typeof f.baseContent !== 'string') return [];
-  for (const m of f.baseContent.matchAll(PLACEHOLDER_RE)) {
+  if (typeof f.baseContent !== 'string') return [];
+  for (const m of placeholderMatches(f.path, f.baseContent)) {
     const words = m[1].trim().split(/\s+/);
     if (words.length > 4 || HTML_TAGS.has(words[0].toLowerCase())) continue;
     out.add(m[0]);
@@ -1449,11 +1482,19 @@ export function checkTestIntegrity(files, issue) {
 // Rules 5-6: hygiene
 // ---------------------------------------------------------------------------
 
-function collectHygiene(files, metadata, denylist, baseline, deadline, history = []) {
+// Total characters (before the normalized copies) of added lines, binary strings and history
+// lines handed to the hygiene scanner in one run. Nothing is truncated: above the cap the gate
+// blocks (G0-LIMIT). Lines of any length are scanned whole (the scanner windows them itself).
+const MAX_HYGIENE_CHARS = 64 * 1024 * 1024;
+
+export function collectHygiene(files, metadata, denylist, baseline, deadline, history = [], maxChars = MAX_HYGIENE_CHARS) {
   const addedLines = [];
   const paths = [];
+  let total = 0;
   const push = (path, l) => {
-    const text = l.text.length > MAX_LINE ? l.text.slice(0, MAX_LINE) : l.text;
+    const text = l.text;
+    total += text.length;
+    if (total > maxChars) throw new GateSignal('G0-LIMIT');
     addedLines.push({ path, line: l.line, text });
     const norm = normalizeText(text);
     if (norm !== text) addedLines.push({ path, line: l.line, text: norm });
@@ -1643,7 +1684,7 @@ async function execute(opts, deadline) {
   const vetted = new WeakSet();
   if (denylist) {
     await step(() => {
-      const out = collectHygiene(files, metadata, denylist, baseline, deadline, ctx.gitMeta ? ctx.gitMeta.historyAdded : []);
+      const out = collectHygiene(files, metadata, denylist, baseline, deadline, ctx.gitMeta ? ctx.gitMeta.historyAdded : [], opts.maxHygieneChars);
       for (const f of out) vetted.add(f);
       return out;
     });

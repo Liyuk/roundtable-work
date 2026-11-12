@@ -10,7 +10,7 @@ import {
   stripFrozenCjk, globToRegExp, matchesAny, buildRunnerEnv, resolveTestSteps, nodeSatisfies,
   formatResult, isTestFile, countTestCases, BASELINE_PATH, stripNonCode, verifyDepsDir,
   deriveSharedPromptTokens, countTokenForInvariant, safeText, pathAnomaly, checkScope, lineDelta,
-  filePlaceholders,
+  filePlaceholders, binaryStrings,
 } from '../../runtime/lib/accept.mjs';
 import { hashText, fakeHash, loadDenylist } from '../../runtime/lib/hygiene.mjs';
 
@@ -1969,4 +1969,98 @@ test('per-file placeholders: HTML tags, attributes, generics and code files are 
   // Code files are left to the other rules (generics and comparisons are not placeholders).
   assert.deepEqual(filePlaceholders({ path: 'src/a.mjs', baseContent: 'const x = a <b> c;\n' }), []);
   assert.deepEqual(filePlaceholders({ path: 'docs/n.md' }), []);
+});
+
+// ---------------------------------------------------------------------------
+// 28-F11: placeholders in code files, intermediate-commit long lines, binary runs
+// ---------------------------------------------------------------------------
+
+test('per-file placeholders in code files: only those inside strings, templates and comments are frozen', async () => {
+  const base = "export const msg = 'Hello <customer_id>, welcome';\nexport const again = `Bye <customer_id>`;\n";
+  // Renaming the placeholder in a code file fails (G0-TOKEN), like in Markdown.
+  let r = await run([edit('docs/m.mjs', base, base.replaceAll('<customer_id>', '<account_id>'))]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN'], JSON.stringify(r));
+  // Keeping it, with an English parenthetical comment added, passes.
+  r = await run([edit('docs/m.mjs', base, base.replaceAll('<customer_id>', '<customer_id>') + '// uses <customer_id> (the account)\n')]);
+  assert.equal(r.verdict, 'pass', JSON.stringify(r));
+  // Count rule: two occurrences may not drop to one; an extra copy is fine.
+  r = await run([edit('docs/m.mjs', base, base.replace(' <customer_id>', ' there'))]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+  r = await run([edit('docs/m.mjs', base, `${base}// see <customer_id>\n`)]);
+  assert.equal(r.verdict, 'pass');
+  // Comments count as well (line and block); other file types are untouched by this choice.
+  assert.deepEqual(filePlaceholders({ path: 'src/c.ts', baseContent: '// fill <ticket id> here\n/* and <name> */\n' }).sort(), ['<name>', '<ticket id>']);
+  // Non-placeholders in code never become frozen: generics, comparisons, shifts, arrows, JSX,
+  // regex literals, and HTML tags inside template strings.
+  const noise = [
+    'const m = new Map<string, number>();', 'let a: Array<T> = [];', 'function f<T>(x: T) { return x; }',
+    'const g = <T>(x: T) => x;', 'if (a <b> c) {}', 'if (a < b && c > d) {}', 'const s = a << b >> c;',
+    'const h = (x) => x <y> z;', 'const j = <Widget size={3}>x</Widget>;', 'const re = /<id>/;', 'const re2 = /a <b c> d/g;',
+    'const t = `line<br>break <hr> <b>bold</b> <div>`;', "const u = 'Map<string, number> and Array<T>';",
+  ].join('\n') + '\n';
+  assert.deepEqual(filePlaceholders({ path: 'src/n.tsx', baseContent: noise }), []);
+  // So removing them is not a false reject.
+  r = await run([edit('docs/n.mjs', noise, 'export const x = 1;\n')]);
+  assert.equal(r.verdict, 'pass', JSON.stringify(r));
+  // A Chinese placeholder kept inside a code string is not new CJK either.
+  const WS = String.fromCodePoint(0x5de5, 0x4f5c, 0x533a);
+  r = await run([edit('docs/z.mjs', `export const m = 'Open <${WS}>';\n`, `export const m = 'Open <${WS}> (workspace)';\n`)]);
+  assert.equal(r.verdict, 'pass', JSON.stringify(r));
+});
+
+// A credential-shaped value built from pieces (random-looking, not marked as a fake).
+const LONG_SECRET = () => ['gh', 'p_', 'Qm8rT2vX5nB7cL9dF3hJ6kP1sW4yZ0aE'].join('');
+
+test('history: a secret late on a line longer than 65,536 characters is found even when the line is removed before HEAD', async () => {
+  await withRepo(async (dir) => {
+    writeFileSync(join(dir, 'docs/long.txt'), `${'x'.repeat(70000)} token = ${LONG_SECRET()}\n`);
+    commitAll(dir, 'Add');
+    writeFileSync(join(dir, 'docs/long.txt'), 'clean\n');
+    commitAll(dir, 'Scrub');
+    const r = await runGate0(gitCommon(dir));
+    assert.ok(ruleIds(r).includes('HYG-CRED'), JSON.stringify(r));
+  });
+});
+
+test('hygiene input over the cap blocks with G0-LIMIT instead of passing or truncating', async () => {
+  await withRepo(async (dir) => {
+    writeFileSync(join(dir, 'docs/a.txt'), `${'y'.repeat(5000)}\n`);
+    commitAll(dir, 'Add text');
+    const r = await runGate0(gitCommon(dir, { maxHygieneChars: 1000 }));
+    assert.equal(r.verdict, 'block');
+    assert.deepEqual(r.blocks, [{ ruleId: 'G0-LIMIT' }]);
+    // Within the cap the same input passes.
+    assert.equal((await runGate0(gitCommon(dir, { maxHygieneChars: 100000 }))).verdict, 'pass');
+  });
+  // The cap also counts lines that exist only in an intermediate commit.
+  await withRepo(async (dir) => {
+    writeFileSync(join(dir, 'docs/a.txt'), `${'y'.repeat(5000)}\n`);
+    commitAll(dir, 'Add text');
+    writeFileSync(join(dir, 'docs/a.txt'), 'z\n');
+    commitAll(dir, 'Shrink');
+    const r = await runGate0(gitCommon(dir, { maxHygieneChars: 1000 }));
+    assert.deepEqual(r.blocks, [{ ruleId: 'G0-LIMIT' }]);
+  });
+});
+
+test('binary printable runs: an allowed binary is scanned whole, and an over-cap run blocks', async () => {
+  const issue = { allowedPaths: ['docs/**'], allowChanges: { binaries: true } };
+  await withRepo(async (dir) => {
+    writeFileSync(join(dir, 'docs/blob.bin'), Buffer.concat([Buffer.alloc(3), Buffer.from(`${'a'.repeat(3000)} token = ${LONG_SECRET()}`), Buffer.alloc(2)]));
+    commitAll(dir, 'Binary');
+    const r = await runGate0(gitCommon(dir, { issue }));
+    assert.ok(ruleIds(r).includes('HYG-CRED'), JSON.stringify(r));
+  });
+  // The run itself is kept whole, not cut at 2,000 characters.
+  const run3000 = binaryStrings(Buffer.concat([Buffer.alloc(1), Buffer.from('b'.repeat(3000)), Buffer.alloc(1)]));
+  assert.ok(run3000.some((l) => l.text.length === 3000));
+  // Above the per-blob cap: fail closed (a block), never a silent drop.
+  assert.throws(() => binaryStrings(Buffer.concat([Buffer.alloc(1), Buffer.from('c'.repeat(500))]), 100), (e) => e.ruleId === 'G0-LIMIT');
+  await withRepo(async (dir) => {
+    writeFileSync(join(dir, 'docs/big.bin'), Buffer.concat([Buffer.alloc(1), Buffer.from('d'.repeat(3900000))]));
+    commitAll(dir, 'Big binary');
+    const r = await runGate0(gitCommon(dir, { issue }));
+    assert.equal(r.verdict, 'block');
+    assert.ok(r.blocks.some((b) => b.ruleId === 'G0-LIMIT'), JSON.stringify(r.blocks));
+  });
 });
