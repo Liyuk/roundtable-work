@@ -3,7 +3,9 @@
  *
  * context.get receives the worker completion arguments, or { recovery: { pr, issue, mergeCommit } }
  * for a revert, and returns { pr, head, tree, highRisk, changedFiles }. Gate providers follow the
- * runGates contract. github.squashMerge resolves only after a successful squash and returns
+ * runGates contract. github.getPullRequest must return { state, draft, head, mergeable, files }, where
+ * files is the pull request's changed paths: the merge entry point derives the safety-file set from it
+ * and fails closed when it is absent. github.squashMerge resolves only after a successful squash and returns
  * { mergeCommit: <SHA> }; github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
  * Recovery providers return the revert result, { number, head } for the PR, and { number } for the
  * bug issue. GitHub and git effects are owned by the supplied providers.

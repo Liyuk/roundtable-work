@@ -1,3 +1,8 @@
+import { safetyFiles } from './safety.mjs';
+
+const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
+const isStringArray = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
 export function createMergeEntryPoint({ github, gateState }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
@@ -20,8 +25,17 @@ export function createMergeEntryPoint({ github, gateState }) {
     if (!live || live.state !== 'open' || live.draft === true || live.head !== evidence.head || live.mergeable !== true) {
       throw new Error('Pull request is not open, ready, current, and mergeable');
     }
-    if (live.safetyFiles === true && (evidence.safetyApproved !== true || live.safetyApprovalHead !== evidence.head)) {
-      throw new Error('Safety-file approval is missing or stale');
+    // Safety approval is enforced on the live changed-file list, never on provider-supplied safety fields.
+    // Missing live files fail closed: the caller cannot skip the check by omitting them.
+    if (!isStringArray(live.files)) throw new Error('Live pull request changed files are required to verify safety approval');
+    if (!isStringArray(persisted.safetyFiles)) throw new Error('Gated safety-file list is missing or malformed');
+    const liveSafety = safetyFiles(live.files);
+    const gatedSafety = [...new Set(persisted.safetyFiles)].sort();
+    if (!samePaths(liveSafety, gatedSafety)) {
+      throw new Error(`Safety-file set changed since gating: live [${liveSafety.join(', ')}] gated [${gatedSafety.join(', ')}]`);
+    }
+    if (liveSafety.length > 0 && persisted.safetyApproved !== true) {
+      throw new Error('Safety-file approval is missing or stale for the current head and tree');
     }
     const checks = await github.requiredGreen(pr);
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');

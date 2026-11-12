@@ -1,8 +1,8 @@
 import { assertSafeId } from './paths.mjs';
+import { safetyFiles } from './safety.mjs';
 
 const PASS = (result) => result === true || result?.passed === true || result?.status === 'pass';
 const UNAVAILABLE = (error) => error?.code === 'REVIEWER_UNAVAILABLE' || error?.unavailable === true;
-const SAFETY_FILE = /^(?:\.githooks\/|.*(?:^|\/)(?:pre-push|limits|policy)(?:\.|$)|bin\/gh$|runtime\/lib\/guard[^/]*|\.github\/workflows\/|scripts\/check\.mjs$)/i;
 const required = (value, name) => { if (!value || typeof value !== 'object') throw new TypeError(`${name} is required`); return value; };
 
 /** A small durable gate record store. The host can inject a transactional state backend instead. */
@@ -26,9 +26,13 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   let record = await state.get(id);
   if (record && (record.issue !== id || record.head !== head || record.tree !== tree)) record = null;
   const passed = new Set(record?.passed ?? []);
+  // The gated safety set is written on every persist so the merge entry point can compare it with the
+  // live pull request. Approval is only proven once the escalation check has passed, which happens
+  // before the `ci` persist; earlier persists keep it explicitly false.
+  const gatedSafetyFiles = safetyFiles(changedFiles);
   const persist = async (gate) => {
     passed.add(gate);
-    record = { issue: id, head, tree, passed: [...passed] };
+    record = { issue: id, head, tree, passed: [...passed], safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
     await state.put(id, record);
   };
   const failed = async (gate, reason) => ({ status: 'blocked', gate, reason });
@@ -64,8 +68,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     if (!PASS(result)) return failed('gate2', result?.reason ?? 'Cross-check failed');
     await persist('gate2');
   }
-  const safetyFiles = changedFiles.filter((file) => SAFETY_FILE.test(file));
-  if (safetyFiles.length) {
+  if (gatedSafetyFiles.length) {
     const approval = await github.recordedEscalationApproval(pr);
     if (approval?.approved !== true || approval?.model !== 'gpt-6.1-terra' || approval?.head !== head) {
       await github.addLabel(pr, 'rt:ready-to-merge');
@@ -77,7 +80,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   if (checks !== true && checks?.green !== true) return failed('ci', 'Required CI is red or pending');
   await persist('ci');
   // The adapter is the single merge entry point and must revalidate live PR/head/CI immediately before squash.
-  const evidence = { issue: id, head, tree, highRisk, passed: [...passed], ciGreen: true, safetyApproved: safetyFiles.length > 0 };
+  const evidence = { issue: id, head, tree, highRisk, passed: [...passed], ciGreen: true, safetyFiles: gatedSafetyFiles, safetyApproved: gatedSafetyFiles.length > 0 };
   const merged = await merge.squash(pr, evidence);
   return { status: 'merged', issue: id, head, tree, result: merged };
 }

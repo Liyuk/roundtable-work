@@ -11,7 +11,7 @@ async function runCase(failure) {
   const github = {
     async addLabel(_pr, label) { calls.push(label); },
     async recordedEscalationApproval() { return null; },
-    async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, mergeable: true, head: 'head' }; },
+    async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, mergeable: true, head: 'head', files: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
     async requiredGreen() { calls.push('ci'); ciCalls++; if (failure === 'ci-error') throw new Error('offline'); if (failure === 'pending') return { green: false, status: 'pending' }; return !(failure === 'ci' || (failure === 'recheck' && ciCalls === 2)); },
     async squashMerge(_pr, options) { calls.push(['squash', options]); },
   };
