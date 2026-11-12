@@ -10,6 +10,8 @@ import { readQueue, isTerminal } from './lib/queue.mjs';
 import { randomUUID } from 'node:crypto';
 import { createStateStore, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
+import { createIntakeProvider } from './lib/intake.mjs';
+import { createGitHubReader } from '../scripts/github-read.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 export const EXIT_LOCKED = 75;
@@ -355,13 +357,13 @@ function withTimeout(ms, onTimeout) {
 async function main(argv) {
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, handler: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
   }
-  if (!args['work-root'] || !args.queue || !args.handler) {
-    console.error('usage: rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
+  if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github)) {
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO]) --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
     return 2;
   }
   const timeouts = {};
@@ -375,7 +377,9 @@ async function main(argv) {
     timeouts[option] = n;
   }
   const { default: handler } = await import(pathToFileURL(resolve(args.handler)).href);
-  const result = await runQueue({ workRoot: args['work-root'], queue: args.queue, handler, ...timeouts });
+  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo })) : args.queue;
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, ...timeouts });
+  if (args.github) result.triage = queue.triage;
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {
     // A handler that never settled may still be running and would keep this process alive past the lock's
