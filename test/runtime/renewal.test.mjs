@@ -172,6 +172,7 @@ test('after a lost lock the successor\'s lease, checkpoint, artifacts and state 
   const root = await tmp();
   try {
     const store = await createStateStore({ workRoot: root });
+    store.setEpoch(2);
     let before;
     const handler = async ({ signal }) => {
       // The successor takes the lock and the issue state while this handler is still running.
@@ -181,13 +182,13 @@ test('after a lost lock the successor\'s lease, checkpoint, artifacts and state 
         s.checkpoint = { phase: 'testing', at: 1 };
         s.artifacts = { output: 'out/successor.txt' };
       });
-      before = { raw: await readFile(join(root, 'state', '7.json'), 'utf8'), ino: (await stat(join(root, 'state', '7.json'))).ino };
+      before = { raw: await readFile(join(root, 'state', '~37.epoch-2.json'), 'utf8'), ino: (await stat(join(root, 'state', '~37.epoch-2.json'))).ino };
       await new Promise((resolve) => { if (signal.aborted) return resolve(); signal.addEventListener('abort', resolve, { once: true }); setTimeout(resolve, 5000); });
       return { exitCode: 0, output: 'ok', artifacts: { output: 'out/ours.txt' } };
     };
     const result = await runQueue({ workRoot: root, queue: ['7'], handler, ...RENEW });
     assert.equal(result.status, 'lock_lost');
-    const file = join(root, 'state', '7.json');
+    const file = join(root, 'state', '~37.epoch-2.json');
     assert.equal(await readFile(file, 'utf8'), before.raw, 'the successor\'s state is byte-for-byte unchanged');
     assert.equal((await stat(file)).ino, before.ino, 'the state file was not rewritten at all');
     const state = await store.load('7');

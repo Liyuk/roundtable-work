@@ -2,6 +2,7 @@
 // Test names start with the area, as listed in the threat table; the threat id is in the comment above each test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
 import fsp, { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +19,14 @@ const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-hard-'));
 const PASS = '审查结论：通过\nok';
 const okHandler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' });
-const stateFile = (root, id) => join(root, 'state', `${id}.json`);
+const stateFile = (root, id) => {
+  const dir = join(root, 'state');
+  let names = [];
+  try { names = readdirSync(dir); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+  const prefix = `~${Buffer.from(id).toString('hex')}.epoch-`;
+  const epochs = names.filter((n) => n.startsWith(prefix) && /^\d+\.json$/.test(n.slice(prefix.length))).map((n) => Number(n.slice(prefix.length, -5)));
+  return join(dir, epochs.length ? `${prefix}${Math.max(...epochs)}.json` : `${id}.json`);
+};
 const seedState = async (root, id, text) => { await mkdir(join(root, 'state'), { recursive: true }); await writeFile(stateFile(root, id), typeof text === 'string' ? text : JSON.stringify(text)); };
 const withRoot = (fn) => async () => { const root = await tmp(); try { await fn(root); } finally { await rm(root, { recursive: true, force: true }); } };
 
@@ -82,7 +90,7 @@ for (const [name, text] of [['garbage', '{not json\u0000'], ['empty file', ''], 
     assert.equal(a.decision, 'ask');
     assert.deepEqual([b.id, b.status], ['B', 'done']);
     assert.equal(await readFile(stateFile(root, 'A'), 'utf8'), text, 'the corrupt file is preserved byte for byte');
-    assert.deepEqual((await readdir(join(root, 'state'))).sort(), ['A.json', 'B.json']);
+    assert.deepEqual((await readdir(join(root, 'state'))).sort(), ['A.json', '~42.epoch-1.json']);
   }));
 }
 
@@ -403,7 +411,11 @@ for (const hungPhase of ['developing', 'testing']) {
       assert.equal(r.status, 'rejected');
       assert.match(r.reason.message, /phase closed/);
     }
-    assert.equal(await readFile(stateFile(root, 'A'), 'utf8'), before, 'late recordArtifacts / heartbeat wrote nothing');
+    const after = JSON.parse(await readFile(stateFile(root, 'A'), 'utf8'));
+    const expected = JSON.parse(before);
+    assert.equal(after.lease, null, 'the settled handler releases its lease');
+    expected.lease = null;
+    assert.deepEqual(after, expected, 'late recordArtifacts / heartbeat wrote nothing');
 
     skew = 10 * 60_000; // lock (5 min) and lease (1 min) have expired
     const second = await runQueue({ workRoot: root, queue: ['A'], handler, now });
@@ -483,12 +495,14 @@ for (const phase of ['developing', 'finalizing']) {
 }
 
 // ---- single-flight: an abandoned handler (never settles after its timeout and grace) keeps lock and lease until their TTL ----
-test('timeout: an abandoned handler keeps the queue lock and the issue lease until their TTL, so no second handler starts', withRoot(async (root) => {
+test('timeout: an abandoned handler keeps the queue lock and issue lease until it settles', withRoot(async (root) => {
   let started = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
   const handler = async (a) => {
     if (a.phase !== 'developing') return okHandler(a);
     started++;
-    if (started === 1) return new Promise(() => {}); // ignores the abort signal and never settles
+    if (started === 1) return gate; // ignores the abort signal
     return okHandler(a);
   };
   let skew = 0;
@@ -509,21 +523,13 @@ test('timeout: an abandoned handler keeps the queue lock and the issue lease unt
   assert.equal(started, 1, 'no second handler started');
   assert.equal(await readFile(stateFile(root, 'A'), 'utf8'), recorded, 'the recorded status was not overwritten');
 
-  // The lock has expired but the issue lease has not: still no second handler, state untouched.
+  // After the handler settles, ownership can be released and a successor can resume.
+  release();
+  await sleep(100);
   skew = 5000;
   const third = await runQueue(opts);
   assert.equal(third.status, 'ok');
-  assert.equal(third.outcomes[0].status, 'held');
-  assert.equal(started, 1, 'the unexpired issue lease still fences the issue');
-  assert.deepEqual(JSON.parse(await readFile(stateFile(root, 'A'), 'utf8')).lease, JSON.parse(recorded).lease);
-  assert.equal(JSON.parse(await readFile(stateFile(root, 'A'), 'utf8')).status, 'queued');
-
-  // After the lease TTL a successor takes over and finishes the issue.
-  skew = 10 * 60_000;
-  const fourth = await runQueue(opts);
-  assert.equal(fourth.status, 'ok');
-  assert.equal(fourth.abandonedHandler, undefined);
-  assert.equal(fourth.outcomes[0].status, 'done');
+  assert.equal(third.outcomes[0].status, 'done');
   assert.equal(started, 2);
 }));
 
@@ -594,4 +600,42 @@ runQueue({ workRoot: process.env.RT_TEST_ROOT, queue: () => new Promise(() => {}
   const r = await runChild([script], { RT_TEST_ROOT: root });
   assert.equal(r.signal, null);
   assert.deepEqual([r.code, JSON.parse(r.out || '{}').code], [3, 'RT_QUEUE_TIMEOUT']);
+}));
+
+test('state: a paused old epoch cannot replace a successor checkpoint or artifacts', withRoot(async (root) => {
+  let resume, reached;
+  const paused = new Promise((resolve) => { reached = resolve; });
+  const gate = new Promise((resolve) => { resume = resolve; });
+  const old = await createStateStore({ workRoot: root, fs: { ...fsp, async rename(a, b) { reached(); await gate; return fsp.rename(a, b); } } });
+  old.setEpoch(1);
+  const pending = old.update('race', (s) => { s.checkpoint = { phase: 'developing', at: 1 }; s.artifacts.output = 'old'; });
+  await paused;
+  const moduleUrl = new URL('../../runtime/lib/state.mjs', import.meta.url).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `import { createStateStore } from ${JSON.stringify(moduleUrl)}; const s = await createStateStore({workRoot: process.argv[1]}); s.setEpoch(2); await s.update('race', x => { x.checkpoint = {phase:'testing', at:2}; x.artifacts.output = 'new'; });`, root], { stdio: 'inherit' });
+  const code = await new Promise((resolve) => child.on('exit', resolve));
+  assert.equal(code, 0);
+  resume();
+  await pending;
+  const state = await old.load('race');
+  assert.equal(state.checkpoint.phase, 'testing');
+  assert.equal(state.artifacts.output, 'new');
+}));
+
+test('timeout: renewal prevents a second runner after the original TTL while the handler runs', withRoot(async (root) => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const opts = { workRoot: root, queue: ['A'], handler: async () => { await gate; return { exitCode: 0 }; }, phaseTimeoutMs: 30, graceMs: 10, lockTtlMs: 180, lockRenewMinMs: 30, leaseTtlMs: 180 };
+  const first = await runQueue(opts);
+  assert.equal(first.abandonedHandler, true);
+  await sleep(450);
+  const runnerUrl = new URL('../../runtime/rtd.mjs', import.meta.url).href;
+  const script = `import { runQueue } from ${JSON.stringify(runnerUrl)}; import { writeFile } from 'node:fs/promises'; const r = await runQueue({workRoot:process.argv[1], queue:['A'], handler:async () => ({exitCode:0}), lockTtlMs:180, lockRenewMinMs:30, leaseTtlMs:180}); await writeFile(process.argv[2], r.status);`;
+  const resultFile = join(root, 'contender-result');
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, root, resultFile], { stdio: 'inherit' });
+  try {
+    assert.equal(await new Promise((resolve) => child.on('exit', resolve)), 0);
+    assert.equal(await readFile(resultFile, 'utf8'), 'locked');
+    const state = await createStateStore({ workRoot: root }).then((store) => store.load('A'));
+    assert.ok(state.lease.expiresAt > Date.now(), 'the issue lease is also renewed');
+  } finally { release(); }
 }));

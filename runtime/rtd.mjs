@@ -66,19 +66,14 @@ export function exitCodeFor(result) {
  * developer or test phase spends one developer retry and leaves the issue `queued` (resume from developing, outcome
  * status `queued`, decision `wait`; the retry budget still applies), a timed-out reviewer is `waiting_external`, a timed-out
  * finalizing is `interrupted`. No new phase or retry starts in the same wake, so work on one issue never overlaps and
- * the lease is only released after the handler settled or the grace period ended; the next wake resumes. The phase
+ * the lease is only released after the handler settles; the next wake resumes. The phase
  * and queue timeout timers keep the process alive (not unref'd), so a never-settling handler or queue provider ends
  * with the timeout recorded (or `RT_QUEUE_TIMEOUT` thrown) instead of a silent exit. State writes are fenced by the lock epoch (`StaleEpochError` -> `lock_lost`). A corrupt state
  * file ends that issue as `{status:'failed', reason:'corrupt_state', decision:'ask'}` and the file is left untouched; the pass
  * continues. The default `owner` is unique per call. One work root per queue: the lock is per work root.
  *
- * Abandoned handler (single-flight): when a timed-out handler does not settle within `graceMs`, it may still be running.
- * The issue stays recorded as recoverable (as above) and the pass returns promptly with `abandonedHandler: true`, but
- * neither the queue lock nor the issue lease is released and no further issue is woken in this pass: renewal stops and both
- * expire on their own TTL, so a successor can only start after expiry. A library caller that sees `abandonedHandler: true`
- * (or an error with `abandonedHandler === true`) must treat it as a process that must not outlive the abandoned handler:
- * end the process (the CLI does, via `process.exit`) or make sure the handler is dead before the TTL ends. A handler that does
- * settle within `graceMs` releases lock and lease as usual and the flag is absent.
+ * Abandoned handlers retain the queue lock and issue lease with background renewal until they settle.
+ * No further work starts in the pass. The CLI exits after recording the recoverable state.
  *
  * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N]`. `--handler` is trusted operator code,
  * deliberately outside work-root confinement (only paths under the work root are confined).
@@ -93,7 +88,7 @@ export async function runQueue({
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
-  for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs]]) {
+  for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
   }
   for (const [name, value] of [['phaseTimeoutMs', phaseTimeoutMs], ['queueTimeoutMs', queueTimeoutMs]]) {
@@ -107,8 +102,10 @@ export async function runQueue({
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
 
-  // Set when a timed-out handler did not settle within graceMs: lock and issue lease are then left to expire (single-flight).
+  // Set when a timed-out handler did not settle within graceMs: lock and issue lease stay renewed until it settles.
   let abandonedHandler = false;
+  let finishPass;
+  const passFinished = new Promise((resolve) => { finishPass = resolve; });
   // Lock-loss state is shared by the whole pass: queue reading, every wake and every handler.
   let lockLost = false;
   const abort = new AbortController();
@@ -163,9 +160,10 @@ export async function runQueue({
     throw err;
   } finally {
     // release() reports false (never throws on a lost lock) when the epoch file is no longer ours; the
-    // lease then simply expires. A failing release must not mask the pass result. With an abandoned handler the
-    // lock is deliberately kept: it expires on its TTL (renewal has stopped), so no successor overlaps the handler.
+    // lease then simply expires. A failing release must not mask the pass result. An abandoned handler
+    // retains the lock until it settles.
     if (!abandonedHandler) await lock.release().catch(() => false);
+    finishPass();
   }
 
   // One issue with a corrupt state file must not abort the pass (R5): its outcome is `failed` / `corrupt_state`
@@ -237,6 +235,18 @@ export async function runQueue({
 
         // Renew the lock while the handler runs, so a quiet handler never lets the lease expire.
         const stopRenewal = startRenewal();
+        let leaseRenewal = null;
+        const leaseTimer = setInterval(() => {
+          if (!leaseRenewal && !lockLost) {
+            leaseRenewal = store.heartbeat(id, owner).catch(() => {}).finally(() => { leaseRenewal = null; });
+          }
+        }, Math.max(1, Math.floor(leaseTtlMs / 3)));
+        leaseTimer.unref();
+        const stopPhaseRenewal = async () => {
+          clearInterval(leaseTimer);
+          await leaseRenewal;
+          await stopRenewal();
+        };
 
         let step;
         let phaseTimedOut = false;
@@ -265,9 +275,17 @@ export async function runQueue({
           guard.clear();
           // The abandoned handler gets a bounded grace period to settle before anything else happens (the lease is
           // released after this, and no retry starts in this wake); the lock stays renewed meanwhile.
-          // If it still has not settled, the handler is abandoned: lock and lease are kept and left to expire.
-          if (phaseTimedOut && !(await settleWithin(running, graceMs))) abandonedHandler = true;
-          await stopRenewal();
+          // If it still has not settled, retain renewal until the handler actually ends.
+          if (phaseTimedOut && !(await settleWithin(running, graceMs))) {
+            abandonedHandler = true;
+            // Keep ownership until both the handler and the pass have finished writing state.
+            void running.then(() => {}, () => {}).then(async () => {
+              await passFinished;
+              await stopPhaseRenewal();
+              if (!lockLost) await store.releaseLease(id, owner).catch(() => {});
+              await lock.release().catch(() => false);
+            });
+          } else await stopPhaseRenewal();
         }
         if (lockLost || !(await refreshLock())) return lost();
         try {
@@ -307,7 +325,7 @@ export async function runQueue({
       }
     } finally {
       // After a lost lock another process owns the state: write nothing. Our lease simply expires. The same goes
-      // for an abandoned handler: it may still be running, so the lease is not released and expires on its TTL.
+      // for an abandoned handler: its renewal continues until the handler settles.
       if (!lockLost && !abandonedHandler) await store.releaseLease(id, owner).catch((err) => { if (err instanceof StaleEpochError) markLost(); });
     }
   }

@@ -1,4 +1,6 @@
 import test from 'node:test';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -21,6 +23,51 @@ test('paths inside the root resolve, including ones that do not exist yet', asyn
     assert.equal(await c.resolve('state', 'a.json'), join(root, 'state', 'a.json'));
     assert.equal(await c.resolve('a/b/../c'), join(root, 'a', 'c'));
   } finally { await cleanup(); }
+});
+
+test('retries when an entry is created between realpath and lstat', async (t) => {
+  const { root, cleanup } = await setup();
+  try {
+    const c = await createConfinement(root);
+    const created = join(root, 'state');
+    const originalRealpath = fs.realpath;
+    let injected = false;
+    t.mock.method(fs, 'realpath', async (...args) => {
+      if (args[0] === created && !injected) {
+        injected = true;
+        await mkdir(created);
+        throw Object.assign(new Error('Entry was missing'), { code: 'ENOENT' });
+      }
+      return originalRealpath(...args);
+    });
+    syncBuiltinESMExports();
+    assert.equal(await c.resolve('state', 'a.json'), join(created, 'a.json'));
+    assert.equal(injected, true);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await cleanup();
+  }
+});
+
+test('fails closed when an existing entry repeatedly cannot be resolved', async (t) => {
+  const { root, cleanup } = await setup();
+  try {
+    const entry = join(root, 'unstable');
+    await mkdir(entry);
+    const c = await createConfinement(root);
+    const originalRealpath = fs.realpath;
+    t.mock.method(fs, 'realpath', async (...args) => {
+      if (args[0] === entry) throw Object.assign(new Error('Entry was missing'), { code: 'ENOENT' });
+      return originalRealpath(...args);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(c.resolve('unstable'), { name: 'PathEscapeError', message: /Unable to resolve unstable path/ });
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await cleanup();
+  }
 });
 
 test('.. escapes and absolute paths outside the root are rejected', async () => {

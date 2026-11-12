@@ -381,7 +381,7 @@ test('developer retry: counter and checkpoint reset are one durable write; a cra
     fsp.rename = async (from, to) => {
       if (crashed) throw new Error('simulated crash');
       await realRename(from, to);
-      if (String(to).endsWith('49.json')) {
+      if (String(to).endsWith('~3439.epoch-1.json')) {
         const s = JSON.parse(await readFile(to, 'utf8'));
         snapshots.push({ developer: s.attempts.developer, checkpoint: s.checkpoint?.phase ?? null });
         if (s.attempts.developer === 1) crashed = true;
@@ -561,6 +561,6 @@ test('lock lost between two issues: the next wake stops on its first step, befor
     assert.equal(result.status, 'lock_lost');
     assert.deepEqual(result.outcomes.map((o) => [o.id, o.status]), [['1', 'done'], ['2', 'lock_lost']]);
     assert.deepEqual(seen, ['1:developing', '1:testing', '1:reviewing', '1:finalizing']);
-    assert.deepEqual(Object.keys(await snapshotState(root)), ['1.json'], 'no state file was created for issue 2');
+    assert.deepEqual(Object.keys(await snapshotState(root)), ['~31.epoch-1.json'], 'no state file was created for issue 2');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

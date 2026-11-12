@@ -77,17 +77,10 @@ export const freshState = (id) => ({
 });
 
 /**
- * Durable per-issue state under `<workRoot>/state/<id>.json`. All paths go through the confinement.
- * Writes are durable and atomic: exclusive (`wx`) random temp file, fsync(file), rename, fsync(directory).
- * Artifact paths are only ever recorded, never deleted; every recorded path is kept in the append-only
- * `artifactHistory` (the `artifacts` map only points at the latest path per key).
- *
- * Fencing: `setEpoch(n)` (the single-flight lock's `handle.epoch`) makes every write stamp `lockEpoch: n`
- * into the state and refuse (`StaleEpochError`) a write when the state already carries a higher epoch, so a
- * paused process that resumes after a takeover cannot write over its successor. Without `setEpoch` a store
- * does not fence. Residual: a successor that has taken the lock but not yet written is only detected by the
- * lock refresh that precedes each phase; an operator who deletes the lock directory resets epochs below the
- * stamped ones and must clear `lockEpoch` too.
+ * Durable per-issue state under `<workRoot>/state/`. Epoch owners publish to separate files;
+ * readers select the highest epoch, falling back to the legacy file. A delayed older owner can
+ * never replace a newer owner's checkpoint or artifact history. Files are synced before publication.
+ * Artifact paths are recorded in state and retained in `artifactHistory`.
  *
  * `fs` (tests only) overrides `open`, `rename`, `unlink`, `mkdir`, `readFile`; `randomId` the temp-file suffix.
  */
@@ -102,7 +95,13 @@ export async function createStateStore({
   async function load(id) {
     const safeId = assertSafeId(id);
     let text;
-    try { text = await fs.readFile(await fileFor(safeId), 'utf8'); } catch (err) {
+    const base = await fileFor(safeId);
+    let names;
+    try { names = await (fs.readdir ?? fsPromises.readdir)(dirname(base)); } catch (err) { if (err.code !== 'ENOENT') throw err; names = []; }
+    const prefix = `~${Buffer.from(safeId).toString('hex')}.epoch-`;
+    const epochs = names.filter((name) => name.startsWith(prefix) && /^\d+\.json$/.test(name.slice(prefix.length))).map((name) => Number(name.slice(prefix.length, -5))).filter(Number.isSafeInteger);
+    const file = epochs.length ? await confinement.resolve('state', `${prefix}${Math.max(...epochs)}.json`) : base;
+    try { text = await fs.readFile(file, 'utf8'); } catch (err) {
       if (err.code === 'ENOENT') return freshState(safeId);
       throw err;
     }
@@ -119,7 +118,9 @@ export async function createStateStore({
   }
 
   async function save(state) {
-    const file = await fileFor(assertSafeId(state.id));
+    const base = await fileFor(assertSafeId(state.id));
+    if (epoch !== undefined) state.lockEpoch = epoch;
+    const file = epoch === undefined ? base : await confinement.resolve('state', `~${Buffer.from(state.id).toString('hex')}.epoch-${epoch}.json`);
     const dir = dirname(file);
     await fs.mkdir(dir, { recursive: true });
     const body = `${JSON.stringify(state, null, 2)}\n`;

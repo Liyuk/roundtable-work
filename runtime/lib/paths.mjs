@@ -36,6 +36,7 @@ export async function createConfinement(workRoot) {
     // Resolve symlinks on the deepest existing ancestor, then re-attach the missing tail.
     let current = lexical;
     const tail = [];
+    let retries = 0;
     for (;;) {
       try {
         const real = await realpath(current);
@@ -47,14 +48,17 @@ export async function createConfinement(workRoot) {
         if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err;
       }
       try {
-        await lstat(current);
-        throw new PathEscapeError(`Dangling symlink under the work root: ${parts.join('/')}`);
+        const entry = await lstat(current);
+        if (entry.isSymbolicLink()) throw new PathEscapeError(`Dangling symlink under the work root: ${parts.join('/')}`);
+        if (++retries > 8) throw new PathEscapeError(`Unable to resolve unstable path under the work root: ${parts.join('/')}`);
+        continue;
       } catch (err) {
         if (err instanceof PathEscapeError) throw err;
         if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err;
       }
       const parent = resolve(current, '..');
       if (parent === current) throw new PathEscapeError(`No existing ancestor for: ${parts.join('/')}`);
+      retries = 0;
       tail.push(current.slice(parent.length + 1));
       current = parent;
     }
