@@ -64,6 +64,12 @@ Repository tests inject a fixture denylist with obviously fake names.
   are not restored. Dependencies must be supplied by the host as `--deps-dir`, and that directory must carry the
   lockfile it was installed from as `<deps-dir>/package-lock.json`. Its sha256 must equal the base lockfile; a missing
   or different copy is a block (`G0-DEPS`). The check applies when the base declares dependencies or has a lockfile.
+- The submitted tests are never run when the diff carries a symlink, a submodule, a binary or a path outside the
+  allowed scope: the findings stand and the run is a block (`G0-TESTS-SKIPPED-SCOPE`). When tests do run, the runner
+  removes whatever sits at each restored base file (a symlink included) and writes the file exclusively, so a
+  submitted link is never followed out of the temporary work directory.
+- Paths in findings are printed as is only when they are Gate 0's own fixed `<tests>` marker or were vetted by the
+  hygiene scan; every other path, including one written in angle brackets, goes through the denylist scan first.
 
 ## Static counting limitations
 

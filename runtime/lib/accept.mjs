@@ -11,7 +11,8 @@
 // the reviewer first line, verdict aliases, continuation words).
 //
 // Rules implemented here:
-//   1 Tests        G0-TESTS, G0-TEST-COUNT, G0-TEST-SKIP
+//   1 Tests        G0-TESTS, G0-TEST-COUNT, G0-TEST-SKIP; G0-TESTS-SKIPPED-SCOPE (block: the
+//                  tests are not run when the diff has a symlink, a submodule or an out-of-scope path)
 //   2 Path scope   G0-SCOPE-PATH, G0-SCOPE-PROTECTED, G0-SCOPE-SPECIAL
 //   3 Frozen tokens G0-TOKEN, G0-VERDICT-LINE
 //   4 Direction    G0-LANG-CJK, G0-LANG-BALANCE
@@ -79,10 +80,10 @@
 //     every machine field is covered.
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { loadDenylist, scanHygiene, hashText, formatFindings, HygieneError } from './hygiene.mjs';
@@ -755,6 +756,22 @@ export { nodeSatisfies };
  * dependencies without a matching `depsDir` is a block.
  * Output is never returned (it could carry identifiers): only the exit status.
  */
+async function writeBaseFile(work, rel, content) {
+  const target = join(work, rel);
+  const inside = (p) => { const r = relative(work, p); return r !== '' && r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
+  if (!inside(target)) throw new GateSignal('G0-INPUT');
+  // The submitted tree can contain a symlink at the target (or at a parent): remove whatever
+  // sits there without following it, then create the file exclusively (`wx` fails on an
+  // existing entry, including a dangling symlink).
+  const dir = dirname(target);
+  await mkdir(dir, { recursive: true });
+  const realWork = await realpath(work);
+  const realDir = await realpath(dir);
+  if (realDir !== realWork && !(`${realDir}${sep}`).startsWith(`${realWork}${sep}`)) throw new GateSignal('G0-INPUT');
+  try { await lstat(target); await rm(target, { recursive: true, force: true }); } catch (err) { if (!err || err.code !== 'ENOENT') throw err; }
+  await writeFile(target, content, { flag: 'wx' });
+}
+
 export async function defaultRunner(spec) {
   if (!spec || typeof spec.root !== 'string') throw new GateSignal('G0-INPUT');
   const pkg = spec.basePackage || {};
@@ -769,11 +786,12 @@ export async function defaultRunner(spec) {
     await mkdir(work);
     await execFileP('git', ['archive', '--format=tar', '-o', join(tmp, 'head.tar'), 'HEAD'], { cwd: spec.root });
     await execFileP('tar', ['-xf', join(tmp, 'head.tar'), '-C', work]);
-    for (const [rel, content] of Object.entries(spec.baseFiles || {})) {
-      await mkdir(dirname(join(work, rel)), { recursive: true });
-      await writeFile(join(work, rel), content);
+    for (const [rel, content] of Object.entries(spec.baseFiles || {})) await writeBaseFile(work, rel, content);
+    if (spec.depsDir) {
+      // The submitted tree may carry its own `node_modules` entry: never write through it.
+      await rm(join(work, 'node_modules'), { recursive: true, force: true });
+      await symlink(spec.depsDir, join(work, 'node_modules'), 'dir');
     }
-    if (spec.depsDir) await symlink(spec.depsDir, join(work, 'node_modules'), 'dir');
     const env = buildRunnerEnv(spec.env || process.env, tmp);
     for (const argv of steps) {
       try {
@@ -812,6 +830,10 @@ function mk(ruleId, path, line = 0, subject = '') {
 // ---------------------------------------------------------------------------
 // Rule 2: path scope
 // ---------------------------------------------------------------------------
+
+// Scope findings after which the submitted tests are not run. A protected-file edit alone (for
+// example lib/verdict.mjs) stays a plain reject: it carries no link and no unlisted path.
+const SCOPE_NO_RUN = new Set(['G0-SCOPE-SPECIAL', 'G0-SCOPE-PATH']);
 
 export function checkScope(files, issue) {
   const findings = [];
@@ -922,21 +944,25 @@ function collectHygiene(files, metadata, denylist, baseline, deadline) {
  * When the denylist is unavailable (denylist === undefined) nothing can be vetted, so every
  * path (the fixed `<tests>` placeholder aside) becomes `<redacted:LEN:HASH8>`.
  */
-function redactPaths(findings, denylist) {
+function redactPaths(findings, denylist, vetted = new WeakSet()) {
   const cache = new Map();
   const show = (p) => {
     if (!cache.has(p)) {
       if (denylist === undefined) {
         const s = String(p);
-        cache.set(p, s === '<tests>' ? s : `<redacted:${s.length}:${hashText(s)}>`);
+        cache.set(p, `<redacted:${s.length}:${hashText(s)}>`);
         return cache.get(p);
       }
-      const dirty = !/^<[^<>]*>$/.test(p) && scanHygiene({ paths: [p], denylist }).length > 0;
+      const dirty = scanHygiene({ paths: [p], denylist }).length > 0;
       cache.set(p, dirty ? `<path:${hashText(p)}>` : p);
     }
     return cache.get(p);
   };
-  return findings.map((f) => ({ ...f, path: show(f.path) }));
+  // Only placeholders Gate 0 itself generated are printed as is: the fixed `<tests>` marker of
+  // its own test findings, and findings produced by the hygiene scan (already vetted there).
+  // A submitted path is never exempt, whatever its shape (for example `<name>`).
+  const own = (f) => vetted.has(f) || (f.path === '<tests>' && (f.ruleId === 'G0-TESTS' || f.ruleId === 'G0-TEST-COUNT'));
+  return findings.map((f) => ({ ...f, path: own(f) ? f.path : show(f.path) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,8 +1031,10 @@ async function execute(opts, deadline) {
   await step(() => checkScope(files, issue));
   // Rule 1 (static)
   await step(() => checkTestIntegrity(files, issue));
-  // Rule 1 (run base command)
+  // Rule 1 (run base command). Submitted code is never run when the diff carries a symlink,
+  // a submodule or a path outside the allowed scope: that is a block, not a test result.
   await step(async () => {
+    if (findings.some((f) => SCOPE_NO_RUN.has(f.ruleId))) throw new GateSignal('G0-TESTS-SKIPPED-SCOPE');
     if (opts.hostRun === true && opts.networkIsolated !== true) throw new GateSignal('G0-NETWORK');
     let basePackage;
     try { basePackage = JSON.parse(String(base.packageJson)); } catch { throw new GateSignal('G0-INPUT'); }
@@ -1046,10 +1074,18 @@ async function execute(opts, deadline) {
   } catch (err) {
     addBlock(blockCodeOf(err));
   }
-  if (denylist) await step(() => collectHygiene(files, metadata, denylist, baseline, deadline));
+  // scanHygiene already vets (or replaces) every path it reports: those findings are trusted.
+  const vetted = new WeakSet();
+  if (denylist) {
+    await step(() => {
+      const out = collectHygiene(files, metadata, denylist, baseline, deadline);
+      for (const f of out) vetted.add(f);
+      return out;
+    });
+  }
 
   let redacted;
-  try { redacted = redactPaths(findings, denylist); } catch { addBlock('G0-INTERNAL'); redacted = []; }
+  try { redacted = redactPaths(findings, denylist, vetted); } catch { addBlock('G0-INTERNAL'); redacted = []; }
   const verdict = blocks.length ? 'block' : redacted.length ? 'reject' : 'pass';
   return { verdict, findings: redacted, blocks };
 }

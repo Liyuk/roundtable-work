@@ -331,8 +331,9 @@ function findNames(text, denylist, out) {
 // Private-suffix FQDNs
 // ---------------------------------------------------------------------------
 
-// Heuristic: `process.env.HOME`, `env.HOME`, `this.local`, `user.home` are JS member
-// accesses, not hosts. The exemption applies ONLY to added lines in code files (see
+// Heuristic: a JS member access whose last property reads like a private suffix (an
+// environment lookup of the home variable, a local flag on the current object, a home
+// field on a user object) is not a host. The exemption applies ONLY to added lines in code files (see
 // CODE_EXT_RE); it never applies to prose files (markdown, text, ...), other files,
 // commit messages, PR title/body, branch names, authors or paths, where such a word
 // with a private suffix is a private-suffix host name. In a code file a match is
@@ -367,7 +368,22 @@ function isCodePath(path) {
   return CODE_EXT_RE.test(file) && !DOC_EXT_RE.test(file);
 }
 
+// Heuristic: the match sits inside a string or template literal when the line has an odd
+// number of unescaped quote characters of one kind before it, or the character right
+// before the match is a quote.
+function inStringLiteral(text, index) {
+  if (index > 0 && /['"`]/.test(text[index - 1])) return true;
+  const counts = { "'": 0, '"': 0, '`': 0 };
+  for (let i = 0; i < index; i++) {
+    const c = text[i];
+    if (c === '\\') { i++; continue; }
+    if (c in counts) counts[c]++;
+  }
+  return Object.values(counts).some((n) => n % 2 === 1);
+}
+
 function isMemberAccess(text, index, match) {
+  if (inStringLiteral(text, index)) return false;
   const labels = match.split('.');
   labels.pop();
   if (!labels.every((l) => MEMBER_ROOTS.has(l.toLowerCase()))) return false;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -394,7 +394,8 @@ test('a missing host denylist blocks and redacts every path, scope findings incl
   const files = [edit(`${leakyDir}/a.md`, 'a\n', 'b\n'), edit('src/other.js', 'a\n', 'b\n')];
   const r = await run(files, { hostRun: true, networkIsolated: true, denylist: undefined, env: {} });
   assert.equal(r.verdict, 'block');
-  assert.deepEqual(r.blocks, [{ ruleId: 'G0-DENYLIST' }]);
+  // The out-of-scope path also keeps the submitted tests from running (a second block).
+  assert.deepEqual(r.blocks, [{ ruleId: 'G0-TESTS-SKIPPED-SCOPE' }, { ruleId: 'G0-DENYLIST' }]);
   assert.ok(r.findings.some((f) => f.ruleId === 'G0-SCOPE-PATH'));
   const out = JSON.stringify(r) + formatResult(r);
   for (const word of ['fixturehost-example', 'fixtureuser-example', 'src/other.js', 'docs/']) assert.ok(!out.includes(word), word);
@@ -958,7 +959,9 @@ test('git mode: a Chinese->English translation in scope passes; rename, symlink 
     sh(dir, 'rm', '-q', 'lib/verdict.mjs');
     commitAll(dir, 'Misc');
     const bad = await runGate0(common);
-    assert.equal(bad.verdict, 'reject');
+    // Scope violations are findings, and they also keep the submitted tests from running (a block).
+    assert.equal(bad.verdict, 'block');
+    assert.deepEqual(bad.blocks, [{ ruleId: 'G0-TESTS-SKIPPED-SCOPE' }]);
     const byRule = (id) => bad.findings.filter((f) => f.ruleId === id).map((f) => f.path).sort();
     assert.ok(byRule('G0-SCOPE-PATH').includes('scripts-old.md'));
     assert.ok(byRule('G0-SCOPE-PATH').includes('lib/verdict.mjs'));
@@ -967,6 +970,95 @@ test('git mode: a Chinese->English translation in scope passes; rename, symlink 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A head tree whose package.json is a symlink to a file outside the work tree.
+function symlinkHead(dir, sentinel) {
+  rmSync(join(dir, 'package.json'));
+  symlinkSync(sentinel, join(dir, 'package.json'));
+  commitAll(dir, 'Replace package.json with a link');
+}
+
+test('git mode: a package.json symlink in the head tree is never written through and the tests are not run', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'gate0-outside-'));
+  const sentinel = join(out, 'sentinel.txt');
+  const marker = join(out, 'ran.txt');
+  writeFileSync(sentinel, 'unchanged\n');
+  const dir = makeRepo({
+    'package.json': NODE_PACKAGE,
+    'run-tests.mjs': 'process.exit(0);\n',
+    'docs/a.md': 'a\n',
+  });
+  try {
+    writeFileSync(join(dir, 'run-tests.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'ran'); process.exit(0);\n`);
+    symlinkHead(dir, sentinel);
+    const r = await runGate0({
+      root: dir, baseRef: 'main', denylist: FIXTURE_DENY,
+      issue: { allowedPaths: ['docs/**', 'package.json', 'run-tests.mjs'], allowChanges: { packageJson: true } },
+    });
+    assert.equal(readFileSync(sentinel, 'utf8'), 'unchanged\n');
+    assert.notEqual(r.verdict, 'pass');
+    assert.ok(['reject', 'block'].includes(r.verdict));
+    assert.ok(ruleIds(r).includes('G0-SCOPE-SPECIAL'));
+    assert.deepEqual(r.blocks, [{ ruleId: 'G0-TESTS-SKIPPED-SCOPE' }]);
+    assert.ok(!existsSync(marker), 'the submitted test command must not run');
+    assert.ok(!ruleIds(r).includes('G0-TESTS'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('git mode: even when symlinks are allowed the runner removes the link instead of writing through it', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'gate0-outside-'));
+  const sentinel = join(out, 'sentinel.txt');
+  writeFileSync(sentinel, 'unchanged\n');
+  const dir = makeRepo({
+    'package.json': NODE_PACKAGE,
+    'run-tests.mjs': 'process.exit(0);\n',
+    'docs/a.md': 'a\n',
+  });
+  try {
+    symlinkHead(dir, sentinel);
+    const r = await runGate0({
+      root: dir, baseRef: 'main', denylist: FIXTURE_DENY,
+      issue: { allowedPaths: ['docs/**', 'package.json'], allowChanges: { packageJson: true, symlinks: true } },
+    });
+    assert.equal(readFileSync(sentinel, 'utf8'), 'unchanged\n');
+    assert.deepEqual(r, { verdict: 'pass', findings: [], blocks: [] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('a submodule or out-of-scope path blocks the test run instead of running submitted code', async () => {
+  let ran = 0;
+  const counting = async () => { ran++; return { exitCode: 0 }; };
+  const sub = edit('docs/sub', '', '', { status: 'A', newMode: '160000' });
+  const outside = addFile('src/other.js', 'x\n');
+  for (const file of [sub, outside]) {
+    const r = await run([file], { runner: counting });
+    assert.equal(r.verdict, 'block');
+    assert.deepEqual(r.blocks, [{ ruleId: 'G0-TESTS-SKIPPED-SCOPE' }]);
+  }
+  assert.equal(ran, 0);
+});
+
+test('a submitted path in angle brackets is redacted like any other path', async () => {
+  const name = 'fixturehost-example';
+  const files = [addFile(`<${name}>`, 'x\n'), addFile(`docs/<${name}>.md`, 'x\n')];
+  // With a loaded denylist, and with none available (host run): the name never appears.
+  for (const over of [{}, { hostRun: true, networkIsolated: true, denylist: undefined, env: {} }]) {
+    const r = await run(files, over);
+    for (const out of [JSON.stringify(r), formatResult(r)]) {
+      assert.ok(!out.includes(name), 'a denylisted name in angle brackets was printed');
+    }
+    assert.ok(r.findings.every((f) => /^<(?:path|redacted:\d+):?[0-9a-f:]*>$/.test(f.path) || f.path === '<tests>'), JSON.stringify(r.findings));
+  }
+  // Gate 0's own fixed placeholders are still printed as is.
+  const r = await run([delFile('docs/t.test.mjs', "test('a', () => {});\n")], { issue: { allowedPaths: ['docs/**'] } });
+  assert.ok(r.findings.some((f) => f.path === '<tests>' && f.ruleId === 'G0-TEST-COUNT'));
 });
 
 test('git mode: commit messages are scanned; the default runner runs the BASE command', async () => {
@@ -1049,10 +1141,18 @@ test('CLI exits 0 / 1 / 2 for pass / reject / block and prints redacted JSON (lo
     assert.equal(parsed.authoritative, false);
     assert.equal(parsed.mode, 'local');
     assert.equal(call(['--no-host-run', '--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]).code, 0);
-    writeFileSync(join(dir, 'issue.json'), JSON.stringify({ allowedPaths: ['other/**'] }));
+    // A finding without a block (added Chinese text) rejects.
+    writeFileSync(join(dir, 'docs/a.md'), 'b \u4e2d\u6587\u6587\u672c\n');
+    writeFileSync(join(dir, 'issue.json'), JSON.stringify({ allowedPaths: ['docs/**', 'issue.json'] }));
+    commitAll(dir, 'Add Chinese text');
     const reject = call(['--local', '--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]);
-    assert.equal(reject.code, 1);
+    assert.equal(reject.code, 1, reject.out);
     assert.equal(JSON.parse(reject.out).verdict, 'reject');
+    // An out-of-scope path keeps the tests from running: block.
+    writeFileSync(join(dir, 'issue.json'), JSON.stringify({ allowedPaths: ['other/**'] }));
+    const scope = call(['--local', '--root', dir, '--base', 'main', '--issue', join(dir, 'issue.json')]);
+    assert.equal(scope.code, 2);
+    assert.deepEqual(JSON.parse(scope.out).blocks, [{ ruleId: 'G0-TESTS-SKIPPED-SCOPE' }]);
     const block = call(['--local', '--root', dir, '--base', 'main']);
     assert.equal(block.code, 2);
     assert.deepEqual(JSON.parse(block.out).blocks, [{ ruleId: 'G0-INPUT' }]);

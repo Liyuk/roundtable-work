@@ -19,6 +19,14 @@ const denylist = loadDenylist({ fixture: FIXTURE });
 
 // Sensitive-looking inputs are built at runtime so the literals never appear in source.
 const ip = (...parts) => parts.join('.');
+// Member-access fixtures are built at runtime so no dotted private-suffix name appears in this source.
+const dot = (...parts) => parts.join('.');
+const PROC_HOME = dot('process', 'env', 'HOME');
+const ENV_HOME = dot('env', 'HOME');
+const THIS_LOCAL = dot('this', 'local');
+const USER_HOME = dot('user', 'home');
+const CFG_LOCAL = dot('config', 'local');
+const CFG_INTERNAL = dot('config', 'internal');
 const PRIVATE_IP = ip('10', '0', '0', '5');
 const PRIVATE_IP2 = ip('192', '168', '1', '20');
 const PUBLIC_IP = ip('8', '8', '4', '4');
@@ -131,9 +139,9 @@ test('an address behind an @ prefix fails without an ssh word; package versions 
 
 test('JS member access with a private-looking suffix is not a host; real hosts still fail', () => {
   assert.deepEqual(scanCode(
-    'const home = process.env.HOME;',
-    'const h = env.HOME || os.tmp;',
-    'this.local = true; user.home = x; config.internal = 1;',
+    `const home = ${PROC_HOME};`,
+    `const h = ${ENV_HOME} || os.tmp;`,
+    `${THIS_LOCAL} = true; ${USER_HOME} = x; ${CFG_INTERNAL} = 1;`,
   ), []);
   for (const host of [['box', 'local'], ['name', 'internal'], ['nas', 'home']].map((p) => p.join('.'))) {
     assert.deepEqual(rules(scanLines(`ping ${host}`)), ['HYG-FQDN'], host);
@@ -164,9 +172,9 @@ test('a member-access word with a private suffix is a host in ssh/scp/rsync cont
   }
   // Ordinary code is still fine, also when a remote command is a separate statement.
   assert.deepEqual(scanCode(
-    'const h = process.env.HOME; const l = this.local;',
-    'if (user.home && config.internal) { env.HOME = os.homedir(); }',
-    'ssh host1; const x = config.internal;',
+    `const h = ${PROC_HOME}; const l = ${THIS_LOCAL};`,
+    `if (${USER_HOME} && ${CFG_INTERNAL}) { ${ENV_HOME} = os.homedir(); }`,
+    `ssh host1; const x = ${CFG_INTERNAL};`,
   ), []);
 });
 
@@ -192,7 +200,7 @@ test('the member-access exemption applies only to added lines in code files', ()
   ]);
   // JS property access in code files still passes.
   for (const path of ['src/a.mjs', 'a.cjs', 'b.js', 'c.ts', 'd.tsx', 'e.jsx', 'f.json', 'lib/G.MJS']) {
-    assert.deepEqual(scanAt(path, 'const a = config.local; x = process.env.HOME; this.local = 1; user.home = 2;'), [], path);
+    assert.deepEqual(scanAt(path, `const a = ${CFG_LOCAL}; x = ${PROC_HOME}; ${THIS_LOCAL} = 1; ${USER_HOME} = 2;`), [], path);
   }
   // In a code file the ssh / URL / user@ host contexts still fail.
   for (const text of [`ssh ${host}`, `ssh admin@${host}`, `open https://${host}/x`, `scp f ${host}:/tmp`, `contact admin@${host}`]) {
@@ -611,4 +619,28 @@ test('a deadline in the past aborts the scan with a timeout error instead of a c
     (err) => err instanceof HygieneError && err.code === 'TIMEOUT',
   );
   assert.deepEqual(scanHygiene({ addedLines: [{ path: 'a.md', line: 1, text: 'x' }], denylist, deadline: Date.now() + 60000 }), []);
+});
+
+test('the member-access exemption does not apply inside string or template literals', () => {
+  const host = ['config', 'local'].join('.');
+  const other = ['user', 'home'].join('.');
+  for (const text of [
+    `const server = "${host}";`,
+    `const server = '${host}';`,
+    `const server = \`${host}\`;`,
+    `const server = \`https-free ${other}/x\`;`,
+    `connect("${host}", 22);`,
+    `const a = 1, b = '${other}';`,
+    `const s = "${host}`,
+    `const e = "say \\"hi\\" to ${host}";`,
+  ]) {
+    assert.deepEqual(rules(scanCode(text)), ['HYG-FQDN'], text);
+  }
+  // Property access outside strings still passes, also next to complete string literals.
+  assert.deepEqual(scanCode(
+    `const a = ${CFG_LOCAL};`,
+    `const b = ${PROC_HOME}; const c = ${THIS_LOCAL}; const d = ${USER_HOME};`,
+    `const e = "x" + ${host} + 'y';`,
+    `log("path", ${other}, \`ok\`);`,
+  ), []);
 });
