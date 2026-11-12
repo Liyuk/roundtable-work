@@ -85,7 +85,7 @@ import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { loadDenylist, scanHygiene, hashText, formatFindings, HygieneError } from './hygiene.mjs';
@@ -1282,13 +1282,45 @@ function vocabLinesOf(text, registry) {
   return out;
 }
 
+// Well-known HTML tag names: a `<name>` made of one of these (first word, any case) is markup,
+// not a placeholder, so the per-file placeholder rule never freezes it.
+const HTML_TAGS = new Set([
+  'a', 'abbr', 'audio', 'b', 'blockquote', 'br', 'caption', 'center', 'cite', 'code', 'dd', 'del', 'details',
+  'div', 'dl', 'dt', 'em', 'figcaption', 'figure', 'font', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i',
+  'img', 'ins', 'kbd', 'li', 'mark', 'ol', 'p', 'picture', 'pre', 'q', 's', 'small', 'source', 'span',
+  'strong', 'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var', 'video',
+]);
+// A placeholder: angle brackets around a short phrase (at most four words, 40 characters) that
+// starts and ends with a letter or digit, with no `=`, `/`, `@` or quote characters (so no
+// attributes, closing tags, autolinks or addresses), not glued to a preceding word (generics).
+const PLACEHOLDER_RE = /(?<![\p{L}\p{N}_])<([\p{L}\p{N}](?:[^<>=/@\n"'`]{0,38}[\p{L}\p{N}])?)>/gu;
+
+/**
+ * Placeholders of one file's BASE content (the per-file frozen set). Code files are left out:
+ * generics and comparisons are not placeholders there; Markdown, text and data files are in.
+ */
+export function filePlaceholders(f) {
+  const out = new Set();
+  if (CODE_FILE_RE.test(String(f.path)) || typeof f.baseContent !== 'string') return [];
+  for (const m of f.baseContent.matchAll(PLACEHOLDER_RE)) {
+    const words = m[1].trim().split(/\s+/);
+    if (words.length > 4 || HTML_TAGS.has(words[0].toLowerCase())) continue;
+    out.add(m[0]);
+  }
+  return [...out];
+}
+
 export function checkFrozenTokens(files, registry) {
   const findings = [];
   for (const f of files) {
     if (f.symlink || f.oldMode === '160000' || f.newMode === '160000') continue;
     // Binary blobs carry no decoded content (their strings are scanned elsewhere): nothing to compare.
     if (f.binary && f.baseContent === '' && f.headContent === '') continue;
-    for (const token of registry.tokens) {
+    // Registry tokens plus every placeholder of this file's own base content: renaming or
+    // dropping one (also in a file that is not a template) fails; the count may not go down.
+    const known = new Set(registry.tokens);
+    const perFile = filePlaceholders(f).filter((t) => !known.has(t));
+    for (const token of [...registry.tokens, ...perFile]) {
       const before = countTokenForInvariant(f.baseContent, token);
       if (before === 0) continue;
       const after = countTokenForInvariant(f.headContent, token);
@@ -1352,6 +1384,8 @@ export function checkDirection(files, registry, cjkPathAllowlist = []) {
       }
     }
     const baseSet = new Set(f.removed.map((l) => squash(normalizeText(l.text))));
+    // Frozen placeholders of this file (kept Chinese ones are not new CJK).
+    const frozen = [...registry.tokens, ...filePlaceholders(f)];
     for (const l of f.added) {
       const inv = invisibleChars(l.text);
       if (inv.length > 0) findings.push(mk('G0-INVISIBLE', f.path, l.line, inv.join('')));
@@ -1361,7 +1395,7 @@ export function checkDirection(files, registry, cjkPathAllowlist = []) {
       }
       let hit;
       for (const view of lineViews(l.text, f.path)) {
-        hit = cjkResidue(view, registry.tokens);
+        hit = cjkResidue(view, frozen);
         if (hit !== undefined) break;
       }
       if (hit === undefined) continue;
@@ -1573,7 +1607,14 @@ async function execute(opts, deadline) {
   // Freeze the denylist BEFORE any submitted code runs (T-06).
   let denylist;
   try {
-    denylist = loadDenylist({ env: opts.env || process.env, hostRun: opts.hostRun === true, fixture: opts.denylist });
+    // The reviewed repository root is passed on every call path, so the "denylist outside the
+    // repository" check never depends on the process working directory (symlinks are resolved
+    // by the loader's own trust check).
+    let repoRoot;
+    if (typeof opts.root === 'string' && opts.root) {
+      try { repoRoot = await realpath(resolve(opts.root)); } catch { repoRoot = resolve(opts.root); }
+    }
+    denylist = loadDenylist({ env: opts.env || process.env, hostRun: opts.hostRun === true, fixture: opts.denylist, repoRoot });
   } catch (err) {
     addBlock(blockCodeOf(err));
   }

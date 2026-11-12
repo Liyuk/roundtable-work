@@ -35,7 +35,9 @@ The diff under review can never widen what it is checked against. Everything bel
 - `package.json` (the test command and the Node `engines` pin),
 - `.agents/skills/roundtable-work/templates/*.md` (every `- label:` / `- label (...)` bullet under any heading, and every
   `<...>` placeholder, feed the frozen-token registry; `baseline.frozenTokens` and a short built-in list of machine field
-  names are added on top),
+  names are added on top). In addition, every `<...>` placeholder found in a changed non-code file's own base content is
+  frozen in that file (its count may not drop; an English parenthetical after it is allowed). Well-known HTML tags,
+  attribute-like or path-like constructs (`=`, `/`, `@`) and more than four words are not placeholders.
 - `.agents/skills/roundtable-work/prompts/shared.md` (backticked machine words in the status-vocabulary section),
 - the base lockfile (`package-lock.json`, or `npm-shrinkwrap.json`), compared with the supplied dependency directory,
 - `runtime/gate0-baseline.json` (optional): `{ "cjkPathAllowlist": [...globs], "testFakes": [{ "path", "hash" }], "frozenTokens": [...] }`. The CJK path allowlist exempts only the added-line CJK check; the per-file CJK balance check applies to every file.
@@ -52,6 +54,7 @@ them, never instead of them, so a clean supplied list cannot hide a real commit 
 The production hostname / username denylist lives outside the repository at `$RT_HOME/gate0/denylist.json`
 and must never be committed. On a host run (`--host-run`) a missing, unreadable or empty denylist is a block
 (every path in the findings is then redacted to `<redacted:LEN:HASH8>`), and so is a missing `--network-isolated` assertion (run Gate 0 in a network-less namespace; pure Node cannot sandbox the network).
+The denylist location is checked against the reviewed repository root (`--root`, resolved to a real path) and the working directory, so it cannot sit inside the reviewed repository whatever directory the gate runs from.
 A host run never honors an injected fixture denylist: the production file is always read, so a missing one fails closed.
 Repository tests inject a fixture denylist with obviously fake names only on non-host runs; host-run tests point `RT_HOME` at a temp dir holding a fixture file.
 Letters-only IPv6 candidates (such as a short mixed-case pair joined by two colons) are flagged everywhere except as a scope-resolution path in a code file outside any host context (ssh / scp / bracketed / `user@` / address words).

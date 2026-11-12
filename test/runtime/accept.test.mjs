@@ -10,8 +10,9 @@ import {
   stripFrozenCjk, globToRegExp, matchesAny, buildRunnerEnv, resolveTestSteps, nodeSatisfies,
   formatResult, isTestFile, countTestCases, BASELINE_PATH, stripNonCode, verifyDepsDir,
   deriveSharedPromptTokens, countTokenForInvariant, safeText, pathAnomaly, checkScope, lineDelta,
+  filePlaceholders,
 } from '../../runtime/lib/accept.mjs';
-import { hashText, fakeHash } from '../../runtime/lib/hygiene.mjs';
+import { hashText, fakeHash, loadDenylist } from '../../runtime/lib/hygiene.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -1862,4 +1863,110 @@ test('T-23 / T-19 / T-24 / T-30 / T-31 / T-32 / T-42 / T-44 / T-45 / T-28: docum
   const readme = readFileSync(join(repoRoot, 'runtime', 'README.md'), 'utf8');
   assert.ok(/Threat-model decisions/.test(readme));
   assert.ok(/trusted copy/.test(readme));
+});
+
+// ---------------------------------------------------------------------------
+// 28-F10: denylist root and per-file placeholders
+// ---------------------------------------------------------------------------
+
+test('a host denylist inside the reviewed repository blocks even when the process runs elsewhere', async () => {
+  const dir = makeRepo({ 'package.json': NODE_PACKAGE, 'run-tests.mjs': 'process.exit(0);\n', '.gitignore': 'rt-home/\n', 'docs/a.md': 'a\n' });
+  const aux = mkdtempSync(join(tmpdir(), 'gate0-aux-'));
+  const elsewhere = mkdtempSync(join(tmpdir(), 'gate0-cwd-'));
+  try {
+    const inside = join(dir, 'rt-home');
+    mkdirSync(join(inside, 'gate0'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(inside, 'gate0', 'denylist.json'), JSON.stringify(FIXTURE_DENY), { mode: 0o600 });
+    const outside = join(aux, 'rt-home');
+    mkdirSync(join(outside, 'gate0'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(outside, 'gate0', 'denylist.json'), JSON.stringify(FIXTURE_DENY), { mode: 0o600 });
+    writeFileSync(join(dir, 'docs/a.md'), 'b\n');
+    commitAll(dir, 'Edit');
+    assert.notEqual(process.cwd(), dir);
+
+    // The loader itself: the repository root argument decides, not the working directory.
+    assert.throws(() => loadDenylist({ env: { RT_HOME: inside }, hostRun: true, repoRoot: dir }), (e) => e.code === 'DENYLIST_UNTRUSTED');
+    assert.throws(() => loadDenylist({ env: { RT_HOME: inside }, hostRun: true, repoRoot: join(dir, '.') }), (e) => e.code === 'DENYLIST_UNTRUSTED');
+    assert.ok(loadDenylist({ env: { RT_HOME: outside }, hostRun: true, repoRoot: dir }).hostnames);
+
+    // Library host run: RT_HOME inside the reviewed repository blocks; outside it works.
+    const common = {
+      root: dir, baseRef: 'main', issue: { allowedPaths: ['docs/**'] }, runner: OK_RUNNER, hostRun: true, networkIsolated: true,
+      metadata: { commitMessages: ['Edit'], authors: ['Fixture Author <author@example.com>'], prTitle: 'Edit', prBody: 'Docs only.', branch: 'rt/fixture' },
+    };
+    const bad = await runGate0({ ...common, env: { RT_HOME: inside } });
+    assert.equal(bad.verdict, 'block');
+    assert.deepEqual(bad.blocks, [{ ruleId: 'G0-DENYLIST' }]);
+    // A symlink to the repository does not hide it either.
+    const link = join(aux, 'repo-link');
+    symlinkSync(dir, link);
+    const viaLink = await runGate0({ ...common, root: link, env: { RT_HOME: inside } });
+    assert.deepEqual(viaLink.blocks, [{ ruleId: 'G0-DENYLIST' }]);
+    const ok = await runGate0({ ...common, env: { RT_HOME: outside } });
+    assert.deepEqual(ok, { verdict: 'pass', findings: [], blocks: [] });
+
+    // CLI defaults (production semantics), started from a different working directory.
+    const issue = join(aux, 'issue.json');
+    writeFileSync(issue, JSON.stringify({ allowedPaths: ['docs/**'] }));
+    const meta = join(aux, 'meta.json');
+    writeFileSync(meta, JSON.stringify({ prTitle: 'Edit', prBody: 'Docs only.', branch: 'rt/fixture' }));
+    const call = cliCaller(elsewhere);
+    const args = ['--root', dir, '--base', 'main', '--issue', issue, '--metadata', meta, '--network-isolated'];
+    const cliBad = call(args, { RT_HOME: inside });
+    assert.equal(cliBad.code, 2, cliBad.out);
+    assert.deepEqual(JSON.parse(cliBad.out).blocks, [{ ruleId: 'G0-DENYLIST' }]);
+    const cliOk = call(args, { RT_HOME: outside });
+    assert.equal(cliOk.code, 0, cliOk.out);
+    assert.deepEqual(JSON.parse(cliOk.out), { verdict: 'pass', findings: [], blocks: [] });
+  } finally {
+    for (const d of [dir, aux, elsewhere]) rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('per-file placeholders: every placeholder of the base file is frozen in that file', async () => {
+  const WS = String.fromCodePoint(0x5de5, 0x4f5c, 0x533a);
+  const ACC = String.fromCodePoint(0x9a8c, 0x6536, 0x6761, 0x76ee);
+  const base = 'Open <issue> and read it.\nThen close <issue> again.\n';
+  // Renaming a placeholder in a file that is not a template fails.
+  let r = await run([edit('docs/guide.md', base, base.replaceAll('<issue>', '<ticket>'))]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+  assert.ok(r.findings.every((f) => f.path === 'docs/guide.md'));
+  // An English parenthetical after the token is allowed.
+  r = await run([edit('docs/guide.md', base, base.replaceAll('<issue>', '<issue> (the ticket)'))]);
+  assert.deepEqual(r, { verdict: 'pass', findings: [], blocks: [] });
+  // Count rule: a placeholder that occurs twice may not drop to once; extra copies are fine.
+  r = await run([edit('docs/guide.md', base, 'Open <issue> and read it.\nThen close it again.\n')]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+  r = await run([edit('docs/guide.md', base, `${base}Finally comment on <issue>.\n`)]);
+  assert.equal(r.verdict, 'pass');
+  // The rule is per file: another file may use a different placeholder.
+  r = await run([edit('docs/other.md', 'See <name> here.\n', 'See <name> here.\nAlso <ticket> there.\n')]);
+  assert.equal(r.verdict, 'pass');
+  // A multi-word placeholder is frozen as a whole.
+  r = await run([edit('docs/p.md', 'Fill <ticket number> now.\n', 'Fill <issue number> now.\n')]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+
+  // Correct direction: a Chinese file with placeholders in both languages, translated with the
+  // tokens kept (the Chinese one gets an English annotation), passes.
+  const zhBase = `${PROSE_ZH} <${WS}>\n${PROSE_ZH_2} <${ACC}> and <issue>\n`;
+  const enHead = `This module checks every delivery. <${WS}> (workspace)\nRead the task card first. <${ACC}> (acceptance item) and <issue>\n`;
+  r = await run([edit('docs/zh.md', zhBase, enHead)]);
+  assert.deepEqual(r, { verdict: 'pass', findings: [], blocks: [] });
+  // Translating the Chinese placeholder away, or renaming the English one, fails.
+  r = await run([edit('docs/zh.md', zhBase, enHead.replace(`<${WS}>`, '<workspace>'))]);
+  assert.ok(ruleIds(r).includes('G0-TOKEN'), JSON.stringify(r));
+  r = await run([edit('docs/zh.md', zhBase, enHead.replace('and <issue>', 'and <ticket>'))]);
+  assert.deepEqual(ruleIds(r), ['G0-TOKEN']);
+});
+
+test('per-file placeholders: HTML tags, attributes, generics and code files are not frozen', async () => {
+  const html = 'Line<br>break\n<details>\n<summary>More</summary>\nUse <code>x</code> and <a href="u">l</a>.\n</details>\n';
+  let r = await run([edit('docs/h.md', html, html.replaceAll('<br>', '<hr>').replaceAll('<details>', '<div>').replaceAll('<summary>', '<b>').replaceAll('<code>', '<kbd>'))]);
+  assert.equal(r.verdict, 'pass', JSON.stringify(r));
+  assert.deepEqual(filePlaceholders({ path: 'docs/h.md', baseContent: html }), []);
+  const mixed = 'Map<string, number> and a <b and c> d, <https://x.test/p> <a=b> </end> <-- -->\nUse <Name Here> or <DETAILS open>.\n';
+  assert.deepEqual(filePlaceholders({ path: 'docs/m.md', baseContent: mixed }), ['<Name Here>']);
+  // Code files are left to the other rules (generics and comparisons are not placeholders).
+  assert.deepEqual(filePlaceholders({ path: 'src/a.mjs', baseContent: 'const x = a <b> c;\n' }), []);
+  assert.deepEqual(filePlaceholders({ path: 'docs/n.md' }), []);
 });
