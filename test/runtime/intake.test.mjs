@@ -51,6 +51,34 @@ test('dependencies fail closed and become eligible when closed', async () => {
   assert.deepEqual((await readQueue(provider)).items.map(i => i.id), ['1']);
   for (const states of [{}, { 2: 'OPEN', 3: 'CLOSED' }, { 2: 'UNKNOWN', 3: 'CLOSED' }]) assert.equal(select([candidate], states).issues.length, 0);
 });
+test('repository-qualified dependencies are not resolved in the selected repository', async () => {
+  const candidate = issue(1, ['type:bug'], { body: 'Depends on other-owner/other-repo#50' });
+  const lookups = [];
+  const provider = createIntakeProvider({
+    getOwner: async () => 'owner',
+    listIssues: async () => [candidate],
+    getIssue: async number => { lookups.push(number); return { state: 'CLOSED' }; },
+  });
+
+  assert.deepEqual((await readQueue(provider)).items.map(item => item.id), ['1']);
+  assert.deepEqual(lookups, []);
+});
+test('repository-qualified references do not shadow local dependencies on the same line', async () => {
+  const candidate = issue(1, ['type:bug'], { body: 'Depends on other-owner/other-repo#50 and #2' });
+  const lookups = [];
+  let localState = 'OPEN';
+  const provider = createIntakeProvider({
+    getOwner: async () => 'owner',
+    listIssues: async () => [candidate],
+    getIssue: async number => { lookups.push(number); return { state: localState }; },
+  });
+
+  assert.deepEqual((await readQueue(provider)).items, []);
+  assert.deepEqual(lookups, [2]);
+  localState = 'CLOSED';
+  assert.deepEqual((await readQueue(provider)).items.map(item => item.id), ['1']);
+  assert.deepEqual(lookups, [2, 2]);
+});
 test('listed dependencies block selection until closed', async () => {
   for (const marker of ['- ', '* ', '+ ', '1. ', '2) ']) {
     for (const phrase of ['Depends on', 'Blocked by']) {
