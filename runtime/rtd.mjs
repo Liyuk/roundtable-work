@@ -15,6 +15,7 @@ import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.m
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
 import { createWorktreeManager } from './lib/worktree.mjs';
+import { applyDecision, resumeAfterOwnerReply } from './lib/decisions.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 export const EXIT_LOCKED = 75;
@@ -161,7 +162,11 @@ export async function runQueue({
         loadState: (id) => store.load(id), isStale: async (state) => store.staleness(state).stale,
         // The scheduler already holds the issue lock. Existing worktrees prevent new claims,
         // but a stale claimed issue must reuse its durable worktree.
-        isInFlight: async (issue) => !(issue.labels ?? []).some((l) => (typeof l === 'string' ? l : l.name) === 'rt:running') && (await manager.inspect(issue.id)).liveWorktree,
+        isInFlight: async (issue, state) => {
+          const status = await manager.inspect(issue.id);
+          const resumableWorktree = state.attempts.wakes > 0 && ['queued', 'waiting_person', 'out-of-scope'].includes(state.status);
+          return !resumableWorktree && !(issue.labels ?? []).some((l) => (typeof l === 'string' ? l : l.name) === 'rt:running') && status.liveWorktree;
+        },
         resume: async (issue, state) => {
           if (!state.claimPending) return;
           const comments = typeof githubClient.listComments === 'function' ? await githubClient.listComments(issue.number ?? issue.id) : issue.comments ?? [];
@@ -180,7 +185,14 @@ export async function runQueue({
         shouldStop: () => lockLost || abandonedHandler,
         prepare: async (item) => {
           if (lockLost || abandonedHandler || !(await refreshLock())) return false;
-          const state = await store.load(item.id);
+          let state = await store.load(item.id);
+          if (state.pause && ['waiting_person', 'out-of-scope'].includes(state.status)) {
+            const comments = typeof githubClient.listComments === 'function'
+              ? await githubClient.listComments(item.number ?? item.id)
+              : [];
+            await resumeAfterOwnerReply({ issue: item, comments, store, client: githubClient, now });
+            state = await store.load(item.id);
+          }
           if (isTerminal(state.status)) { skipped.push({ id: item.id, reason: 'terminal' }); return false; }
           const claim = await coordinator.tick([item]);
           if (!claim.claimed && !claim.resumed) { skipped.push(...claim.skipped); return false; }
@@ -354,6 +366,12 @@ export async function runQueue({
         const { class: cls, reason } = verdict;
 
         if (cls === 'ok' || cls === 'review_passed') {
+          const decision = step.decisionFile ?? step.decision;
+          if (phase === 'finalizing' && decision !== undefined) {
+            if (!githubClient && typeof decision !== 'string' && !['do', 'continue'].includes(decision?.decision)) throw new TypeError('ask and out-of-scope decisions require the injected tracker client');
+            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, now });
+            return out(decisionResult.status, { class: 'decision', decision: decisionResult.decision });
+          }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           if (phase === 'finalizing') return await finish('done', cls, undefined, 'done');
           phase = PHASES[PHASES.indexOf(phase) + 1];

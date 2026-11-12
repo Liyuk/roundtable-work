@@ -54,6 +54,34 @@ test('daemon resumes stale durable working state without a second claim', async 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('daemon clears a stale ask pause and resumes after an owner reply', async () => {
+  const { root, repo, workRoot } = await fixture();
+  try {
+    const repliedAt = '2026-01-02T00:00:00Z';
+    const issue = { id: '15', number: 15, state: 'OPEN', author: { login: 'owner' }, title: '[A] paused', labels: ['rt:running', 'rt:ask'], comments: [
+      { id: 1, body: '<!-- rt:ask -->\nDECISION=ask\nscope\nQuestion?', createdAt: '2026-01-01T00:00:00Z' },
+      { id: 2, body: 'Proceed', author: { login: 'owner' }, createdAt: repliedAt },
+    ] };
+    const events = [];
+    const client = {
+      addLabel: async (number, label) => { events.push(['addLabel', number, label]); issue.labels.push(label); },
+      removeLabel: async (number, label) => { events.push(['removeLabel', number, label]); issue.labels = issue.labels.filter(value => value !== label); },
+      createComment: async (number, body) => { events.push(['createComment', number, body]); issue.comments.push({ id: 3, body }); },
+      listComments: async () => issue.comments,
+    };
+    const store = await (await import('../../runtime/lib/state.mjs')).createStateStore({ workRoot, now: () => Date.parse(repliedAt) + 1 });
+    await store.update('15', state => { state.status = 'waiting_person'; state.pause = { kind: 'ask', category: 'scope', pausedAt: Date.parse('2026-01-01T00:00:00Z'), commentId: 1, commentCreatedAt: '2026-01-01T00:00:00Z' }; state.attempts.wakes = 1; });
+    const phases = [];
+    const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], now: () => Date.parse(repliedAt) + 1,
+      handler: async ({ phase }) => { phases.push(phase); return handler({ phase }); } });
+    assert.equal(result.outcomes[0].status, 'done');
+    assert.deepEqual(events, [['removeLabel', 15, 'rt:ask'], ['removeLabel', 15, 'rt:blocked']]);
+    assert.equal(issue.labels.includes('rt:ask'), false);
+    assert.equal((await store.load('15')).pause, undefined);
+    assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('daemon claims and schedules bounded, non-conflicting workers with visible worktrees', async () => {
   const { root, repo, workRoot } = await fixture();
   try {
