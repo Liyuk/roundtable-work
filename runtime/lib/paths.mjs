@@ -1,5 +1,5 @@
 import { lstat, realpath } from 'node:fs/promises';
-import { isAbsolute, resolve, sep } from 'node:path';
+import { isAbsolute, parse, resolve, sep } from 'node:path';
 
 export class PathEscapeError extends Error {
   constructor(message) {
@@ -21,6 +21,10 @@ export async function createConfinement(workRoot) {
   if (typeof workRoot !== 'string' || workRoot === '') throw new TypeError('workRoot must be a non-empty string');
   const lexicalRoot = resolve(workRoot);
   const realRoot = await realpath(lexicalRoot);
+  // A filesystem root would make every path "inside" (and `root + sep` is `//`): refuse it up front.
+  for (const root of [lexicalRoot, realRoot]) {
+    if (root === parse(root).root) throw new TypeError(`workRoot must not be a filesystem root: ${root}`);
+  }
 
   async function resolveInside(...parts) {
     for (const part of parts) {

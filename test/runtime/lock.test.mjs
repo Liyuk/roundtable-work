@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
+import * as realFs from 'node:fs/promises';
+import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { acquireLock } from '../../runtime/lib/lock.mjs';
+import { pathToFileURL } from 'node:url';
+import { acquireLock, hostId } from '../../runtime/lib/lock.mjs';
 
 // RT_LOCK_MODULE lets a reviewer point the child processes at another implementation (e.g. to show
 // that the test fails against an older lock); by default the real module is used.
@@ -15,6 +16,30 @@ const LOCK_MODULE = process.env.RT_LOCK_MODULE
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-lock-'));
 const exists = (p) => access(p).then(() => true, () => false);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const lockDir = (dir) => join(dir, 'rtd.lock.d');
+const epochsOf = async (dir) => (await readdir(lockDir(dir))).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
+const readEpochFile = async (dir, n) => JSON.parse(await readFile(join(lockDir(dir), `epoch-${n}`), 'utf8'));
+const topEpoch = async (dir) => { const e = await epochsOf(dir); return e[e.length - 1]; };
+const deadPid = () => { const r = spawnSync(process.execPath, ['-e', '']); assert.equal(r.status, 0); return r.pid; };
+const withDir = (fn) => async () => { const dir = await tmp(); try { await fn(dir); } finally { await rm(dir, { recursive: true, force: true }); } };
+const clockAt = (t) => { const c = { t }; c.now = () => c.t; return c; };
+
+/** Write a holder record as `epoch-<n>` (what an earlier or a foreign process would have left). */
+async function plantEpoch(dir, n, rec) {
+  await mkdir(lockDir(dir), { recursive: true });
+  const body = { owner: 'planted', pid: process.pid, hostId: hostId(), token: `planted-${n}`, epoch: n, acquiredAt: 1, expiresAt: Date.now() + 3_600_000, ...rec };
+  await writeFile(join(lockDir(dir), `epoch-${n}`), JSON.stringify(body));
+  return body;
+}
+const plantStale = (dir, n = 1) => plantEpoch(dir, n, { pid: deadPid(), owner: 'old' });
+
+/** A pause point: `reached` resolves when the code under test gets there, `open()` lets it continue. */
+function gate() {
+  let open; let reach;
+  const wait = new Promise((r) => { open = r; });
+  const reached = new Promise((r) => { reach = r; });
+  return { reached, open, hook: async () => { reach(); await wait; } };
+}
 
 const CONTENDER = `
 import { appendFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -23,13 +48,15 @@ const { acquireLock } = await import(process.env.RT_LOCK_MODULE_URL);
 const dir = process.env.RT_DIR;
 const name = process.env.RT_NAME;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const jitter = () => sleep(Math.floor(Math.random() * 6));
+const __hooks = process.env.RT_JITTER ? { afterList: jitter, beforeLink: jitter, afterLink: jitter, beforeRefreshWrite: jitter, afterRefreshWrite: jitter } : {};
 writeFileSync(join(dir, 'ready.' + name), '');
 while (!existsSync(join(dir, 'start'))) await sleep(1);
 const names = process.env.RT_NAMES.split(',');
 let lock;
-try { lock = await acquireLock({ lockPath: join(dir, 'rtd.lock'), owner: name, ttlMs: 60000 }); }
+try { lock = await acquireLock({ lockPath: join(dir, 'rtd.lock.d'), owner: name, ttlMs: 60000, __hooks }); }
 catch { lock = { acquired: false }; }
-if (lock.acquired) appendFileSync(join(dir, 'events.log'), JSON.stringify({ name, ev: 'acquire', t: process.hrtime.bigint().toString() }) + '\\n');
+if (lock.acquired) appendFileSync(join(dir, 'events.log'), JSON.stringify({ name, ev: 'acquire', epoch: lock.epoch, t: process.hrtime.bigint().toString() }) + '\\n');
 // done.<name>: this contender's attempt is over (it won, lost, or gave up).
 writeFileSync(join(dir, 'done.' + name), '');
 if (lock.acquired) {
@@ -37,7 +64,8 @@ if (lock.acquired) {
   // legitimately acquire after the release, whatever the CPU load. The cap only guards against a hung child.
   const others = names.filter((n) => n !== name).map((n) => join(dir, 'done.' + n));
   for (let i = 0; i < 4000 && !others.every((f) => existsSync(f)); i++) await sleep(5);
-  appendFileSync(join(dir, 'events.log'), JSON.stringify({ name, ev: 'release', t: process.hrtime.bigint().toString() }) + '\\n');
+  const refreshed = await lock.refresh().catch(() => false);
+  appendFileSync(join(dir, 'events.log'), JSON.stringify({ name, ev: 'release', refreshed, t: process.hrtime.bigint().toString() }) + '\\n');
   await lock.release();
 }
 `;
@@ -55,18 +83,15 @@ async function waitForFiles(paths) {
   throw new Error('timed out waiting for contenders');
 }
 
-test('stale takeover is mutually exclusive across real processes: one winner per round, never two holders', { timeout: 60000 }, async () => {
-  const dead = spawnSync(process.execPath, ['-e', '']);
-  assert.equal(dead.status, 0);
-  const PROCS = 6;
-  const ROUNDS = 12;
-  for (let round = 0; round < ROUNDS; round++) {
+/** Run `procs` contenders per round for `rounds` rounds; `seed(dir, round)` prepares the lock directory. */
+async function stress({ procs, rounds, seed, jitter = false }) {
+  for (let round = 0; round < rounds; round++) {
     const dir = await tmp();
     try {
-      // An already-stale lock: its owner process is gone.
-      await writeFile(join(dir, 'rtd.lock'), JSON.stringify({ owner: 'old', pid: dead.pid, token: 'old', acquiredAt: Date.now(), expiresAt: Date.now() + 3_600_000 }));
-      const names = Array.from({ length: PROCS }, (_, i) => `p${i}`);
-      const done = names.map((name) => runChild(CONTENDER, { RT_DIR: dir, RT_NAME: name, RT_NAMES: names.join(','), RT_LOCK_MODULE_URL: LOCK_MODULE }));
+      await seed(dir, round);
+      const names = Array.from({ length: procs }, (_, i) => `p${i}`);
+      const env = { RT_DIR: dir, RT_NAMES: names.join(','), RT_LOCK_MODULE_URL: LOCK_MODULE, ...(jitter ? { RT_JITTER: '1' } : {}) };
+      const done = names.map((name) => runChild(CONTENDER, { ...env, RT_NAME: name }));
       await waitForFiles(names.map((n) => join(dir, `ready.${n}`)));
       await writeFile(join(dir, 'start'), '');
       assert.deepEqual(await Promise.all(done), names.map(() => 0));
@@ -74,127 +99,545 @@ test('stale takeover is mutually exclusive across real processes: one winner per
       const events = (await readFile(join(dir, 'events.log'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
       const acquires = events.filter((e) => e.ev === 'acquire');
       assert.equal(acquires.length, 1, `round ${round}: expected exactly one winner, got ${acquires.map((a) => a.name)}`);
+      assert.equal(events.find((e) => e.ev === 'release').refreshed, true, `round ${round}: the winner could refresh while contenders kept failing`);
       // Interval check: no two holds overlap.
       let holders = 0;
       for (const e of events.sort((a, b) => (BigInt(a.t) < BigInt(b.t) ? -1 : 1))) {
         holders += e.ev === 'acquire' ? 1 : -1;
         assert.ok(holders <= 1, `round ${round}: two holders at once`);
       }
+      const epochs = await epochsOf(dir);
+      assert.equal(epochs[epochs.length - 1], acquires[0].epoch, `round ${round}: the winner owns the highest epoch`);
+      assert.equal(new Set(epochs).size, epochs.length);
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Real processes
+
+test('lock: stale takeover is mutually exclusive across real processes: one winner per round, never two holders', { timeout: 60000 }, async () => {
+  const dead = deadPid();
+  await stress({ procs: 6, rounds: 10, seed: (dir) => plantEpoch(dir, 1, { pid: dead, owner: 'old' }) });
 });
 
-test('stale takeover: in-process contenders racing for an expired lock yield exactly one holder', async () => {
-  const dir = await tmp();
+// L4
+test('lock: N processes x M rounds, stale holder plus orphan mutex/guard, never two holders', { timeout: 60000 }, async () => {
+  const dead = deadPid();
+  await stress({
+    procs: 8, rounds: 8, jitter: true,
+    seed: async (dir, round) => {
+      await plantEpoch(dir, 1 + round, { pid: dead, owner: 'old' });
+      // Leftovers of the previous implementation and of crashed writers, inside and beside the lock directory.
+      const orphan = JSON.stringify({ pid: dead, id: 'orphan', expiresAt: round % 2 ? 1 : Date.now() + 3_600_000 });
+      await writeFile(`${lockDir(dir)}.mutex`, orphan);
+      await writeFile(`${lockDir(dir)}.mutex.break`, orphan);
+      await writeFile(join(lockDir(dir), '.mutex'), orphan);
+      await writeFile(join(lockDir(dir), `.tmp-orphan-${round}`), '{"pid"');
+      await writeFile(join(lockDir(dir), `epoch-${2 + round}.tmp`), orphan);
+      await writeFile(join(lockDir(dir), 'epoch-x'), orphan);
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// In-process behaviour
+
+test('lock: in-process contenders racing for an expired lock yield exactly one holder', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const first = await acquireLock({ lockPath, owner: 'first', now: clock.now, ttlMs: 100 });
+  assert.equal(first.acquired, true);
+  assert.equal(first.epoch, 1);
+  clock.t += 101;
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) => acquireLock({ lockPath, owner: `c${i}`, now: clock.now, ttlMs: 100 })));
+  assert.equal(results.filter((r) => r.acquired).length, 1);
+  const winner = results.find((r) => r.acquired);
+  assert.equal(winner.epoch, 2);
+  assert.equal((await readEpochFile(dir, 2)).token, winner.token);
+  assert.equal(await first.refresh(), false);
+  assert.equal(await winner.refresh(), true);
+  assert.equal(await winner.release(), true);
+  assert.equal((await readEpochFile(dir, 2)).released, true, 'release marks the file, it does not unlink it');
+  assert.deepEqual((await readdir(dir)).sort(), ['rtd.lock.d'], 'no mutex or guard files beside the lock directory');
+}));
+
+test('lock: a displaced holder cannot refresh over or release its successor\'s lock', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const a = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100 });
+  clock.t += 101;
+  const b = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 100 });
+  assert.equal(b.acquired, true);
+  const before = await readFile(join(lockPath, 'epoch-2'), 'utf8');
+  assert.equal(await a.refresh(), false);
+  await a.release();
+  assert.equal(await readFile(join(lockPath, 'epoch-2'), 'utf8'), before, 'the successor\'s file is byte for byte unchanged');
+  assert.equal(await b.refresh(), true);
+}));
+
+test('lock: a live holder with a fresh lease is never taken over, and its lock file is left untouched', withDir(async (dir) => {
+  const lockPath = lockDir(dir);
+  const a = await acquireLock({ lockPath, owner: 'a' });
+  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  const results = await Promise.all(Array.from({ length: 6 }, () => acquireLock({ lockPath, owner: 'x' })));
+  assert.deepEqual(results.map((r) => r.acquired), Array(6).fill(false));
+  assert.deepEqual(results.map((r) => r.reason), Array(6).fill('held'));
+  assert.equal(results[0].holder.token, a.token);
+  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before);
+  assert.deepEqual(await epochsOf(dir), [1]);
+  await a.release();
+}));
+
+test('lock: only epochs far below the newest are garbage collected, after a successful acquire', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  for (let i = 0; i < 12; i++) {
+    const h = await acquireLock({ lockPath, owner: `o${i}`, now: clock.now, ttlMs: 10 });
+    assert.equal(h.acquired, true);
+    assert.equal(h.epoch, i + 1);
+    clock.t += 11;
+  }
+  assert.deepEqual(await epochsOf(dir), [4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  const live = await acquireLock({ lockPath, owner: 'x', now: clock.now, ttlMs: 1000 });
+  assert.equal(live.acquired, true);
+  const failed = await acquireLock({ lockPath, owner: 'y', now: clock.now, ttlMs: 1000 });
+  assert.equal(failed.acquired, false);
+  assert.deepEqual(await epochsOf(dir), [5, 6, 7, 8, 9, 10, 11, 12, 13], 'a failed acquire collects nothing');
+}));
+
+// L1
+test('lock: refresh never writes through a planted symlink', withDir(async (dir) => {
+  const outside = await tmp();
   try {
-    const clock = { t: 1000 };
-    const lockPath = join(dir, 'rtd.lock');
-    const first = await acquireLock({ lockPath, owner: 'first', now: () => clock.t, ttlMs: 100 });
-    assert.equal(first.acquired, true);
-    clock.t += 101;
-    const results = await Promise.all(Array.from({ length: 8 }, (_, i) => acquireLock({ lockPath, owner: `c${i}`, now: () => clock.t, ttlMs: 100 })));
-    assert.equal(results.filter((r) => r.acquired).length, 1);
-    const winner = results.find((r) => r.acquired);
-    assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, winner.token);
-    assert.equal(await first.refresh(), false);
-    assert.equal(await winner.refresh(), true);
-    await winner.release();
-    assert.equal(await exists(lockPath), false);
-    assert.equal(await exists(`${lockPath}.mutex`), false, 'the takeover mutex is released');
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
+    const sentinel = join(outside, 'sentinel.txt');
+    await writeFile(sentinel, 'do not touch');
+    const lockPath = lockDir(dir);
+    const h = await acquireLock({ lockPath, owner: 'a' });
+    assert.equal(h.acquired, true);
+    // The refresh temp name the previous implementation used (pid and token are readable from the lock file).
+    const oldNames = [`${lockPath}.${process.pid}.${h.token}.refresh`, join(lockPath, `${process.pid}.${h.token}.refresh`), join(lockPath, `epoch-${h.epoch}.refresh`), join(lockPath, `epoch-${h.epoch}.tmp`)];
+    for (const name of oldNames) await symlink(sentinel, name);
+    let result;
+    try { result = await h.refresh(); } catch { result = 'threw'; }
+    assert.equal(await readFile(sentinel, 'utf8'), 'do not touch', 'nothing was written through the symlink');
+    assert.equal(result, true, 'a fresh random temp name is used, the planted names are irrelevant');
+    assert.equal((await lstat(join(lockPath, `epoch-${h.epoch}`))).isFile(), true);
+    for (const name of oldNames) assert.equal((await lstat(name)).isSymbolicLink(), true, 'the planted symlink is left alone');
+    // A leftover regular file at that name does not block refresh either.
+    for (const name of oldNames) { await rm(name); await writeFile(name, 'leftover'); }
+    assert.equal(await h.refresh(), true);
+    for (const name of oldNames) assert.equal(await readFile(name, 'utf8'), 'leftover');
+  } finally { await rm(outside, { recursive: true, force: true }); }
+}));
 
-test('a displaced holder cannot refresh over or release its successor\'s lock', async () => {
-  const dir = await tmp();
-  try {
-    const clock = { t: 1000 };
-    const lockPath = join(dir, 'rtd.lock');
-    const a = await acquireLock({ lockPath, owner: 'a', now: () => clock.t, ttlMs: 100 });
-    clock.t += 101;
-    const b = await acquireLock({ lockPath, owner: 'b', now: () => clock.t, ttlMs: 100 });
-    assert.equal(b.acquired, true);
-    assert.equal(await a.refresh(), false);
-    await a.release();
-    assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, b.token);
-    assert.equal(await b.refresh(), true);
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
+// L2
+test('lock: two breakers can never both hold the guard', withDir(async (dir) => {
+  // Contenders A and B both judged the stale epoch-1 stale and sit right before their link(); then C and D start.
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  await plantStale(dir, 1);
+  const gA = gate(); const gB = gate();
+  const A = acquireLock({ lockPath, owner: 'A', now: clock.now, ttlMs: 100, __hooks: { beforeLink: gA.hook } });
+  const B = acquireLock({ lockPath, owner: 'B', now: clock.now, ttlMs: 100, __hooks: { beforeLink: gB.hook } });
+  await Promise.all([gA.reached, gB.reached]);
+  gB.open();
+  const b = await B;
+  assert.equal(b.acquired, true);
+  assert.equal(b.epoch, 2);
+  // C and D arrive while A is paused: the lock is live, nobody enters.
+  const [c, d] = await Promise.all([acquireLock({ lockPath, owner: 'C', now: clock.now, ttlMs: 100 }), acquireLock({ lockPath, owner: 'D', now: clock.now, ttlMs: 100 })]);
+  assert.deepEqual([c.acquired, d.acquired], [false, false]);
+  gA.open();
+  const a = await A;
+  assert.equal(a.acquired, false, 'A\'s link() hit EEXIST: exactly one link succeeded for epoch-2');
+  assert.deepEqual(await epochsOf(dir), [1, 2]);
+  assert.equal((await readEpochFile(dir, 2)).token, b.token);
+  assert.equal(await b.refresh(), true);
 
-test('a takeover mutex left behind by a dead process does not block takeover', async () => {
-  const dir = await tmp();
-  try {
-    const dead = spawnSync(process.execPath, ['-e', '']);
-    const lockPath = join(dir, 'rtd.lock');
-    const old = JSON.stringify({ owner: 'old', pid: dead.pid, token: 'old', acquiredAt: 1, expiresAt: Date.now() + 3_600_000 });
-    await writeFile(lockPath, old);
-    await writeFile(`${lockPath}.mutex`, JSON.stringify({ pid: dead.pid, id: 'x', expiresAt: Date.now() + 3_600_000 }));
-    const lock = await acquireLock({ lockPath, owner: 'new' });
-    assert.equal(lock.acquired, true);
-    await lock.release();
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
+  // B stalls past its lease; E and F race for epoch-3 while the paused B holds nothing valid anymore.
+  clock.t += 101;
+  const gE = gate(); const gF = gate();
+  const E = acquireLock({ lockPath, owner: 'E', now: clock.now, ttlMs: 100, __hooks: { beforeLink: gE.hook } });
+  const F = acquireLock({ lockPath, owner: 'F', now: clock.now, ttlMs: 100, __hooks: { beforeLink: gF.hook } });
+  await Promise.all([gE.reached, gF.reached]);
+  gE.open(); gF.open();
+  const results = await Promise.all([E, F]);
+  assert.equal(results.filter((r) => r.acquired).length, 1);
+  assert.deepEqual(await epochsOf(dir), [1, 2, 3]);
+  assert.equal(await b.refresh(), false);
 
-test('a live holder with a fresh lease is never taken over, and its lock file is left untouched', async () => {
-  const dir = await tmp();
-  try {
-    const lockPath = join(dir, 'rtd.lock');
-    const a = await acquireLock({ lockPath, owner: 'a' });
-    const before = await readFile(lockPath, 'utf8');
-    const results = await Promise.all(Array.from({ length: 6 }, () => acquireLock({ lockPath, owner: 'x' })));
-    assert.deepEqual(results.map((r) => r.acquired), Array(6).fill(false));
-    assert.equal(await readFile(lockPath, 'utf8'), before);
-    await a.release();
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
+  // A contender that was paused right after its link() and then superseded must not report acquired.
+  clock.t += 101;
+  const gG = gate();
+  const G = acquireLock({ lockPath, owner: 'G', now: clock.now, ttlMs: 100, __hooks: { afterLink: gG.hook } });
+  await gG.reached;
+  assert.deepEqual(await epochsOf(dir), [1, 2, 3, 4]);
+  clock.t += 101; // G's lease ran out while it was paused
+  const h = await acquireLock({ lockPath, owner: 'H', now: clock.now, ttlMs: 100 });
+  assert.equal(h.acquired, true);
+  assert.equal(h.epoch, 5);
+  gG.open();
+  const g = await G;
+  assert.equal(g.acquired, false);
+  assert.equal(g.reason, 'superseded');
+}));
 
-test('orphan mutex (dead pid) plus a stale lock, 8 processes x 6 rounds: removal of the stale mutex never lets two holders overlap', { timeout: 60000 }, async () => {
-  const dead = spawnSync(process.execPath, ['-e', '']);
-  assert.equal(dead.status, 0);
-  const PROCS = 8;
-  const ROUNDS = 6;
-  for (let round = 0; round < ROUNDS; round++) {
+// L3
+test('lock: a live but slow holder is never overlapped and never loses or damages anything to a successor', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const g = gate();
+  let stall = false;
+  const h = await acquireLock({ lockPath, owner: 'H', now: clock.now, ttlMs: 1000, __hooks: { beforeRefreshWrite: () => (stall ? g.hook() : undefined) } });
+  clock.t += 900;
+  const c1 = await acquireLock({ lockPath, owner: 'C', now: clock.now, ttlMs: 1000 });
+  assert.deepEqual([c1.acquired, c1.reason], [false, 'held'], 'a live holder inside its lease is not overlapped');
+  // H stalls inside refresh (checks passed, nothing written yet), then more than a whole lease passes.
+  stall = true;
+  const stalledRefresh = h.refresh();
+  await g.reached;
+  clock.t += 1101;
+  const c2 = await acquireLock({ lockPath, owner: 'C', now: clock.now, ttlMs: 1000 });
+  assert.equal(c2.acquired, true);
+  const successorFile = join(lockPath, `epoch-${c2.epoch}`);
+  const inode = (await stat(successorFile)).ino;
+  const bytes = await readFile(successorFile, 'utf8');
+  g.open();
+  assert.equal(await stalledRefresh, false, 'the stalled holder\'s refresh reports lost');
+  assert.equal(await h.release(), true);
+  assert.equal((await stat(successorFile)).ino, inode, 'the stalled holder never touched a file it did not create');
+  assert.equal(await readFile(successorFile, 'utf8'), bytes);
+  // No mutex or guard exists anywhere, so there is nothing a stalled holder could break or delete.
+  assert.deepEqual([...await readdir(dir), ...await readdir(lockPath)].filter((n) => /mutex|break/.test(n)), []);
+}));
+
+// L6: a refresh that completes after its own previous lease ran out cannot coexist with a takeover
+test('lock: a refresh stalled past its own expiry is lost, never valid next to a takeover', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const gA = gate();
+  const gB = gate();
+  const A = await acquireLock({ lockPath, owner: 'A', now: clock.now, ttlMs: 100, __hooks: { beforeRefreshWrite: gA.hook } });
+  assert.equal(A.acquired, true);
+  const aRefresh = A.refresh(); // pre-checks pass: lease not yet expired, no higher epoch
+  await gA.reached;
+  clock.t = 1200; // A stalls and its lease runs out
+  const bAcquire = acquireLock({ lockPath, owner: 'B', now: clock.now, ttlMs: 100, __hooks: { beforeLink: gB.hook } });
+  await gB.reached; // B read A's old file, judged it stale, and is about to link epoch 2
+  gA.open();
+  const refreshed = await aRefresh; // A renames and runs its post-check; no higher epoch exists yet
+  gB.open();
+  const B = await bAcquire;
+  assert.equal(refreshed && B.acquired, false, 'never two valid holders');
+  assert.equal(B.acquired, true, 'the takeover based on the expired file succeeds');
+  assert.equal(refreshed, false, 'so the refresh must not report a valid lease');
+  assert.equal(await A.refresh(), false, 'the handle stays lost');
+  const aFile = await readEpochFile(dir, 1);
+  assert.equal(aFile.released, true, 'the lost handle\'s file never claims a live lease');
+  assert.equal((await readEpochFile(dir, 2)).token, B.token);
+  assert.equal(await B.refresh(), true);
+}));
+
+test('lock: a refresh stalled past its expiry, with nobody taking over, leaves no live lease behind', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const gA = gate();
+  const A = await acquireLock({ lockPath, owner: 'A', now: clock.now, ttlMs: 100, __hooks: { beforeRefreshWrite: gA.hook } });
+  const aRefresh = A.refresh();
+  await gA.reached;
+  clock.t = 1200;
+  gA.open();
+  assert.equal(await aRefresh, false);
+  const B = await acquireLock({ lockPath, owner: 'B', now: clock.now, ttlMs: 100 });
+  assert.equal(B.acquired, true, 'the lock is not held by a handle that reported false');
+  assert.equal(B.epoch, 2);
+}));
+
+test('lock: randomized interleavings (virtual clock, random yields) never show two valid holders', { timeout: 20000 }, async () => {
+  const TTL = 50;
+  const HOOKS = ['afterList', 'beforeLink', 'afterLink', 'beforeRefreshWrite', 'afterRefreshWrite'];
+  for (const seed0 of [1, 42, 99991]) {
     const dir = await tmp();
     try {
-      await writeFile(join(dir, 'rtd.lock'), JSON.stringify({ owner: 'old', pid: dead.pid, token: 'old', acquiredAt: 1, expiresAt: Date.now() + 3_600_000 }));
-      // The crashed mutex holder's leftover: dead pid, alternating a far and an already-passed expiry.
-      const expiresAt = round % 2 ? 1 : Date.now() + 3_600_000;
-      await writeFile(join(dir, 'rtd.lock.mutex'), JSON.stringify({ pid: dead.pid, id: 'orphan', expiresAt }));
-      // Every third round a crashed breaker's guard file is left behind as well.
-      if (round % 3 === 2) await writeFile(join(dir, 'rtd.lock.mutex.break'), JSON.stringify({ pid: dead.pid, id: 'orphan-break', expiresAt: Date.now() + 3_600_000 }));
-      const names = Array.from({ length: PROCS }, (_, i) => `p${i}`);
-      const done = names.map((name) => runChild(CONTENDER, { RT_DIR: dir, RT_NAME: name, RT_NAMES: names.join(','), RT_LOCK_MODULE_URL: LOCK_MODULE }));
-      await waitForFiles(names.map((n) => join(dir, `ready.${n}`)));
-      await writeFile(join(dir, 'start'), '');
-      assert.deepEqual(await Promise.all(done), names.map(() => 0));
-
-      const events = (await readFile(join(dir, 'events.log'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
-      assert.equal(events.filter((e) => e.ev === 'acquire').length, 1, `round ${round}: expected exactly one winner`);
-      let holders = 0;
-      for (const e of events.sort((a, b) => (BigInt(a.t) < BigInt(b.t) ? -1 : 1))) {
-        holders += e.ev === 'acquire' ? 1 : -1;
-        assert.ok(holders <= 1, `round ${round}: two holders at once`);
-      }
-      assert.equal(await exists(join(dir, 'rtd.lock.mutex')), false, 'the mutex is gone');
-      // With a crashed breaker's guard in play, removing that guard has a documented microsecond gap (see
-      // removeStaleFile): a live guard put back after its holder finished may remain and then blocks breaking until it expires (a liveness effect only).
-      if (round % 3 !== 2) assert.equal(await exists(join(dir, 'rtd.lock.mutex.break')), false, 'the break guard is gone');
-      const leftovers = (await readdir(dir)).filter((n) => n.endsWith('.stale') || n.endsWith('.tmp'));
-      assert.deepEqual(leftovers, [], 'no stale-aside or temp files are left behind');
+      let seed = seed0;
+      const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+      const clock = clockAt(1000);
+      const valid = new Map(); // worker -> expiry of the last grant its own handle reported (acquire or refresh == true)
+      let violations = 0;
+      let grants = 0;
+      const check = () => { if ([...valid.values()].filter((e) => e > clock.t).length > 1) violations++; };
+      const yieldy = async () => {
+        for (let i = Math.floor(rnd() * 4); i > 0; i--) await new Promise((r) => setImmediate(r));
+        if (rnd() < 0.3) { clock.t += Math.floor(rnd() * 30); check(); }
+      };
+      const hooks = Object.fromEntries(HOOKS.map((n) => [n, yieldy]));
+      const worker = async (name) => {
+        for (let r = 0; r < 50; r++) {
+          const t0 = clock.t;
+          const h = await acquireLock({ lockPath: lockDir(dir), owner: name, now: clock.now, ttlMs: TTL, isAlive: () => true, __hooks: hooks });
+          if (!h.acquired) { await yieldy(); continue; }
+          grants++;
+          valid.set(name, t0 + TTL); // lower bound of the granted lease: the record is stamped no earlier than t0
+          check();
+          for (let i = 0; i < 4; i++) {
+            await yieldy();
+            const t1 = clock.t;
+            if (!(await h.refresh())) { valid.delete(name); break; }
+            valid.set(name, t1 + TTL);
+            check();
+          }
+          if (valid.has(name)) { valid.delete(name); await h.release(); }
+        }
+      };
+      await Promise.all(['a', 'b', 'c', 'd'].map(worker));
+      assert.equal(violations, 0, `seed ${seed0}: two valid holders at once`);
+      assert.ok(grants > 20, `seed ${seed0}: the run made progress (${grants} grants)`);
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
 });
 
-test('removing a stale file that was meanwhile replaced by a live one puts the live one back', async () => {
-  const dir = await tmp();
+// L5
+test('lock: refresh while a foreign live mutex is present', withDir(async (dir) => {
+  const lockPath = lockDir(dir);
+  await plantStale(dir, 3);
+  const h = await acquireLock({ lockPath, owner: 'a' });
+  assert.equal(h.epoch, 4);
+  const live = JSON.stringify({ pid: process.pid, id: 'foreign', expiresAt: Date.now() + 10_000 });
+  for (const name of [`${lockPath}.mutex`, `${lockPath}.mutex.break`, join(lockPath, '.mutex'), join(lockPath, 'mutex'), join(lockPath, 'epoch-0.tmp')]) await writeFile(name, live);
+  const t0 = performance.now();
+  assert.equal(await h.refresh(), true, 'refresh does not involve any mutex');
+  assert.equal(await h.refresh(), true);
+  assert.ok(performance.now() - t0 < 1000);
+  // A lower, foreign epoch file is not a reason to fail either.
+  await plantEpoch(dir, h.epoch - 1, {});
+  assert.equal(await h.refresh(), true);
+}));
+
+// L6
+test('lock: refresh after own lease expiry reports lost', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const h = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100 });
+  assert.equal(await h.refresh(), true);
+  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  clock.t += 100; // expiresAt <= now
+  assert.equal(await h.refresh(), false);
+  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before, 'an expired lease is never revived');
+  assert.equal(await h.refresh(), false, 'and stays lost');
+  const b = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 100 });
+  assert.equal(b.acquired, true);
+}));
+
+test('lock: refresh with a higher epoch present reports lost and leaves our file unchanged', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const h = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100_000 });
+  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  await plantEpoch(dir, 2, {});
+  clock.t += 1; // a rewrite would change expiresAt
+  assert.equal(await h.refresh(), false);
+  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before);
+  // A higher epoch that appears during the write is caught by the check after it.
+  let epoch2;
+  const h2 = await acquireLock({ lockPath: join(dir, 'b.lock.d'), owner: 'b', now: clock.now, ttlMs: 100_000, __hooks: { afterRefreshWrite: () => writeFile(join(dir, 'b.lock.d', `epoch-${epoch2 + 1}`), '{}') } });
+  epoch2 = h2.epoch;
+  assert.equal(await h2.refresh(), false);
+}));
+
+// L7
+test('lock: dead-looking pid from a different host identity is not taken over before expiry', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  await plantEpoch(dir, 1, { hostId: 'other', pid: deadPid(), expiresAt: 5000 });
+  const r = await acquireLock({ lockPath, owner: 'x', now: clock.now, ttlMs: 100 });
+  assert.equal(r.acquired, false);
+  assert.equal(r.reason, 'held');
+  assert.deepEqual(await epochsOf(dir), [1]);
+  clock.t = 5000; // lease over: now it is taken over, whatever the host
+  const r2 = await acquireLock({ lockPath, owner: 'x', now: clock.now, ttlMs: 100 });
+  assert.equal(r2.acquired, true);
+  // Same host and a dead pid: taken over at once.
+  const dir2 = await tmp();
   try {
-    const lockPath = join(dir, 'rtd.lock');
-    const live = JSON.stringify({ pid: process.pid, id: 'live', expiresAt: Date.now() + 3_600_000 });
-    await writeFile(`${lockPath}.mutex`, live);
-    const { removeStaleFile } = await import(LOCK_MODULE);
-    await removeStaleFile(`${lockPath}.mutex`, JSON.stringify({ pid: 1, id: 'stale-one' }), `${lockPath}.mutex.aside.stale`);
-    assert.equal(await readFile(`${lockPath}.mutex`, 'utf8'), live, 'the live mutex is back, intact');
-    assert.equal(await exists(`${lockPath}.mutex.aside.stale`), false);
-    await removeStaleFile(`${lockPath}.mutex`, live, `${lockPath}.mutex.aside.stale`);
-    assert.equal(await exists(`${lockPath}.mutex`), false, 'a mutex whose content is the judged one is removed');
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
+    await plantEpoch(dir2, 1, { pid: deadPid(), expiresAt: 10 ** 12 });
+    assert.equal((await acquireLock({ lockPath: lockDir(dir2), owner: 'x', now: clock.now, ttlMs: 100 })).acquired, true);
+    // A record without any hostId is not known to be local either.
+    await plantEpoch(dir2, 9, { hostId: undefined, pid: deadPid(), expiresAt: 10 ** 12 });
+    assert.equal((await acquireLock({ lockPath: lockDir(dir2), owner: 'x', now: clock.now, ttlMs: 100 })).acquired, false);
+    // The record we write carries a hash, never the host name.
+    const rec = await readEpochFile(dir, 2);
+    assert.equal(rec.hostId, hostId());
+    assert.ok(!(await readFile(join(lockPath, 'epoch-2'), 'utf8')).includes(hostname()) || hostname().length < 4);
+    assert.match(rec.hostId, /^[0-9a-f]{32}$/);
+    assert.equal(rec.pid, process.pid);
+  } finally { await rm(dir2, { recursive: true, force: true }); }
+}));
+
+// L8
+test('lock: non-regular lock entries fail closed and fast', { timeout: 30000 }, withDir(async (dir) => {
+  const outside = await tmp();
+  try {
+    const mkfifo = (p) => assert.equal(spawnSync('mkfifo', [p]).status, 0);
+    const fast = async (p) => {
+      const t0 = performance.now();
+      const r = await acquireLock({ lockPath: p, owner: 'x' });
+      assert.ok(performance.now() - t0 < 1000, 'settles within 1 s');
+      assert.equal(r.acquired, false);
+      assert.equal(typeof r.reason, 'string');
+      return r;
+    };
+    // The lock path itself: a symlink to a directory holding a live-looking holder, a FIFO, a huge file.
+    const live = { owner: 'outside', pid: process.pid, hostId: hostId(), token: 'o', expiresAt: Date.now() + 1e9 };
+    await mkdir(join(outside, 'target'));
+    await writeFile(join(outside, 'target', 'epoch-7'), JSON.stringify(live));
+    await symlink(join(outside, 'target'), join(dir, 'link.lock.d'));
+    const viaLink = await fast(join(dir, 'link.lock.d'));
+    assert.equal(viaLink.holder, null, 'nothing outside the root was read');
+    assert.deepEqual(await readdir(join(outside, 'target')), ['epoch-7'], 'and nothing was written there');
+    mkfifo(join(dir, 'fifo.lock.d'));
+    await fast(join(dir, 'fifo.lock.d'));
+    await writeFile(join(dir, 'big.lock.d'), '');
+    await truncate(join(dir, 'big.lock.d'), 10 * 1024 * 1024);
+    await fast(join(dir, 'big.lock.d'));
+
+    // An entry named like an epoch: symlink, FIFO, directory, 10 MiB file, 5 KiB file.
+    const kinds = {
+      symlink: (p) => symlink(join(outside, 'target', 'epoch-7'), p),
+      fifo: async (p) => mkfifo(p),
+      directory: (p) => mkdir(p),
+      huge: async (p) => { await writeFile(p, ''); await truncate(p, 10 * 1024 * 1024); },
+      overlarge: (p) => writeFile(p, JSON.stringify({ ...live, pad: 'x'.repeat(5000) })),
+    };
+    for (const [kind, make] of Object.entries(kinds)) {
+      const lockPath = join(dir, `${kind}.entries.d`);
+      await mkdir(lockPath);
+      await make(join(lockPath, 'epoch-3'));
+      const r = await fast(lockPath);
+      assert.equal(r.reason, 'invalid_epoch_file', kind);
+      assert.deepEqual((await readdir(lockPath)).filter((n) => n !== 'epoch-3'), [], `${kind}: nothing written next to it`);
+    }
+    assert.deepEqual(await readdir(join(outside, 'target')), ['epoch-7']);
+  } finally { await rm(outside, { recursive: true, force: true }); }
+}));
+
+// L9
+test('lock: all expiry decisions use the injected clock', withDir(async (dir) => {
+  const clock = clockAt(10 ** 12);
+  const lockPath = lockDir(dir);
+  await plantEpoch(dir, 1, { expiresAt: 5000 }); // our own live pid, but the (injected) clock is far past its lease
+  await writeFile(`${lockPath}.mutex`, JSON.stringify({ pid: process.pid, id: 'x', expiresAt: 5000 }));
+  const realNow = Date.now;
+  Date.now = () => { throw new Error('Date.now must not be consulted'); };
+  try {
+    const h = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 1000 });
+    assert.equal(h.acquired, true);
+    assert.equal(await h.refresh(), true);
+    clock.t += 2000;
+    assert.equal(await h.refresh(), false);
+    const h2 = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 1000 });
+    assert.equal(h2.acquired, true);
+    assert.equal(await h2.release(), true);
+  } finally { Date.now = realNow; }
+}));
+
+// L10
+test('lock: handle exposes a strictly increasing epoch across takeovers', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockDir(dir);
+  const h1 = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100 });
+  clock.t += 101;
+  const h2 = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 100 });
+  assert.ok(h2.epoch > h1.epoch);
+  assert.equal(await h2.release(), true);
+  const h3 = await acquireLock({ lockPath, owner: 'c', now: clock.now, ttlMs: 100 });
+  assert.ok(h3.epoch > h2.epoch);
+  assert.deepEqual([h1.epoch, h2.epoch, h3.epoch], [1, 2, 3]);
+  assert.equal((await readEpochFile(dir, 3)).epoch, 3);
+}));
+
+// L11
+test('lock: release reports whether the lock was released', withDir(async (dir) => {
+  const lockPath = lockDir(dir);
+  const a = await acquireLock({ lockPath, owner: 'a' }); // our own pid is alive and the lease is fresh
+  assert.equal(await a.release(), true);
+  assert.equal((await readEpochFile(dir, 1)).released, true);
+  assert.equal(await a.release(), true, 'idempotent');
+  assert.equal(await a.refresh(), false, 'a released handle cannot be refreshed');
+  const b = await acquireLock({ lockPath, owner: 'b' });
+  assert.equal(b.acquired, true, 'taken immediately although the first holder\'s pid is alive');
+  assert.equal(b.epoch, 2);
+  // Not released: our file is gone (or no longer ours).
+  await rm(join(lockPath, 'epoch-2'));
+  assert.equal(await b.release(), false);
+  assert.equal(b.releaseReason, 'not_owner');
+  const c = await acquireLock({ lockPath, owner: 'c' });
+  await writeFile(join(lockPath, `epoch-${c.epoch}`), JSON.stringify({ token: 'someone else', pid: 1 }));
+  assert.equal(await c.release(), false);
+  assert.equal(c.releaseReason, 'not_owner');
+  assert.equal(JSON.parse(await readFile(join(lockPath, `epoch-${c.epoch}`), 'utf8')).token, 'someone else', 'a file that is not ours is not rewritten');
+}));
+
+// L12
+test('lock: leftover temp files never block acquire or refresh', withDir(async (dir) => {
+  const lockPath = lockDir(dir);
+  await mkdir(lockPath);
+  const leftovers = ['.tmp-1', '.tmp-deadbeef', 'epoch-1.tmp', 'epoch-2.tmp', `epoch-1.${process.pid}.refresh`, 'epoch-2.stale'];
+  for (const name of leftovers) await writeFile(join(lockPath, name), 'junk');
+  for (const name of [`${lockPath}.${process.pid}.tok.tmp`, `${lockPath}.${process.pid}.tok.refresh`, `${lockPath}.mutex.stale`]) await writeFile(name, 'junk');
+  const h = await acquireLock({ lockPath, owner: 'a' });
+  assert.equal(h.acquired, true);
+  assert.equal(await h.refresh(), true);
+  assert.equal(await h.release(), true);
+  const h2 = await acquireLock({ lockPath, owner: 'b' });
+  assert.equal(h2.acquired, true);
+  for (const name of leftovers) assert.equal(await readFile(join(lockPath, name), 'utf8'), 'junk', `${name} untouched`);
+  assert.equal(await h2.release(), true);
+}));
+
+test('lock: a write that fails mid-way leaves no temp file behind and the lock usable', withDir(async (dir) => {
+  // Every write stores a few bytes and then fails (e.g. ENOSPC).
+  let failing = true;
+  const fs = { writeFile: async (p, content, opts) => { if (!failing) return realFs.writeFile(p, content, opts); await realFs.writeFile(p, String(content).slice(0, 5), opts); throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }); } };
+  const lockPath = lockDir(dir);
+  await assert.rejects(acquireLock({ lockPath, owner: 'a', fs }), /no space/);
+  assert.deepEqual(await readdir(lockPath), [], 'the partial temp file was removed and no epoch was created');
+  failing = false;
+  const h = await acquireLock({ lockPath, owner: 'a', fs });
+  assert.equal(h.acquired, true);
+  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  failing = true;
+  await assert.rejects(h.refresh(), /no space/);
+  await assert.rejects(h.release(), /no space/);
+  assert.deepEqual(await readdir(lockPath), ['epoch-1']);
+  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before, 'a failed write leaves the lock file intact');
+  failing = false;
+  assert.equal(await h.refresh(), true);
+  assert.equal(await h.release(), true);
+}));
+
+// L13
+test('lock: lock files are created 0600', { skip: process.platform === 'win32' }, withDir(async (dir) => {
+  const oldUmask = process.umask(0);
+  try {
+    const lockPath = lockDir(dir);
+    const h = await acquireLock({ lockPath, owner: 'a' });
+    const mode = async (p) => (await stat(p)).mode & 0o777;
+    assert.equal(await mode(join(lockPath, 'epoch-1')), 0o600);
+    assert.equal(await h.refresh(), true);
+    assert.equal(await mode(join(lockPath, 'epoch-1')), 0o600);
+    assert.equal(await h.release(), true);
+    assert.equal(await mode(join(lockPath, 'epoch-1')), 0o600);
+    assert.equal((await mode(lockPath)) & 0o077, 0, 'the lock directory is private');
+  } finally { process.umask(oldUmask); }
+}));
+
+// L14
+test('lock: link failure is surfaced, not degraded', withDir(async (dir) => {
+  for (const code of ['ENOTSUP', 'EPERM']) {
+    const lockPath = join(dir, `${code}.lock.d`);
+    const fs = { link: async () => { throw Object.assign(new Error(`link: ${code}`), { code }); } };
+    await assert.rejects(acquireLock({ lockPath, owner: 'a', fs }), (err) => err.code === code);
+    assert.deepEqual(await readdir(lockPath), [], 'no lock file and no temp file exists');
+  }
+}));

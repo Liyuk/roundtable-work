@@ -92,12 +92,13 @@ test('heartbeat by a non-owner does not extend the lease', async () => {
 });
 
 test('artifact paths are recorded, and paths outside the work root are rejected without being recorded', async () => {
-  const { store, cleanup } = await setup();
+  const { root, store, cleanup } = await setup();
   try {
     await store.recordArtifacts('1', { worktree: 'wt/1', diff: 'out/1.diff', output: 'out/1.txt' });
-    assert.deepEqual((await store.load('1')).artifacts, { worktree: 'wt/1', diff: 'out/1.diff', output: 'out/1.txt' });
+    // Stored as the confined absolute path (threat S6).
+    assert.deepEqual((await store.load('1')).artifacts, { worktree: join(root, 'wt/1'), diff: join(root, 'out/1.diff'), output: join(root, 'out/1.txt') });
     await assert.rejects(store.recordArtifacts('1', { diff: '../elsewhere.diff' }), PathEscapeError);
-    assert.equal((await store.load('1')).artifacts.diff, 'out/1.diff');
+    assert.equal((await store.load('1')).artifacts.diff, join(root, 'out/1.diff'));
   } finally { await cleanup(); }
 });
 
@@ -134,7 +135,7 @@ test('concurrent heartbeat and recordArtifacts never lose an artifact (updates f
         store.recordArtifacts(id, { output: `out/${round}.txt` }),
         store.heartbeat(id, 'a'),
       ]);
-      assert.deepEqual((await store.load(id)).artifacts, { worktree: `wt/${round}`, diff: `out/${round}.diff`, output: `out/${round}.txt` }, `round ${round}`);
+      assert.deepEqual((await store.load(id)).artifacts, { worktree: join(root, `wt/${round}`), diff: join(root, `out/${round}.diff`), output: join(root, `out/${round}.txt`) }, `round ${round}`);
     }
   } finally { await cleanup(); }
 });

@@ -7,7 +7,8 @@ import { parseArgs } from 'node:util';
 import { PathEscapeError } from './lib/paths.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { readQueue, isTerminal } from './lib/queue.mjs';
-import { createStateStore, PHASES } from './lib/state.mjs';
+import { randomUUID } from 'node:crypto';
+import { createStateStore, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
@@ -52,35 +53,49 @@ export function exitCodeFor(result) {
  * and the interrupted one with `status:'lock_lost'`; it is empty when the lock was lost while the queue was read). The CLI exits 0 for `ok`, 75 (`EXIT_LOCKED`) for
  * `locked` and 76 (`EXIT_LOCK_LOST`) for `lock_lost`, see `exitCodeFor()`.
  *
+ * Hardening: a handler result that is not a plain object (undefined, null, ...) is a failure; success is a numeric
+ * `exitCode === 0` with no `signal` (see classify). `phaseTimeoutMs` (default 1 h) aborts a handler that does not settle
+ * (its `signal` fires and the step is classified as a timeout for its stage); `queueTimeoutMs` (default 10 min) rejects
+ * `runQueue` with `code: 'RT_QUEUE_TIMEOUT'` for a queue provider that does not settle (both release the lock;
+ * `Infinity` disables). State writes are fenced by the lock epoch (`StaleEpochError` -> `lock_lost`). A corrupt state
+ * file ends that issue as `{status:'failed', reason:'corrupt_state', decision:'ask'}` and the file is left untouched; the pass
+ * continues. The default `owner` is unique per call. One work root per queue: the lock is per work root.
+ *
  * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE`. `--handler` is trusted operator code,
  * deliberately outside work-root confinement (only paths under the work root are confined).
  *
  * @returns {Promise<{status:'locked', holder:object} | {status:'lock_lost', outcomes:object[], skipped:object[]} | {status:'ok', outcomes:object[], skipped:object[]}>}
  */
 export async function runQueue({
-  workRoot, queue, handler, now = Date.now, owner = `rtd-${process.pid}`,
+  workRoot, queue, handler, now = Date.now, owner = `rtd-${process.pid}-${randomUUID()}`,
   leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000, lockTtlMs = 5 * 60_000, lockRenewMinMs = 1000,
   maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
+  phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
   }
+  for (const [name, value] of [['phaseTimeoutMs', phaseTimeoutMs], ['queueTimeoutMs', queueTimeoutMs]]) {
+    if (!(typeof value === 'number' && value > 0)) throw new TypeError(`${name} must be a positive number (Infinity disables it)`);
+  }
   if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
-  const lock = await acquireLock({ lockPath: await store.confinement.resolve('rtd.lock'), owner, now, ttlMs: lockTtlMs });
+  const lock = await acquireLock({ lockPath: await store.confinement.resolve('rtd.lock.d'), owner, now, ttlMs: lockTtlMs });
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
+  store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
 
   // Lock-loss state is shared by the whole pass: queue reading, every wake and every handler.
   let lockLost = false;
   const abort = new AbortController();
+  const markLost = () => { lockLost = true; abort.abort(new Error('single-flight lock lost')); };
   const refreshLock = async () => {
     if (!lockLost) {
       let ok = false;
       try { ok = await lock.refresh(); } catch { /* an unusable lock counts as lost */ }
-      if (!ok) { lockLost = true; abort.abort(new Error('single-flight lock lost')); }
+      if (!ok) markLost();
     }
     return !lockLost;
   };
@@ -99,7 +114,13 @@ export async function runQueue({
     let read;
     const stopRenewal = startRenewal();
     try {
-      read = await readQueue(queue, { confinement: store.confinement });
+      const queueAbort = new AbortController();
+      const guard = withTimeout(queueTimeoutMs, () => queueAbort.abort(new Error('queue provider timed out')));
+      try {
+        read = await Promise.race([readQueue(queue, { confinement: store.confinement, signal: queueAbort.signal }), guard.timeout.then(() => {
+          throw Object.assign(new Error(`queue provider did not settle within ${queueTimeoutMs} ms`), { code: 'RT_QUEUE_TIMEOUT' });
+        })]);
+      } finally { guard.clear(); }
     } finally {
       await stopRenewal();
     }
@@ -108,13 +129,31 @@ export async function runQueue({
     if (lockLost || !(await refreshLock())) return { status: 'lock_lost', outcomes: [], skipped };
     const outcomes = [];
     for (const item of items) {
-      const outcome = await wake(item);
+      const outcome = await wakeGuarded(item);
       outcomes.push(outcome);
       if (outcome.status === 'lock_lost') return { status: 'lock_lost', outcomes, skipped };
     }
     return { status: 'ok', outcomes, skipped };
   } finally {
-    await lock.release();
+    // release() reports false (never throws on a lost lock) when the epoch file is no longer ours; the
+    // lease then simply expires. A failing release must not mask the pass result.
+    await lock.release().catch(() => false);
+  }
+
+  // One issue with a corrupt state file must not abort the pass (R5): its outcome is `failed` / `corrupt_state`
+  // and the file is left byte for byte. A write refused by the epoch fence means a successor owns the state:
+  // that is a lost lock.
+  async function wakeGuarded(item) {
+    try {
+      return await wake(item);
+    } catch (err) {
+      if (err instanceof StaleEpochError) {
+        markLost();
+        return { id: item.id, status: 'lock_lost', reason: 'lock_lost', decision: 'wait' };
+      }
+      if (err instanceof CorruptStateError) return { id: item.id, status: 'failed', reason: 'corrupt_state', decision: 'ask', detail: err.message };
+      throw err; // other failures (e.g. a write error such as ENOSPC) still abort the pass: the lock is released
+    }
   }
 
   async function wake(item) {
@@ -167,14 +206,26 @@ export async function runQueue({
         const stopRenewal = startRenewal();
 
         let step;
+        const phaseAbort = new AbortController();
+        const signal = AbortSignal.any([abort.signal, phaseAbort.signal]);
+        const guard = withTimeout(phaseTimeoutMs, () => phaseAbort.abort(new Error('phase timed out')));
         try {
-          step = { ...(await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal: abort.signal })) };
+          const running = Promise.resolve().then(() => handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal }));
+          running.catch(() => {}); // a handler that settles after its timeout must not become an unhandled rejection
+          const returned = await Promise.race([running, guard.timeout.then(() => TIMED_OUT)]);
+          step = returned === TIMED_OUT
+            ? { exitCode: null, timedOut: true, output: `handler did not settle within ${phaseTimeoutMs} ms` }
+            // Anything but a plain object (undefined, null, a primitive, an array) is a failed result, never success.
+            : returned !== null && typeof returned === 'object' && !Array.isArray(returned)
+              ? { ...returned }
+              : { exitCode: null, output: 'handler returned no result' };
         } catch (err) {
           // A path escape from the handler's own recordArtifacts() is a scope problem, not a developer failure.
           step = err instanceof PathEscapeError
             ? { scopeMismatch: true, output: `handler error: ${err.message}` }
             : { exitCode: 1, output: `handler error: ${err?.message ?? err}` };
         } finally {
+          guard.clear();
           await stopRenewal();
         }
         if (lockLost || !(await refreshLock())) return lost();
@@ -213,9 +264,22 @@ export async function runQueue({
       }
     } finally {
       // After a lost lock another process owns the state: write nothing. Our lease simply expires.
-      if (!lockLost) await store.releaseLease(id, owner);
+      if (!lockLost) await store.releaseLease(id, owner).catch((err) => { if (err instanceof StaleEpochError) markLost(); });
     }
   }
+}
+
+const TIMED_OUT = Symbol('timed out');
+
+/** `timeout` resolves after `ms` (never when `ms` is Infinity); `clear()` cancels the timer. Runs `onTimeout` when it fires. */
+function withTimeout(ms, onTimeout) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    if (ms === Infinity) return;
+    timer = setTimeout(() => { onTimeout(); resolve(); }, Math.min(ms, 2 ** 31 - 1));
+    timer.unref();
+  });
+  return { timeout, clear: () => clearTimeout(timer) };
 }
 
 async function main(argv) {

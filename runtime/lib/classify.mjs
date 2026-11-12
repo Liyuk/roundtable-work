@@ -25,12 +25,17 @@ function result(cls, decision, extra = {}) {
   return { class: cls, decision, consumesDeveloperRetry, preserveArtifacts: true, ...extra };
 }
 
-const failed = (e) => e.timedOut === true || (e.exitCode ?? 0) !== 0;
+// Success is a numeric exit code 0 and no terminating signal. A missing or null exit code (a signal-killed child, an
+// empty handler result) is never success, and any truthy `timedOut` is a timeout (C1, C2).
+const timedOut = (e) => Boolean(e.timedOut);
+const succeeded = (e) => typeof e.exitCode === 'number' && e.exitCode === 0 && !e.signal && !timedOut(e);
+const failed = (e) => !succeeded(e);
+const failReason = (e) => (timedOut(e) ? 'timeout' : e.signal ? 'signal' : 'nonzero_exit');
 const empty = (e) => typeof e.output !== 'string' || e.output.trim() === '';
 
 /**
  * Classify one step outcome.
- * @param {{stage:'developer'|'test'|'reviewer'|'finalize', exitCode?:number, timedOut?:boolean,
+ * @param {{stage:'developer'|'test'|'reviewer'|'finalize', exitCode?:number|null, signal?:string|null, timedOut?:boolean,
  *   output?:string, scopeMismatch?:boolean, humanBlock?:boolean}} event
  */
 export function classify(event) {
@@ -40,19 +45,18 @@ export function classify(event) {
 
   switch (event.stage) {
     case 'developer':
-      if (failed(event)) return result('developer_failure', 'continue', { reason: event.timedOut ? 'timeout' : 'nonzero_exit' });
+      if (failed(event)) return result('developer_failure', 'continue', { reason: failReason(event) });
       if (empty(event)) return result('developer_failure', 'continue', { reason: 'empty_output' });
       return result('ok', 'continue');
     case 'test':
-      if (failed(event)) return result('test_failure', 'continue', { reason: event.timedOut ? 'timeout' : 'nonzero_exit' });
+      if (failed(event)) return result('test_failure', 'continue', { reason: failReason(event) });
       return result('ok', 'continue');
     case 'finalize':
       // Finalizing may have had external side effects, so a failure is never retried from development.
-      if (failed(event)) return result('finalize_failure', 'ask', { reason: event.timedOut ? 'timeout' : 'nonzero_exit' });
+      if (failed(event)) return result('finalize_failure', 'ask', { reason: failReason(event) });
       return result('ok', 'done');
     case 'reviewer': {
-      if (event.timedOut) return result('reviewer_unavailable', 'wait', { reason: 'timeout' });
-      if ((event.exitCode ?? 0) !== 0) return result('reviewer_unavailable', 'wait', { reason: 'nonzero_exit' });
+      if (failed(event)) return result('reviewer_unavailable', 'wait', { reason: failReason(event) });
       if (empty(event)) return result('reviewer_unavailable', 'wait', { reason: 'empty_output' });
       const firstLine = event.output.split(/\r?\n/).find((l) => l.trim() !== '') ?? '';
       const match = VERDICT_LINE.exec(firstLine.trim());

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +12,11 @@ import { acquireLock } from '../../runtime/lib/lock.mjs';
 
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-renewal-'));
+// Lock files live in `rtd.lock.d/epoch-<n>`: a successor process writes the next epoch; the holder is the highest one.
+const lockDirOf = (root) => join(root, 'rtd.lock.d');
+const epochsIn = (root) => readdirSync(lockDirOf(root)).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
+const plantEpoch = (root, rec) => writeFileSync(join(lockDirOf(root), `epoch-${Math.max(0, ...epochsIn(root)) + 1}`), JSON.stringify(rec));
+const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch-${Math.max(...epochsIn(root))}`), 'utf8'));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PASS = '审查结论：通过\nok';
 
@@ -21,7 +27,7 @@ const RENEW = { lockTtlMs: TTL, lockRenewMinMs: 20 };
 test('a quiet handler (no heartbeat) longer than 2x the lock TTL keeps the lock: a second acquireLock and runQueue are refused', async () => {
   const root = await tmp();
   try {
-    const lockPath = join(root, 'rtd.lock');
+    const lockPath = lockDirOf(root);
     const attempts = [];
     const phases = [];
     let secondRuns = 0;
@@ -52,14 +58,14 @@ test('a quiet handler (no heartbeat) longer than 2x the lock TTL keeps the lock:
 test('lock lost during a quiet handler: the signal aborts, the wake ends lock_lost, nothing is recorded or checkpointed', async () => {
   const root = await tmp();
   try {
-        const lockPath = join(root, 'rtd.lock');
     const phases = [];
     let signalAborted = false;
+    let planted = false;
     let lateRecord = 'not attempted';
     const handler = async ({ item, phase, signal, recordArtifacts }) => {
       phases.push(`${item.id}:${phase}`);
-      // Another process takes the lock over (replaces the file), while this handler stays quiet.
-      await writeFile(lockPath, JSON.stringify({ owner: 'thief', pid: process.pid, token: 'thief-token', acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 }));
+      // Another process takes the lock over (writes a higher epoch file), while this handler stays quiet.
+      if (!planted) { planted = true; plantEpoch(root, { owner: 'thief', pid: process.pid, token: 'thief-token', acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 }); }
       await new Promise((resolve) => {
         if (signal.aborted) return resolve();
         signal.addEventListener('abort', resolve, { once: true });
@@ -75,13 +81,13 @@ test('lock lost during a quiet handler: the signal aborts, the wake ends lock_lo
     assert.equal(result.status, 'lock_lost');
     assert.deepEqual(phases, ['5:developing'], 'no further phase or issue runs');
     assert.deepEqual([result.outcomes[0].status, result.outcomes[0].decision], ['lock_lost', 'wait']);
-    assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, 'thief-token', 'the other lock is untouched');
+    assert.equal(topHolder(root).token, 'thief-token', 'the other lock is untouched');
     const store = await createStateStore({ workRoot: root });
     const state = await store.load('5');
     assert.equal(state.checkpoint, null);
     assert.equal(state.artifacts.output, undefined);
     // Old behaviour (lease released after the loss) was dropped on purpose: after a lost lock nothing is written.
-    assert.equal(state.lease?.owner, `rtd-${process.pid}`, 'the lease is left as it was and expires on its own');
+    assert.ok(state.lease?.owner.startsWith(`rtd-${process.pid}-`), 'the lease is left as it was and expires on its own');
     assert.equal((await store.load('6')).attempts.wakes, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -100,11 +106,14 @@ test('the CLI process exits 76 on lock_lost, 75 on locked and 0 on ok', { timeou
   try {
     await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '1' }]));
     await writeFile(join(root, 'handler.mjs'), `
-import { writeFileSync } from 'node:fs';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 export default async function ({ phase }) {
   if (process.env.RT_TEST_MODE === 'steal') {
-    writeFileSync(join(process.env.RT_TEST_ROOT, 'rtd.lock'), JSON.stringify({ owner: 'thief', pid: process.pid, token: 't', acquiredAt: Date.now(), expiresAt: Date.now() + 60000 }));
+    // A successor takes the lock over: it writes the next epoch file.
+    const dir = join(process.env.RT_TEST_ROOT, 'rtd.lock.d');
+    const next = Math.max(0, ...readdirSync(dir).map((n) => /^epoch-(\\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number)) + 1;
+    writeFileSync(join(dir, 'epoch-' + next), JSON.stringify({ owner: 'thief', pid: process.pid, token: 't', acquiredAt: Date.now(), expiresAt: Date.now() + 60000 }));
   }
   return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' };
 }
@@ -119,8 +128,8 @@ export default async function ({ phase }) {
     const lost = await cli('steal');
     assert.equal(lost.code, EXIT_LOCK_LOST);
     assert.equal(JSON.parse(lost.out).status, 'lock_lost');
-    await rm(join(root, 'rtd.lock'), { force: true });
-    const held = await acquireLock({ lockPath: join(root, 'rtd.lock'), owner: 'someone' });
+    await rm(lockDirOf(root), { recursive: true, force: true });
+    const held = await acquireLock({ lockPath: lockDirOf(root), owner: 'someone' });
     assert.equal(held.acquired, true);
     const locked = await cli('plain');
     assert.equal(locked.code, EXIT_LOCKED);
@@ -151,7 +160,7 @@ test('bad lock timing is rejected up front with a TypeError; valid and default t
       await assert.rejects(runQueue({ workRoot: root, queue: ['1'], handler, ...opts }), TypeError, JSON.stringify(opts));
     }
     // Rejected before anything ran: no lock file, no state.
-    await assert.rejects(readFile(join(root, 'rtd.lock')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(root, 'rtd.lock.d', 'epoch-1')), { code: 'ENOENT' });
     await assert.rejects(readFile(join(root, 'state', '1.json')), { code: 'ENOENT' });
     // Exactly half a lease, and the defaults, are valid.
     assert.equal((await runQueue({ workRoot: root, queue: ['1'], handler, lockTtlMs: 1000, lockRenewMinMs: 500 })).status, 'ok');
@@ -162,12 +171,11 @@ test('bad lock timing is rejected up front with a TypeError; valid and default t
 test('after a lost lock the successor\'s lease, checkpoint, artifacts and state file are not written to', async () => {
   const root = await tmp();
   try {
-    const lockPath = join(root, 'rtd.lock');
     const store = await createStateStore({ workRoot: root });
     let before;
     const handler = async ({ signal }) => {
       // The successor takes the lock and the issue state while this handler is still running.
-      await writeFile(lockPath, JSON.stringify({ owner: 'successor', pid: process.pid, token: 'succ', acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 }));
+      plantEpoch(root, { owner: 'successor', pid: process.pid, token: 'succ', acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 });
       await store.update('7', (s) => {
         s.lease = { owner: 'rtd-successor', expiresAt: Date.now() + 60_000 };
         s.checkpoint = { phase: 'testing', at: 1 };

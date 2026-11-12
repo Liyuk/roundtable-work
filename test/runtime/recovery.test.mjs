@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fsp from 'node:fs/promises';
@@ -10,12 +10,17 @@ import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
-import { acquireLock } from '../../runtime/lib/lock.mjs';
+import { acquireLock, hostId } from '../../runtime/lib/lock.mjs';
 
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-recovery-'));
 const exists = (p) => access(p).then(() => true, () => false);
 const PASS = '审查结论：通过\nok';
+// Lock files live in `rtd.lock.d/epoch-<n>`: a successor process writes the next epoch; the holder is the highest one.
+const lockDirOf = (root) => join(root, 'rtd.lock.d');
+const epochsIn = (root) => readdirSync(lockDirOf(root)).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
+const plantEpoch = (root, rec) => writeFileSync(join(lockDirOf(root), `epoch-${Math.max(0, ...epochsIn(root)) + 1}`), JSON.stringify(rec));
+const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch-${Math.max(...epochsIn(root))}`), 'utf8'));
 
 // Fixture files standing in for a worktree, a diff and model output.
 async function writeFixtures(root, id) {
@@ -27,6 +32,8 @@ async function writeFixtures(root, id) {
   await writeFile(join(root, files.output), 'model output');
   return files;
 }
+// Recorded artifact paths are the confined absolute paths (threat S6).
+const absFiles = (root, files) => Object.fromEntries(Object.entries(files).map(([k, v]) => [k, join(root, v)]));
 async function assertFixturesIntact(root, files) {
   assert.equal(await readFile(join(root, files.worktree), 'utf8'), 'work in progress');
   assert.equal(await readFile(join(root, files.diff), 'utf8'), '+ change');
@@ -96,22 +103,22 @@ test('single-flight: a second real process cannot run the same queue while the f
     const result = await firstDone;
     assert.equal(result.code, 0);
     assert.equal(JSON.parse(result.out).outcomes[0].status, 'done');
-    assert.equal(await exists(join(root, 'rtd.lock')), false, 'lock is released on exit');
+    assert.equal(topHolder(root).released, true, 'lock is released on exit');
   } finally { await cleanup(); }
 });
 
 test('single-flight: a locked run reports the holder, runs nothing and leaves the holder\'s lock in place', { timeout: 20000 }, async () => {
   const root = await tmp();
   try {
-    const holder = await acquireLock({ lockPath: join(root, 'rtd.lock'), owner: 'other' });
+    const holder = await acquireLock({ lockPath: lockDirOf(root), owner: 'other' });
     assert.equal(holder.acquired, true);
     let calls = 0;
     const result = await runQueue({ workRoot: root, queue: ['1'], handler: async () => { calls++; return {}; } });
     assert.equal(result.status, 'locked');
     assert.equal(result.holder.owner, 'other');
     assert.equal(calls, 0);
-    assert.equal(await exists(join(root, 'rtd.lock')), true, 'a run that never got the lock must not release it');
-    assert.equal((await readFile(join(root, 'rtd.lock'), 'utf8')).includes(holder.token), true);
+    assert.equal(topHolder(root).released, undefined, 'a run that never got the lock must not release it');
+    assert.equal(topHolder(root).token, holder.token);
     await holder.release();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -121,7 +128,8 @@ test('single-flight: a lock whose process died is stale and is taken over', { ti
   try {
     const dead = spawnSync(process.execPath, ['-e', '']);
     assert.equal(dead.status, 0);
-    await writeFile(join(root, 'rtd.lock'), JSON.stringify({ owner: 'old', pid: dead.pid, token: 'x', acquiredAt: Date.now(), expiresAt: Date.now() + 3_600_000 }));
+    mkdirSync(lockDirOf(root));
+    plantEpoch(root, { owner: 'old', pid: dead.pid, hostId: hostId(), token: 'x', epoch: 1, acquiredAt: Date.now(), expiresAt: Date.now() + 3_600_000 });
     const result = await runQueue({ workRoot: root, queue: ['1'], handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }) });
     assert.equal(result.status, 'ok');
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -131,7 +139,7 @@ test('single-flight: a live holder with an expired lock lease is stale; with a f
   const root = await tmp();
   try {
     const clock = { t: 10_000 };
-    const lockPath = join(root, 'rtd.lock');
+    const lockPath = lockDirOf(root);
     const a = await acquireLock({ lockPath, owner: 'a', now: () => clock.t, ttlMs: 1000 });
     assert.equal(a.acquired, true);
     assert.equal((await acquireLock({ lockPath, owner: 'b', now: () => clock.t, ttlMs: 1000 })).acquired, false);
@@ -139,10 +147,11 @@ test('single-flight: a live holder with an expired lock lease is stale; with a f
     const b = await acquireLock({ lockPath, owner: 'b', now: () => clock.t, ttlMs: 1000 });
     assert.equal(b.acquired, true);
     assert.equal(await a.refresh(), false, 'the displaced owner can no longer refresh');
-    await a.release(); // must not remove b's lock
-    assert.equal(await exists(lockPath), true);
-    await b.release();
-    assert.equal(await exists(lockPath), false);
+    assert.equal(await a.release(), true); // only rewrites a's own, superseded epoch file
+    assert.equal(topHolder(root).token, b.token, "b's lock is untouched");
+    assert.equal(topHolder(root).released, undefined);
+    assert.equal(await b.release(), true);
+    assert.equal(topHolder(root).released, true);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -157,7 +166,7 @@ test('crash mid-issue: restart resumes from the checkpoint and keeps artifacts',
     assert.equal(mid.status, 'working');
     assert.equal(mid.phase, 'testing');
     assert.equal(mid.checkpoint.phase, 'developing');
-    assert.equal(mid.artifacts.output, 'out/49.txt');
+    assert.equal(mid.artifacts.output, join(root, 'out/49.txt'));
     assert.equal(mid.changedFiles, 2);
     await assertFixturesIntact(root, files);
 
@@ -172,7 +181,7 @@ test('crash mid-issue: restart resumes from the checkpoint and keeps artifacts',
     assert.equal(end.recovery.interruptedPhase, 'testing');
     assert.equal(end.recovery.resumePhase, 'testing');
     assert.equal(end.recovery.lastCheckpoint, 'developing');
-    assert.equal(end.recovery.artifacts.output, 'out/49.txt');
+    assert.equal(end.recovery.artifacts.output, join(root, 'out/49.txt'));
     await assertFixturesIntact(root, files);
   } finally { await cleanup(); }
 });
@@ -191,7 +200,7 @@ test('recovery without any checkpoint restarts at developing and still keeps rec
     assert.equal(rec.action, 'resume');
     assert.equal(rec.resumePhase, 'developing');
     assert.equal(rec.state.lease, null);
-    assert.deepEqual(rec.state.artifacts, files);
+    assert.deepEqual(rec.state.artifacts, absFiles(root, files));
     await assertFixturesIntact(root, files);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -328,7 +337,7 @@ for (const useHeartbeat of [true, false]) {
     try {
       const files = await writeFixtures(root, '9');
       const clock = { t: 1_000_000 };
-      const lockPath = join(root, 'rtd.lock');
+      const lockPath = lockDirOf(root);
       const phases = [];
       let thief;
       const handler = async ({ item, phase, heartbeat, recordArtifacts }) => {
@@ -347,13 +356,13 @@ for (const useHeartbeat of [true, false]) {
       assert.equal(result.outcomes.length, 1);
       assert.deepEqual([result.outcomes[0].id, result.outcomes[0].status, result.outcomes[0].decision], ['9', 'lock_lost', 'wait']);
 
-      assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, thief.token, 'the other process\'s lock is untouched');
+      assert.equal(topHolder(root).token, thief.token, 'the other process\'s lock is untouched');
       const store = await createStateStore({ workRoot: root, now: () => clock.t });
       const state = await store.load('9');
       assert.equal(state.checkpoint, null, 'the interrupted phase is not checkpointed');
       // Old behaviour (lease released after the loss) was dropped on purpose: after a lost lock nothing is written.
-      assert.equal(state.lease?.owner, `rtd-${process.pid}`, 'the lease is left as it was and expires on its own');
-      assert.equal(state.artifacts.worktree, files.worktree);
+      assert.ok(state.lease?.owner.startsWith(`rtd-${process.pid}-`), 'the lease is left as it was and expires on its own');
+      assert.equal(state.artifacts.worktree, join(root, files.worktree));
       await assertFixturesIntact(root, files);
       assert.equal((await store.load('10')).attempts.wakes, 0, 'the next issue was never woken');
       await thief.release();
@@ -429,7 +438,7 @@ test('a path escape thrown by the handler\'s own recordArtifacts() is a scope mi
         assert.equal(calls, 1, `${name}: handler not rerun`);
         const s = await (await createStateStore({ workRoot: root })).load(id);
         assert.equal(s.attempts.developer, 0, `${name}: no developer retry spent`);
-        assert.equal(s.artifacts.output, files.output, `${name}: artifacts recorded before the escape are kept`);
+        assert.equal(s.artifacts.output, join(root, files.output), `${name}: artifacts recorded before the escape are kept`);
         assert.equal(s.artifacts.diff, undefined);
       }
       await assertFixturesIntact(root, files);
@@ -461,7 +470,7 @@ for (const [name, failure] of [['failure', { exitCode: 1, output: 'push failed' 
       assert.equal(s.recovery.resumePhase, 'finalizing');
       assert.equal(s.recovery.interruptedPhase, 'finalizing');
       assert.equal(s.recovery.lastCheckpoint, 'reviewing');
-      assert.deepEqual(s.recovery.artifacts, files);
+      assert.deepEqual(s.recovery.artifacts, absFiles(root, files));
       assert.equal(s.lease, null);
       await assertFixturesIntact(root, files);
       // A later pass does not pick it up on its own.
@@ -478,7 +487,7 @@ for (const [name, failure] of [['failure', { exitCode: 1, output: 'push failed' 
 const QTTL = 600;
 const QRENEW = { lockTtlMs: QTTL, lockRenewMinMs: 20 };
 const qsleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const stealLock = (root, token) => writeFileSync(join(root, 'rtd.lock'), JSON.stringify({ owner: 'successor', pid: process.pid, token, acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 }));
+const stealLock = (root, token) => plantEpoch(root, { owner: 'successor', pid: process.pid, hostId: hostId(), token, acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 });
 async function snapshotState(root) {
   const dir = join(root, 'state');
   const names = await readdir(dir).catch((err) => { if (err.code === 'ENOENT') return []; throw err; });
@@ -534,7 +543,7 @@ test('lock lost while the queue provider runs: lock_lost, no wake, handler never
     assert.equal(calls, 0, 'the handler was never called');
     assert.deepEqual(Object.keys(before), ['8.json']);
     assert.deepEqual(await snapshotState(root), before, 'no state file was created or changed, byte for byte');
-    assert.equal(JSON.parse(await readFile(join(root, 'rtd.lock'), 'utf8')).token, 'succ-1', 'the successor\'s lock is untouched');
+    assert.equal(topHolder(root).token, 'succ-1', 'the successor\'s lock is untouched');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

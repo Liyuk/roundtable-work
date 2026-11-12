@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import fsPromises from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createConfinement, assertSafeId } from './paths.mjs';
@@ -14,6 +14,51 @@ const CHAINS = new Map();
 
 const ARTIFACT_KEYS = ['worktree', 'diff', 'output'];
 
+/** The state file cannot be trusted (unparsable, empty, wrong shape). The file is left untouched. */
+export class CorruptStateError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CorruptStateError';
+    this.code = 'RT_CORRUPT_STATE';
+  }
+}
+
+/** A write from a lock epoch lower than the one stamped in the state (a successor owns it now): refused. */
+export class StaleEpochError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StaleEpochError';
+    this.code = 'RT_STALE_EPOCH';
+  }
+}
+
+const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isCount = (v) => Number.isSafeInteger(v) && v >= 0;
+
+/**
+ * Validate and normalise a parsed state file. Missing fields take their defaults; present fields of the wrong
+ * type are rejected (`CorruptStateError`) rather than coerced, so a budget counter can never turn into NaN and
+ * silently bypass a limit. The id always comes from the file name, never from the file content.
+ */
+function normalizeState(id, raw) {
+  if (!isPlainObject(raw)) throw new CorruptStateError(`State for ${id} is not an object`);
+  const fresh = freshState(id);
+  const state = { ...fresh, ...raw, id };
+  if (typeof state.status !== 'string') throw new CorruptStateError(`State for ${id} has a non-string status`);
+  if (!isPlainObject(state.attempts)) throw new CorruptStateError(`State for ${id} has malformed attempts`);
+  state.attempts = { ...fresh.attempts, ...state.attempts };
+  for (const [key, value] of Object.entries(state.attempts)) {
+    if (!isCount(value)) throw new CorruptStateError(`State for ${id} has an invalid attempts.${key}`);
+  }
+  if (!isPlainObject(state.artifacts)) throw new CorruptStateError(`State for ${id} has malformed artifacts`);
+  if (!Array.isArray(state.artifactHistory)) throw new CorruptStateError(`State for ${id} has a malformed artifact history`);
+  if (state.checkpoint !== null && !(isPlainObject(state.checkpoint) && PHASES.includes(state.checkpoint.phase))) throw new CorruptStateError(`State for ${id} has a malformed checkpoint`);
+  if (state.lease !== null && !(isPlainObject(state.lease) && typeof state.lease.owner === 'string' && Number.isFinite(state.lease.expiresAt))) throw new CorruptStateError(`State for ${id} has a malformed lease`);
+  if (state.heartbeatAt !== null && !Number.isFinite(state.heartbeatAt)) throw new CorruptStateError(`State for ${id} has an invalid heartbeatAt`);
+  if (!isCount(state.lockEpoch)) throw new CorruptStateError(`State for ${id} has an invalid lockEpoch`);
+  return state;
+}
+
 export const freshState = (id) => ({
   id,
   version: 1,
@@ -26,37 +71,75 @@ export const freshState = (id) => ({
   lastEvent: null,
   changedFiles: 0,
   artifacts: {},
+  artifactHistory: [],
+  lockEpoch: 0,
   recovery: null,
 });
 
 /**
- * Durable per-issue state under `<workRoot>/state/<id>.json`. All paths go through the confinement,
- * writes are atomic (temp file + rename). Artifact paths are only ever recorded, never deleted.
+ * Durable per-issue state under `<workRoot>/state/<id>.json`. All paths go through the confinement.
+ * Writes are durable and atomic: exclusive (`wx`) random temp file, fsync(file), rename, fsync(directory).
+ * Artifact paths are only ever recorded, never deleted; every recorded path is kept in the append-only
+ * `artifactHistory` (the `artifacts` map only points at the latest path per key).
+ *
+ * Fencing: `setEpoch(n)` (the single-flight lock's `handle.epoch`) makes every write stamp `lockEpoch: n`
+ * into the state and refuse (`StaleEpochError`) a write when the state already carries a higher epoch, so a
+ * paused process that resumes after a takeover cannot write over its successor. Without `setEpoch` a store
+ * does not fence. Residual: a successor that has taken the lock but not yet written is only detected by the
+ * lock refresh that precedes each phase; an operator who deletes the lock directory resets epochs below the
+ * stamped ones and must clear `lockEpoch` too.
+ *
+ * `fs` (tests only) overrides `open`, `rename`, `unlink`, `mkdir`, `readFile`; `randomId` the temp-file suffix.
  */
-export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000 }) {
+export async function createStateStore({
+  workRoot, now = Date.now, leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000,
+  fs = fsPromises, randomId = randomUUID,
+}) {
   const confinement = await createConfinement(workRoot);
   const fileFor = (id) => confinement.resolve('state', `${assertSafeId(id)}.json`);
+  let epoch;
 
   async function load(id) {
-    try {
-      return { ...freshState(assertSafeId(id)), ...JSON.parse(await readFile(await fileFor(id), 'utf8')) };
-    } catch (err) {
-      if (err.code === 'ENOENT') return freshState(assertSafeId(id));
+    const safeId = assertSafeId(id);
+    let text;
+    try { text = await fs.readFile(await fileFor(safeId), 'utf8'); } catch (err) {
+      if (err.code === 'ENOENT') return freshState(safeId);
       throw err;
     }
+    let raw;
+    try { raw = JSON.parse(text); } catch (err) { throw new CorruptStateError(`State for ${safeId} is not valid JSON: ${err.message}`); }
+    return normalizeState(safeId, raw);
+  }
+
+  async function syncDir(dir) {
+    let dh;
+    try { dh = await fs.open(dir, 'r'); await dh.sync(); } catch (err) {
+      if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(err.code)) throw err; // some filesystems cannot fsync a directory
+    } finally { await dh?.close().catch(() => {}); }
   }
 
   async function save(state) {
-    const file = await fileFor(state.id);
-    await mkdir(dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    const file = await fileFor(assertSafeId(state.id));
+    const dir = dirname(file);
+    await fs.mkdir(dir, { recursive: true });
+    const body = `${JSON.stringify(state, null, 2)}\n`;
+    let tmp;
+    let fh;
+    for (let attempt = 0; ; attempt++) {
+      tmp = `${file}.${process.pid}.${randomId()}.tmp`;
+      try { fh = await fs.open(tmp, 'wx', 0o600); break; } catch (err) {
+        if (err.code === 'EEXIST' && attempt < 4) continue; // never reuse or follow a pre-existing name
+        throw err;
+      }
+    }
     try {
-      await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`);
-      await rename(tmp, file);
+      try { await fh.writeFile(body); await fh.sync(); } finally { await fh.close(); }
+      await fs.rename(tmp, file);
     } catch (err) {
-      await unlink(tmp).catch(() => {});
+      await fs.unlink(tmp).catch(() => {});
       throw err;
     }
+    await syncDir(dir);
     return state;
   }
 
@@ -67,16 +150,20 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
    * failing call (the callback throws) does not block the calls queued behind it. `fn` must not call
    * `update` for the same id itself (it would wait for its own turn forever). Nothing is written when
    * `fn` leaves the state unchanged, so a no-op (e.g. releasing a lease we do not own) never rewrites
-   * state that another process may have changed in the meantime.
+   * state that another process may have changed in the meantime. With an epoch set (`setEpoch`) the update
+   * is refused with `StaleEpochError` when the state carries a higher `lockEpoch`.
    */
   async function update(id, fn) {
     const key = await fileFor(id);
     const previous = CHAINS.get(key) ?? Promise.resolve();
     const run = previous.then(async () => {
       const state = await load(id);
+      if (epoch !== undefined && state.lockEpoch > epoch) throw new StaleEpochError(`State for ${id} belongs to lock epoch ${state.lockEpoch}, this writer holds ${epoch}`);
       const before = JSON.stringify(state);
       const next = (await fn(state)) ?? state;
-      return JSON.stringify(next) === before ? next : save(next);
+      if (JSON.stringify(next) === before) return next;
+      if (epoch !== undefined) next.lockEpoch = epoch;
+      return save(next);
     });
     const tail = run.then(() => {}, () => {});
     CHAINS.set(key, tail);
@@ -88,6 +175,11 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
 
   return {
     confinement,
+    /** Set the lock epoch used to fence writes (see the store docs). */
+    setEpoch(n) {
+      if (!isCount(n)) throw new TypeError('epoch must be a non-negative integer');
+      epoch = n;
+    },
     load,
     save,
     update,
@@ -108,11 +200,11 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
       event(s, 'checkpoint', phase);
     }),
 
-    /** Liveness signal from the lease owner. Does nothing when another owner holds the lease. */
+    /** Liveness signal from the lease owner. Does nothing when there is no lease or another owner holds it. */
     heartbeat: (id, owner) => update(id, (s) => {
-      if (s.lease && s.lease.owner !== owner) return;
+      if (!s.lease || s.lease.owner !== owner) return; // no lease, or somebody else's: a stray heartbeat writes nothing
       s.heartbeatAt = now();
-      if (s.lease) s.lease.expiresAt = now() + leaseTtlMs;
+      s.lease.expiresAt = now() + leaseTtlMs;
     }),
 
     setEvent: (id, type, detail) => update(id, (s) => event(s, type, detail)),
@@ -161,12 +253,27 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
     /** Release the lease only if it is ours; otherwise nothing is written. */
     releaseLease: (id, owner) => update(id, (s) => { if (s.lease?.owner === owner) s.lease = null; }),
 
-    /** Record artifact locations (worktree / diff / output). Paths must stay inside the work root. */
+    /**
+     * Record artifact locations (worktree / diff / output). Paths must stay inside the work root and are
+     * stored as the confined absolute path. Unknown keys are rejected (`TypeError`), never dropped. Each
+     * new path is appended to `artifactHistory` (never overwritten), so an earlier attempt's record survives.
+     */
     recordArtifacts: (id, artifacts) => update(id, async (s) => {
+      if (artifacts === undefined || artifacts === null) return;
+      if (!isPlainObject(artifacts)) throw new TypeError('artifacts must be an object');
+      const unknown = Object.keys(artifacts).filter((k) => !ARTIFACT_KEYS.includes(k));
+      if (unknown.length) throw new TypeError(`Unknown artifact keys: ${unknown.join(', ')}`);
+      const resolved = {};
       for (const key of ARTIFACT_KEYS) {
-        if (artifacts?.[key] === undefined) continue;
-        await confinement.resolve(artifacts[key]);
-        s.artifacts[key] = artifacts[key];
+        if (artifacts[key] === undefined) continue;
+        resolved[key] = await confinement.resolve(artifacts[key]);
+      }
+      for (const [key, path] of Object.entries(resolved)) {
+        const latest = [...s.artifactHistory].reverse().find((h) => h.key === key);
+        if (s.artifacts[key] !== path || latest?.path !== path) {
+          s.artifactHistory.push({ key, path, at: now(), attempt: s.attempts.developer });
+        }
+        s.artifacts[key] = path;
       }
     }),
 
@@ -183,28 +290,32 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
      * Returns `{ action: 'none' | 'held' | 'resume' | 'interrupted', ... }`.
      */
     async recover(id) {
-      const before = await load(id);
-      if (isTerminal(before.status) || before.status !== 'working') return { action: 'none', state: before };
-      const stale = this.staleness(before);
-      if (!stale.stale) return { action: 'held', owner: before.lease.owner, state: before };
-
-      const interruptedPhase = before.phase;
-      const lastDone = before.checkpoint?.phase ?? null;
-      const resumePhase = PHASES[PHASES.indexOf(lastDone) + 1] ?? PHASES[0];
+      // Everything is decided inside the serialised update, so a heartbeat that lands before it is seen.
+      let outcome = null;
       const state = await update(id, (s) => {
+        if (isTerminal(s.status) || s.status !== 'working') { outcome = { action: 'none' }; return; }
+        const stale = this.staleness(s);
+        if (!stale.stale) { outcome = { action: 'held', owner: s.lease.owner }; return; }
+        const interruptedPhase = s.phase;
+        const lastDone = s.checkpoint?.phase ?? null;
+        const resumePhase = PHASES[PHASES.indexOf(lastDone) + 1] ?? PHASES[0];
         s.lease = null;
         s.recovery = { at: now(), interruptedPhase, lastCheckpoint: lastDone, ...stale, artifacts: { ...s.artifacts } };
         if (NON_RESUMABLE_PHASES.includes(interruptedPhase)) {
           s.status = 'interrupted';
           s.recovery.resumePhase = interruptedPhase;
           event(s, 'interrupted', interruptedPhase);
+          outcome = { action: 'interrupted' };
         } else {
           s.status = 'queued';
           s.recovery.resumePhase = resumePhase;
           event(s, 'recovered', resumePhase);
+          outcome = { action: 'resume' };
         }
       });
-      return { action: state.status === 'interrupted' ? 'interrupted' : 'resume', resumePhase: state.recovery.resumePhase, state };
+      return outcome.action === 'resume' || outcome.action === 'interrupted'
+        ? { ...outcome, resumePhase: state.recovery.resumePhase, state }
+        : { ...outcome, state };
     },
   };
 }
