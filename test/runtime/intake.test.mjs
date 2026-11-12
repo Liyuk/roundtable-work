@@ -27,6 +27,21 @@ test('excludes series-prefixed epic titles without excluding ordinary series iss
   ];
   assert.deepEqual(select(entries).issues.map(i => i.number).sort((a, b) => a - b), [28, 29]);
 });
+test('excludes unprefixed epic titles from candidates and triage', () => {
+  const entries = [issue(1, ['type:feature'], { title: 'Epic: roadmap' }), issue(2, [], { title: 'epic: roadmap' }), issue(3, ['type:bug'], { title: 'Epicenter fix' })];
+  const result = select(entries);
+  assert.deepEqual(result.issues.map(i => i.number), [3]);
+  assert.deepEqual(result.triage, []);
+});
+test('Markdown-emphasized dependencies block selection until closed', async () => {
+  for (const body of ['**Depends on #42**', '- **Blocked by #42**', '**Depends on** #42']) {
+    let state = 'OPEN';
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(1, ['type:bug'], { body })], getIssue: async () => ({ state }) });
+    assert.deepEqual((await readQueue(provider)).items, [], body);
+    state = 'CLOSED';
+    assert.deepEqual((await readQueue(provider)).items.map(i => i.id), ['1'], body);
+  }
+});
 test('dependencies fail closed and become eligible when closed', async () => {
   let state = 'OPEN';
   const candidate = issue(1, ['type:bug'], { body: 'Depends on #2\nBlocked by #3' });

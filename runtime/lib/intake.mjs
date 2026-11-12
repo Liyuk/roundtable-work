@@ -4,7 +4,7 @@ const labelsOf = issue => (issue.labels ?? []).map(label => typeof label === 'st
 export function dependencies(body = '') {
   const found = new Set();
   for (const line of body.split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)?(?:depends on|blocked by)\s+(.+)$/i);
+    const match = line.match(/^\s*(?:(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)?(?:\*\*|__|\*|_)?(?:depends on|blocked by)(?:\*\*|__|\*|_)?\s+(.+)$/i);
     if (match) for (const number of match[1].matchAll(/#(\d+)/g)) found.add(Number(number[1]));
   }
   return [...found];
@@ -17,7 +17,7 @@ export function selectIssues({ issues, owner, dependencyStates = {} }) {
   for (const issue of issues) {
     if (issue.state?.toUpperCase() !== 'OPEN' || issue.author?.login?.toLowerCase() !== owner.toLowerCase()) continue;
     const labels = labelsOf(issue);
-    if (labels.some(label => excluded.has(label)) || /^\[owner\]/i.test(issue.title ?? '') || /^\[epic\]/i.test(issue.title ?? '') || /^\[[^\]]+\]\s*epic\s*:/i.test(issue.title ?? '') || labels.includes('type:epic')) continue;
+    if (labels.some(label => excluded.has(label)) || /^\[owner\]/i.test(issue.title ?? '') || /^\[epic\]/i.test(issue.title ?? '') || /^(?:\[[^\]]+\]\s*)?epic\s*:/i.test(issue.title ?? '') || labels.includes('type:epic')) continue;
     if (labels.includes('rt:proposed') && !labels.includes('rt:approved')) continue;
     if (!labels.length) { triage.push(issue); continue; }
     if (!labels.includes('type:bug') && !labels.includes('type:feature')) continue;
