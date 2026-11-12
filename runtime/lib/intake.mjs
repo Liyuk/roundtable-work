@@ -4,7 +4,7 @@ const labelsOf = issue => (issue.labels ?? []).map(label => typeof label === 'st
 export function dependencies(body = '') {
   const found = new Set();
   for (const line of body.split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:depends on|blocked by)\s+(.+)$/i);
+    const match = line.match(/^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:depends on|blocked by)\s+(.+)$/i);
     if (match) for (const number of match[1].matchAll(/#(\d+)/g)) found.add(Number(number[1]));
   }
   return [...found];

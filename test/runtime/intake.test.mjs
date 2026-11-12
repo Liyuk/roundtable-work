@@ -36,6 +36,22 @@ test('dependencies fail closed and become eligible when closed', async () => {
   assert.deepEqual((await readQueue(provider)).items.map(i => i.id), ['1']);
   for (const states of [{}, { 2: 'OPEN', 3: 'CLOSED' }, { 2: 'UNKNOWN', 3: 'CLOSED' }]) assert.equal(select([candidate], states).issues.length, 0);
 });
+test('listed dependencies block selection until closed', async () => {
+  for (const marker of ['- ', '* ', '+ ', '1. ', '2) ']) {
+    for (const phrase of ['Depends on', 'Blocked by']) {
+      const candidate = issue(1, ['type:bug'], { body: `  ${marker}${phrase} #42` });
+      let state = 'OPEN';
+      const provider = createIntakeProvider({
+        getOwner: async () => 'owner',
+        listIssues: async () => [candidate],
+        getIssue: async () => { if (state === 'MISSING') throw new Error('not found'); return { state }; },
+      });
+      for (state of ['OPEN', 'MISSING']) assert.deepEqual((await readQueue(provider)).items, [], `${marker}${phrase}: ${state}`);
+      state = 'CLOSED';
+      assert.deepEqual((await readQueue(provider)).items.map(item => item.id), ['1'], `${marker}${phrase}: CLOSED`);
+    }
+  }
+});
 test('orders by bug, priority, self, age and extracts series', () => {
   const result = select([issue(1), issue(2, ['type:feature', 'priority:p2']), issue(3, ['type:feature', 'priority:p1']), issue(4, ['type:feature', 'priority:p0']), issue(5, ['type:bug']), issue(6, ['type:bug', 'priority:p2']), issue(7, ['type:bug', 'priority:p2', 'rt:self']), issue(8, ['type:bug', 'priority:p2', 'rt:self'], { createdAt: '2020-01-01T00:00:00Z', title: '[Pages] build' })]);
   assert.deepEqual(result.issues.map(i => i.id), ['8','7','6','5','4','3','2','1']);
