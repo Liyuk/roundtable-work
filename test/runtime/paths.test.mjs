@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createConfinement, assertSafeId, PathEscapeError } from '../../runtime/lib/paths.mjs';
 
 async function setup() {
@@ -115,4 +116,23 @@ test('ids must be conservative file names', () => {
 test('the work root must be a non-empty string that exists', async () => {
   await assert.rejects(createConfinement(''), TypeError);
   await assert.rejects(createConfinement(join(tmpdir(), 'rt-does-not-exist-xyz')), { code: 'ENOENT' });
+});
+
+
+test('lock sources avoid platform-specific descriptor paths (issue #77 scope)', async () => {
+  // Narrowed to the files this issue rewrites: runtime/lib/lock.mjs and its regression test. They must be
+  // portable Node built-ins only (no platform-specific descriptor paths, no native addons).
+  // runtime/lib/paths.mjs predates issue #77 and keeps its opened-directory technique; the owner's decision
+  // for #77 is not to rewrite it, so it stays out of this scan (a full-tree scan would be a different task).
+  const forbidden = ['/proc', '/dev/fd'];
+  const files = [
+    fileURLToPath(new URL('../../runtime/lib/lock.mjs', import.meta.url)),
+    fileURLToPath(new URL('./lock.test.mjs', import.meta.url)),
+  ];
+  const hits = [];
+  for (const file of files) {
+    const text = await fs.readFile(file, 'utf8');
+    for (const needle of forbidden) if (text.includes(needle)) hits.push(`${file}: ${needle}`);
+  }
+  assert.deepEqual(hits, []);
 });

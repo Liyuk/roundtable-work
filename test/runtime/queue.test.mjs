@@ -1,12 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, symlink, rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readQueue, TERMINAL_STATES } from '../../runtime/lib/queue.mjs';
 import { createConfinement, PathEscapeError } from '../../runtime/lib/paths.mjs';
 import { runQueue } from '../../runtime/rtd.mjs';
 
+// Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-queue-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-queue-'));
 const okHandler = (calls = []) => async ({ item, phase }) => {
   calls.push(`${item.id}:${phase}`);

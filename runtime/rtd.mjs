@@ -106,9 +106,10 @@ export async function runQueue({
   if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
-  const lock = await acquireLock({ lockPath: await store.confinement.resolve('.roundtable/state/rtd.lock.d'), owner, now, ttlMs: lockTtlMs });
+  const lock = await acquireLock({ lockPath: await store.confinement.resolve('.roundtable/state/rtd.lock.d'), repoRoot: workRoot, owner, now, ttlMs: lockTtlMs });
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
+  store.setFence({ highWater: () => lock.anchorHighWater() }); // and by the anchor high-water mark, not the state file
 
   // Set when a timed-out handler did not settle within graceMs: lock and issue lease stay renewed until it settles.
   let abandonedHandler = false;
@@ -181,7 +182,7 @@ export async function runQueue({
       });
       const stopSchedulingRenewal = startRenewal();
       let scheduled;
-      try { scheduled = await runWorkers({ issues: items, workRoot, workers, worktreeManager: manager, now,
+      try { scheduled = await runWorkers({ issues: items, workRoot, repoRoot, workers, worktreeManager: manager, now,
         shouldStop: () => lockLost || abandonedHandler,
         prepare: async (item) => {
           if (lockLost || abandonedHandler || !(await refreshLock())) return false;

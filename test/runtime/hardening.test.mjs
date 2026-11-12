@@ -2,7 +2,7 @@
 // Test names start with the area, as listed in the threat table; the threat id is in the comment above each test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
+import { readdirSync, rmSync } from 'node:fs';
 import fsp, { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -13,10 +13,17 @@ import { createStateStore, StaleEpochError } from '../../runtime/lib/state.mjs';
 import { classify } from '../../runtime/lib/classify.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
 import { createConfinement } from '../../runtime/lib/paths.mjs';
+import { lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-hard-'));
+// Lock records live in the private anchor (RTW_STATE_DIR, inherited by spawned CLI processes), never in the
+// work root. `.roundtable/state/rtd.lock.d` is only the caller-side path whose last component names the lock.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-hard-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
+const lockDirOf = (root) => lockDirectoryFor({ lockPath: join(root, '.roundtable', 'state', 'rtd.lock.d'), repoRoot: root, anchorRoot: ANCHOR });
 const PASS = '审查结论：通过\nok';
 const okHandler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' });
 const stateFile = (root, id) => {
@@ -154,11 +161,12 @@ test('recovery: owner ids are unique per process start', withRoot(async (root) =
 }));
 
 // ---- R7: the lock is per work root ----
-test('lock: runtime lock is stored under .roundtable/state and ignored by git', withRoot(async (root) => {
+test('lock: runtime lock is stored in the private anchor, never in the work root, and the hint path stays ignored', withRoot(async (root) => {
   const result = await runQueue({ workRoot: root, queue: [], handler: okHandler });
   assert.equal(result.status, 'ok');
-  const lockDir = join(root, '.roundtable', 'state', 'rtd.lock.d');
+  const lockDir = lockDirOf(root);
   assert.ok((await readdir(lockDir)).some((name) => /^epoch-\d+$/.test(name)));
+  await assert.rejects(readdir(join(root, '.roundtable', 'state', 'rtd.lock.d')), { code: 'ENOENT' }, 'no lock record is written into the work root');
   await assert.rejects(readdir(join(root, 'rtd.lock.d')), { code: 'ENOENT' });
 
   const ignored = spawnSync('git', ['check-ignore', '--no-index', '.roundtable/state/rtd.lock.d/epoch-1'], { encoding: 'utf8' });
@@ -426,7 +434,7 @@ for (const hungPhase of ['developing', 'testing']) {
     let lockReleased = false;
     do {
       after = JSON.parse(await readFile(stateFile(root, 'A'), 'utf8'));
-      const lockDir = join(root, '.roundtable', 'state', 'rtd.lock.d');
+      const lockDir = lockDirOf(root);
       const epoch = (await readdir(lockDir)).filter((n) => /^epoch-\d+$/.test(n)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6))).at(-1);
       lockReleased = JSON.parse(await readFile(join(lockDir, epoch), 'utf8')).released === true;
       if (after.lease === null && lockReleased) break;
@@ -535,7 +543,7 @@ test('timeout: an abandoned handler keeps the queue lock and issue lease until i
   assert.equal(started, 1);
   const recorded = await readFile(stateFile(root, 'A'), 'utf8');
   assert.equal(JSON.parse(recorded).lease?.owner.startsWith('rtd-'), true, 'the lease was not released');
-  const lockDir = join(root, '.roundtable', 'state', 'rtd.lock.d');
+  const lockDir = lockDirOf(root);
   assert.equal(JSON.parse(await readFile(join(lockDir, (await readdir(lockDir)).filter((n) => /^epoch-/.test(n)).sort().pop()), 'utf8')).released, undefined, 'the lock was not released');
 
   // Before the lock TTL ends: busy, no handler, state untouched.

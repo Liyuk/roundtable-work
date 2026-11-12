@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fsp from 'node:fs/promises';
@@ -10,14 +10,19 @@ import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
-import { acquireLock, hostId } from '../../runtime/lib/lock.mjs';
+import { acquireLock, hostId, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-recovery-'));
 const exists = (p) => access(p).then(() => true, () => false);
 const PASS = '审查结论：通过\nok';
-// Runtime lock files live in `.roundtable/state/rtd.lock.d/epoch-<n>`; the holder is the highest epoch.
-const lockDirOf = (root) => join(root, '.roundtable', 'state', 'rtd.lock.d');
+// Runtime lock records live in the private anchor (RTW_STATE_DIR, inherited by every child process), never in
+// the work root: `.roundtable/state/rtd.lock.d` is only the caller-side path whose last component names the lock.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-recovery-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* leaving /tmp behind is harmless */ } });
+const lockPathOf = (root) => join(root, '.roundtable', 'state', 'rtd.lock.d');
+const lockDirOf = (root) => lockDirectoryFor({ lockPath: lockPathOf(root), repoRoot: root, anchorRoot: ANCHOR });
 const epochsIn = (root) => readdirSync(lockDirOf(root)).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
 const plantEpoch = (root, rec) => writeFileSync(join(lockDirOf(root), `epoch-${Math.max(0, ...epochsIn(root)) + 1}`), JSON.stringify(rec));
 const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch-${Math.max(...epochsIn(root))}`), 'utf8'));
@@ -110,7 +115,7 @@ test('single-flight: a second real process cannot run the same queue while the f
 test('single-flight: a locked run reports the holder, runs nothing and leaves the holder\'s lock in place', { timeout: 20000 }, async () => {
   const root = await tmp();
   try {
-    const holder = await acquireLock({ lockPath: lockDirOf(root), owner: 'other' });
+    const holder = await acquireLock({ lockPath: lockPathOf(root), repoRoot: root, owner: 'other' });
     assert.equal(holder.acquired, true);
     let calls = 0;
     const result = await runQueue({ workRoot: root, queue: ['1'], handler: async () => { calls++; return {}; } });
@@ -128,7 +133,7 @@ test('single-flight: a lock whose process died is stale and is taken over', { ti
   try {
     const dead = spawnSync(process.execPath, ['-e', '']);
     assert.equal(dead.status, 0);
-    mkdirSync(lockDirOf(root), { recursive: true });
+    mkdirSync(lockDirOf(root), { recursive: true, mode: 0o700 });
     plantEpoch(root, { owner: 'old', pid: dead.pid, hostId: hostId(), token: 'x', epoch: 1, acquiredAt: Date.now(), expiresAt: Date.now() + 3_600_000 });
     const result = await runQueue({ workRoot: root, queue: ['1'], handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }) });
     assert.equal(result.status, 'ok');
@@ -139,12 +144,12 @@ test('single-flight: a live holder with an expired lock lease is stale; with a f
   const root = await tmp();
   try {
     const clock = { t: 10_000 };
-    const lockPath = lockDirOf(root);
-    const a = await acquireLock({ lockPath, owner: 'a', now: () => clock.t, ttlMs: 1000 });
+    const lockPath = lockPathOf(root);
+    const a = await acquireLock({ lockPath, repoRoot: root, owner: 'a', now: () => clock.t, ttlMs: 1000 });
     assert.equal(a.acquired, true);
-    assert.equal((await acquireLock({ lockPath, owner: 'b', now: () => clock.t, ttlMs: 1000 })).acquired, false);
+    assert.equal((await acquireLock({ lockPath, repoRoot: root, owner: 'b', now: () => clock.t, ttlMs: 1000 })).acquired, false);
     clock.t += 1001;
-    const b = await acquireLock({ lockPath, owner: 'b', now: () => clock.t, ttlMs: 1000 });
+    const b = await acquireLock({ lockPath, repoRoot: root, owner: 'b', now: () => clock.t, ttlMs: 1000 });
     assert.equal(b.acquired, true);
     assert.equal(await a.refresh(), false, 'the displaced owner can no longer refresh');
     assert.equal(await a.release(), true); // only rewrites a's own, superseded epoch file
@@ -337,7 +342,7 @@ for (const useHeartbeat of [true, false]) {
     try {
       const files = await writeFixtures(root, '9');
       const clock = { t: 1_000_000 };
-      const lockPath = lockDirOf(root);
+      const lockPath = lockPathOf(root);
       const phases = [];
       let thief;
       const handler = async ({ item, phase, heartbeat, recordArtifacts }) => {
@@ -345,7 +350,7 @@ for (const useHeartbeat of [true, false]) {
         await recordArtifacts(files);
         // Our lock lease runs out and another process takes the lock over.
         clock.t += 10 * 60_000;
-        thief = await acquireLock({ lockPath, owner: 'thief', now: () => clock.t });
+        thief = await acquireLock({ lockPath, repoRoot: root, owner: 'thief', now: () => clock.t });
         assert.equal(thief.acquired, true);
         if (useHeartbeat) await heartbeat();
         return { exitCode: 0, output: 'ok', changedFiles: 1 };
@@ -601,20 +606,25 @@ test('lock lost while the queue provider runs: lock_lost, no wake, handler never
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('lock lost between two issues: the next wake stops on its first step, before any state for that issue is written', async () => {
+test('lock lost while an issue runs: its next state write is refused and the next wake never starts', async () => {
+  // Adapted for the anchored fence (issue #77): a superseded writer is now refused at its *next state write*,
+  // not only at the next wake's first refresh. The loss therefore ends issue 1 as `lock_lost` (its late
+  // artifact write is rejected) instead of letting it finish and stopping before issue 2.
   const root = await tmp();
   try {
     const seen = [];
     const handler = async ({ item, phase }) => {
       seen.push(`${item.id}:${phase}`);
       if (item.id !== '1' || phase !== 'finalizing') return { exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' };
-      // Issue 1's last refresh has already passed when `artifacts` is read, so the lock is lost in the gap before issue 2.
+      // Issue 1's last refresh has already passed when `artifacts` is read, so the lock is lost before the
+      // artifact write and before issue 2.
       return { exitCode: 0, output: 'ok', artifacts: { get output() { stealLock(root, 'succ-2'); return 'out/1.txt'; } } };
     };
     const result = await runQueue({ workRoot: root, queue: ['1', '2'], handler, ...QRENEW });
     assert.equal(result.status, 'lock_lost');
-    assert.deepEqual(result.outcomes.map((o) => [o.id, o.status]), [['1', 'done'], ['2', 'lock_lost']]);
-    assert.deepEqual(seen, ['1:developing', '1:testing', '1:reviewing', '1:finalizing']);
+    assert.deepEqual(result.outcomes.map((o) => [o.id, o.status]), [['1', 'lock_lost']], 'the next wake never starts');
+    assert.deepEqual(seen, ['1:developing', '1:testing', '1:reviewing', '1:finalizing'], 'no further phase or issue runs');
     assert.deepEqual(Object.keys(await snapshotState(root)), ['~31.epoch-1.json'], 'no state file was created for issue 2');
+    assert.equal((await (await createStateStore({ workRoot: root })).load('1')).artifacts.output, undefined, 'the stale artifact write was refused');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

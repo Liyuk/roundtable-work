@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createClaimCoordinator } from '../../runtime/lib/claim.mjs';
@@ -8,6 +10,10 @@ import { runWorkers } from '../../runtime/lib/workers.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
 const scratch = join(process.cwd(), '.roundtable/scratch/94-dev-1/tmp');
 const temp = async () => { await mkdir(scratch, { recursive: true }); return mkdtemp(join(scratch, 'workers-')); };
+// Issue-lock records live in the private anchor (RTW_STATE_DIR, inherited by the child process below).
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 test('claim ticks add one running label and one marker comment, then resume stale orphan without reclaiming', async () => {
   const root = await temp();
@@ -89,7 +95,7 @@ test('issue locks are visible across processes and git worktrees are visible to 
     const lock = await first.acquire('12', 'first');
     assert.equal(lock.acquired, true);
     const lockPath = join(workRoot, 'locks', '12.lock.d');
-    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `import { acquireLock } from ${JSON.stringify(new URL('../../runtime/lib/lock.mjs', import.meta.url).href)}; const r = await acquireLock({ lockPath: ${JSON.stringify(lockPath)}, owner: 'second-process' }); console.log(r.acquired);`], { encoding: 'utf8' });
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `import { acquireLock } from ${JSON.stringify(new URL('../../runtime/lib/lock.mjs', import.meta.url).href)}; const r = await acquireLock({ lockPath: ${JSON.stringify(lockPath)}, repoRoot: ${JSON.stringify(repo)}, owner: 'second-process' }); console.log(r.acquired);`], { encoding: 'utf8' });
     assert.equal(child.status, 0, child.stderr);
     assert.equal(child.stdout.trim(), 'false');
     const probe = await second.inspect('12');
