@@ -74,7 +74,8 @@ Repository tests inject a fixture denylist with obviously fake names.
 ## Static counting limitations
 
 - Test-case counting is static: comments and the contents of string, template and regex literals are stripped, then
-  `test(` / `it(` calls are counted in base and head. Commenting out a test lowers the count. It is a heuristic scanner,
+  `test(` / `it(` calls and Node subtests (`t.test('name', ...)`, `t.it(...)`) are counted in base and head.
+  Commenting out a test or deleting a subtest lowers the count. It is a heuristic scanner,
   not a parser, and it does not execute code; the base test command is the authority on what actually runs.
 - Disable markers (skip, only, pending and todo forms) are matched on the added lines of every non-Markdown file, test
   file or not. In Markdown only the dotted call forms are matched, so prose that uses the plain words is not rejected.

@@ -568,7 +568,16 @@ const SKIP_RE = new RegExp(
   'i',
 );
 // Built from pieces for the same reason: modifier names are not written out literally.
-const CASE_RE = new RegExp(`(?:^|[^\\w.$])(?:test|it)(?:\\.(?:${'on'}ly|${'sk'}ip|${'to'}do))?\\s*\\(`, 'gm');
+const CASE_MODS = `(?:\\.(?:${'on'}ly|${'sk'}ip|${'to'}do))?`;
+// Top-level `test(` / `it(` calls, plus Node subtests such as `t.test('name', ...)` and
+// `t.it(...)`: a `<ident>.test(` / `<ident>.it(` call whose first argument is a string or
+// template literal, or a name followed by a comma (so `re.test(value)` and `obj.test(1)` are not
+// counted). `describe(` is not a case and is not matched.
+const CASE_RE = new RegExp(
+  `(?:^|[^\\w.$])(?:test|it)${CASE_MODS}\\s*\\(`
+  + `|(?<![\\w.$])[A-Za-z_$][\\w$]*\\.(?:test|it)${CASE_MODS}\\s*\\(\\s*(?:['"\`]|[A-Za-z_$][\\w$]*\\s*,)`,
+  'gm',
+);
 const MARKDOWN_RE = /\.(?:md|markdown|mdx)$/i;
 // Markdown prose may contain the plain words; only the dotted call forms count there.
 const MD_SKIP_RE = new RegExp(`\\.${'sk'}ip\\(|\\.${'on'}ly\\(`);

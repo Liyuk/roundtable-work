@@ -188,16 +188,22 @@ export function isAllowedHost(host) {
 // IP rules
 // ---------------------------------------------------------------------------
 
-function ipv4Allowed(o) {
+// A netmask word anywhere on the line gives a bit-pattern quad the meaning "mask".
+const NETMASK_WORD_RE = /\b(?:net)?masks?\b|\bsubnets?\b|\bprefix(?:es)?\b/i;
+// A `/24`-style prefix length on the line (not glued to a word or a dotted number).
+const PREFIX_LEN_RE = /(?<![\w.])\/\d{1,2}(?!\d)/;
+
+function ipv4Allowed(o, maskContext) {
   const [a, b, c] = o;
   if (a === 127) return true; // loopback
   if (a === 192 && b === 0 && c === 2) return true; // TEST-NET-1
   if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
   if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
   if (o.every((x) => x === 0)) return true; // unspecified
-  // A contiguous netmask (all-ones prefix, then zeros) is not an address.
+  // A contiguous netmask (all-ones prefix, then zeros) is not an address, but only when the
+  // line says so; a bare bit-pattern quad (e.g. a first octet of 128 or 192) is a public address.
   const bits = o.map((x) => x.toString(2).padStart(8, '0')).join('');
-  if (/^1+0*$/.test(bits)) return true;
+  if (maskContext && /^1+0*$/.test(bits)) return true;
   return false;
 }
 
@@ -227,6 +233,18 @@ function isPackageVersion(text, index, end, line) {
   return !line.host && line.pkg;
 }
 
+// Netmask context for the quad that starts at `index` and ends at `end`: a mask / subnet /
+// prefix word on the line, a `/N` prefix length elsewhere on the line, or the `addr mask`
+// pair form (another dotted quad directly before it). A `/N` right after the quad makes it a
+// CIDR network address, not a mask.
+const QUAD_BEFORE_RE = /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}\s+$/;
+function hasMaskContext(text, index, end) {
+  if (/\/\d/.test(text.slice(end, end + 2))) return false;
+  if (NETMASK_WORD_RE.test(text)) return true;
+  if (PREFIX_LEN_RE.test(text)) return true;
+  return QUAD_BEFORE_RE.test(text.slice(Math.max(0, index - 20), index));
+}
+
 function findIPv4(text, out) {
   const line = { text };
   const re = /(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d)/g;
@@ -241,7 +259,7 @@ function findIPv4(text, out) {
       if (!/[A-Za-z0-9_]/.test(before)) continue; // v-prefixed four-part version
     }
     if (prev === '@' && isPackageVersion(text, m.index, end, line)) continue;
-    if (ipv4Allowed(octets)) continue;
+    if (ipv4Allowed(octets, hasMaskContext(text, m.index, end))) continue;
     out.push({ ruleId: RULES.IP, text: m[0] });
   }
 }
@@ -270,11 +288,23 @@ function ipv6Allowed(g) {
   return false;
 }
 
+// A letters-only candidate (no decimal digit) is a plain word-like token such as `Add::fee`
+// or `a::b` far more often than an address. It is accepted only when it parses as IPv6 (every
+// group 1-4 hex digits; 8 groups, or `::` with a non-empty hex group on a side), uses one
+// letter case, and carries at least 4 hex digits in total (so `a::b` and `ab::c` pass).
+function plausibleLetterOnlyIPv6(s) {
+  if (/[a-f]/.test(s) && /[A-F]/.test(s)) return false;
+  if (s.replace(/:/g, '').length < 4) return false;
+  const halves = s.split('::');
+  if (halves.length === 1) return s.split(':').length === 8;
+  return halves[0] !== '' || halves[1] !== '';
+}
+
 function findIPv6(text, out) {
   const re = /(?<![A-Za-z0-9_:.\-])[0-9A-Fa-f:]{2,}(?![A-Za-z0-9_:])(?!\.\d)/g;
   for (const m of text.matchAll(re)) {
     const s = m[0];
-    if (!/\d/.test(s)) continue;
+    if (!/\d/.test(s) && !plausibleLetterOnlyIPv6(s)) continue;
     if (!s.includes('::') && (s.match(/:/g) || []).length !== 7) continue;
     const groups = parseIPv6(s);
     if (!groups) continue;
@@ -477,14 +507,17 @@ const CRED_ASSIGN = /(?<![A-Za-z0-9])(?:token|secret|password|passwd|api[_-]?key
 
 // High-entropy heuristic for a credential assignment value (length >= 16):
 //  - letters and digits mixed: Shannon entropy >= 3.25;
-//  - letters only (no digit): needs mixed case and Shannon entropy >= 3.5, and must
-//    not look like an identifier. A camelCase / PascalCase identifier is split into
-//    words; ordinary words average 3+ letters per word, a random mixed-case string
-//    averages about 2. Such identifier-like values are treated as references.
+//  - letters only, all lowercase: Shannon entropy >= 3.5. Random lowercase strings sit near
+//    4.0-4.4 at this length; a single ordinary word or a short concatenation stays below
+//    3.5 (very long compound words can reach it, which is accepted for a value that sits
+//    right after a token / secret / password / api-key name);
+//  - letters only, mixed case: needs Shannon entropy >= 3.5 and must not look like an
+//    identifier. A camelCase / PascalCase identifier is split into words; ordinary words
+//    average 3+ letters per word, a random mixed-case string averages about 2. Such
+//    identifier-like values are treated as references.
 // Reference-looking values (containing `.`, `(`, `$`, `{`, or a `process.env.X` style
-// reference) are never letters-only, so they cannot reach the letters-only branch
-// (the digit branch is unchanged); a long all-lowercase word has no mixed case and a repeated value has low
-// entropy, so neither triggers.
+// reference) and snake_case / kebab-case names (containing `_` or `-`, no digit) never reach
+// the letters-only branches; an all-uppercase word and a repeated value do not trigger.
 function looksLikeIdentifier(v) {
   const words = v.match(/[A-Z]?[a-z]+|[A-Z]+(?![a-z])/g) || [];
   return words.length > 0 && v.length / words.length >= 3;
@@ -493,8 +526,13 @@ function looksLikeIdentifier(v) {
 function highEntropy(v) {
   if (v.length < 16) return false;
   if (/^[A-Za-z]+$/.test(v)) {
-    if (!/[a-z]/.test(v) || !/[A-Z]/.test(v)) return false;
-    if (looksLikeIdentifier(v)) return false;
+    if (!/[a-z]/.test(v)) return false;
+    if (/[A-Z]/.test(v) && looksLikeIdentifier(v)) {
+      // A long lowercase run inside an identifier-looking value (a marker or capital glued to
+      // a random string) is still judged on its own.
+      const run = (v.match(/[a-z]{16,}/g) || []).find((r) => shannon(r) >= 3.5);
+      return run !== undefined;
+    }
     return shannon(v) >= 3.5;
   }
   if (!/\d/.test(v) || !/[A-Za-z]/.test(v)) return false;

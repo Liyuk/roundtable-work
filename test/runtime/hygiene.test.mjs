@@ -644,3 +644,69 @@ test('the member-access exemption does not apply inside string or template liter
     `log("path", ${other}, \`ok\`);`,
   ), []);
 });
+
+// ---------------------------------------------------------------------------
+// Gate 2 round 4 regressions (letters-only IPv6, bare quads shaped like a netmask, lowercase secrets).
+// Every fixture is assembled from pieces so this file holds no address-shaped or secret-shaped literal.
+// ---------------------------------------------------------------------------
+
+test('letters-only IPv6 addresses fail; loopback, documentation and code-like tokens pass', () => {
+  const eight = ['fade', 'bead', 'cafe', 'dead', 'beef', 'face', 'feed', 'deaf'].join(':');
+  for (const addr of ['abcd' + '::' + 'cafe', 'dead:beef' + '::' + '1', 'ABCD' + '::' + 'CAFE', 'fade' + '::', eight]) {
+    const f = scanLines(`peer ${addr} up`);
+    assert.deepEqual(rules(f), ['HYG-IP'], addr);
+    assert.equal(f[0].hash, hashText(addr));
+  }
+  assert.deepEqual(scanLines(
+    'addr ::1 and 2001:db8:: and 2001:db8::1 and ::',
+    'a' + '::' + 'b', 'ab' + '::' + 'c', 'Add' + '::' + 'fee', 'Cafe' + '::' + 'dead', 'std::vector', 'a:b:c:d:e:f',
+  ), []);
+});
+
+test('a bare quad shaped like a netmask is an address; netmask context exempts it', () => {
+  const quad = (...p) => ip(...p);
+  for (const addr of [quad('128', '0', '0', '0'), quad('192', '0', '0', '0'), quad('224', '0', '0', '0'), quad('255', '255', '255', '255')]) {
+    assert.deepEqual(rules(scanLines(`connect to ${addr} now`)), ['HYG-IP'], addr);
+    // A CIDR network is an address, even with a prefix length.
+    assert.deepEqual(rules(scanLines(`route ${addr}/8 via gateway`)), ['HYG-IP'], addr);
+  }
+  const m24 = quad('255', '255', '255', '0');
+  assert.deepEqual(scanLines(
+    `netmask ${m24}`, `Subnet: ${quad('255', '255', '0', '0')}`, `mask=${m24}`, `use /24, that is ${m24}`,
+    `the prefix is ${quad('255', '255', '255', '128')}`, `netmask ${quad('128', '0', '0', '0')}`,
+  ), []);
+  // `addr mask` pair form: only the address is reported.
+  const pair = scanLines(`inet ${PRIVATE_IP} ${m24}`);
+  assert.deepEqual(pair.map((f) => f.hash), [hashText(PRIVATE_IP)]);
+});
+
+test('an all-lowercase high-entropy credential value fails; ordinary lowercase values pass', () => {
+  const RANDOM_LOWER = piece('kzqw', 'jxvm', 'pbtr', 'nhgf', 'dlsy');
+  for (const a of [
+    piece('pass', 'word = "', RANDOM_LOWER, '"'),
+    piece('sec', 'ret: ', RANDOM_LOWER),
+    piece('api', '_key=', RANDOM_LOWER),
+  ]) {
+    assert.deepEqual(rules(scanAt('src/config.mjs', a)), ['HYG-CRED'], a);
+    assert.deepEqual(rules(scanAt('docs/a.md', a)), ['HYG-CRED'], a);
+    // A marker or capital glued to the random run does not hide it outside test paths.
+    assert.deepEqual(rules(scanAt('docs/a.md', a.replace(RANDOM_LOWER, 'FAKE' + RANDOM_LOWER))), ['HYG-CRED'], a);
+  }
+  // In a test path the fake marker exempts; an unmarked value still fails.
+  assert.deepEqual(scanAt('test/a.test.mjs', piece('pass', 'word = "', 'FAKE', RANDOM_LOWER, '"')), []);
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', piece('pass', 'word = "', RANDOM_LOWER, '"'))), ['HYG-CRED']);
+  // Normal words, repeats, short values, and snake_case / kebab-case names stay clean.
+  assert.deepEqual(scanAt('src/a.mjs',
+    piece('pass', 'word: required'),
+    piece('sec', 'ret: changeme'),
+    piece('to', 'ken = authenticationtoken'),
+    piece('pass', 'word = ', 'a'.repeat(24)),
+    piece('pass', 'word = ', 'ab'.repeat(12)),
+    piece('sec', 'ret = ', 'shortvalue'),
+    piece('api', '_key = internationalizationconfiguration'),
+    piece('to', 'ken = some_long_lowercase_identifier_name'),
+    piece('sec', 'ret = a-long-kebab-case-reference-name'),
+    piece('pass', 'word: the password field is optional for this endpoint'),
+    piece('to', 'ken: refreshes automatically when expired'),
+  ), []);
+});

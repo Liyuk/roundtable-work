@@ -1201,3 +1201,30 @@ test('CLI defaults to production semantics: no denylist, no isolation assertion 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Node subtests (`t.<test-word>(...)`) count as cases, so deleting one lowers the count.
+const subSource = (names, extra = '') => `${T}('outer', async (t) => {\n${names.map((n) => `  await t.${T}('${n}', () => {});`).join('\n')}\n});\n${extra}`;
+
+test('Node subtests count as cases; deleting one fails Gate 0 (G0-TEST-COUNT)', async () => {
+  const issue = { allowedPaths: ['test/**'] };
+  const base = subSource(['a', 'b', 'c']);
+  assert.equal(countTestCases(base), 4);
+  // An unchanged file keeps its count; adding a subtest raises it.
+  assert.equal(countTestCases(`${base}\n`), 4);
+  assert.equal(countTestCases(subSource(['a', 'b', 'c', 'd'])), 5);
+  // Deleting a subtest lowers the count and fails the gate.
+  assert.equal(countTestCases(subSource(['a', 'b'])), 3);
+  const r = await run([edit('test/a.test.mjs', base, subSource(['a', 'b']))], { issue });
+  assert.deepEqual(ruleIds(r), ['G0-TEST-COUNT']);
+  // Unchanged apart from a comment: pass.
+  assert.equal((await run([edit('test/a.test.mjs', base, `// note\n${base}`)], { issue })).verdict, 'pass');
+  // Subtest modifier forms, template-literal names and a name variable followed by a callback count.
+  const mods = [`${'on'}ly`, `${'sk'}ip`, `${'to'}do`].map((m) => `  t.${T}.${m}('x', () => {});`).join('\n');
+  assert.equal(countTestCases(`${T}('o', (t) => {\n${mods}\n  t.it('y', () => {});\n  t.${T}(\`z\`, () => {});\n  t.${T}(name, fn);\n});`), 7);
+});
+
+test('subtest counting does not double count describe or top-level calls, nor regex and value calls', () => {
+  assert.equal(countTestCases(`describe('s', () => {\n  ${T}('a', () => {});\n  it('b', () => {});\n});`), 2);
+  assert.equal(countTestCases(`${T}('a', () => {});`), 1);
+  assert.equal(countTestCases(`const ok = re.${T}(value);\nconst k = obj.${T}(1);\nassert.ok(/x/.${T}('abc'));\nsome.deep.${T}('x', f);`), 0);
+});
