@@ -437,6 +437,9 @@ export async function runQueue({
               if (await readMonitor()) throw new Error('Main is paused');
               const context = await autoMerge.context({ item, state, result, signal });
               if (!validContext(context)) throw new Error('Incomplete merge context');
+              // Whether the provider's squashMerge already resolved. Everything before it stays fail-closed;
+              // everything after it is bookkeeping, and must never turn a real merge into a finalize failure.
+              let mergeHappened = false;
               const gateState = {
                 get: async (issue) => (await store.load(issue)).gateRecord,
                 put: async (issue, record) => {
@@ -451,10 +454,8 @@ export async function runQueue({
                   if (signal.aborted || !(await refreshLock()) || signal.aborted) throw new Error('phase aborted or lock lost');
                   if (autoMerge.production) await writeMonitor({ stage: 'merging' });
                   const merged = await autoMerge.github.squashMerge(...args);
-                  if (autoMerge.production) {
-                    if (typeof merged?.mergeCommit !== 'string' || !/^[0-9a-f]{7,40}$/i.test(merged.mergeCommit)) throw new Error('provider github.squashMerge must return mergeCommit SHA; main remains paused');
-                    await writeMonitor({ stage: 'monitoring', mergeCommit: merged.mergeCommit });
-                  }
+                  // Only after this point has main changed; the caller finishes the merge bookkeeping separately.
+                  mergeHappened = true;
                   return merged;
                 },
               };
@@ -473,8 +474,26 @@ export async function runQueue({
                 // a stale head or a changed safety-file set) stays fail-closed: interrupted, decision ask.
                 throw new Error(`${gated.gate}: ${gated.reason}`);
               }
-              if (autoMerge.production) await monitorMain(signal);
-              return { ...result, mergeHold: null }; // a merged step is never a hold, whatever the handler returned
+              if (!mergeHappened) throw new Error('Merge entry point reported a merge without a provider squash result');
+              // Post-merge bookkeeping. The squash already happened, so a failure here must not fail this wake:
+              // the issue is delivered and the failure is kept as a non-fatal detail. Main protection is taken
+              // from what was already written and is never weakened: an unusable mergeCommit leaves the
+              // `{stage:'merging'}` record (main stays paused, no invented SHA), and a failed mainStatus leaves
+              // `{stage:'monitoring', mergeCommit}`, so a later pass retries monitoring/recovery instead of
+              // squashing the same pull request again.
+              let mergeMonitorError;
+              if (autoMerge.production) {
+                try {
+                  const mergeCommit = gated.result?.mergeCommit;
+                  if (typeof mergeCommit !== 'string' || !/^[0-9a-f]{7,40}$/i.test(mergeCommit)) throw new Error('provider github.squashMerge must return mergeCommit SHA; main remains paused');
+                  await writeMonitor({ stage: 'monitoring', mergeCommit });
+                  await monitorMain(signal);
+                } catch (err) {
+                  mergeMonitorError = `merge monitor: ${err?.message ?? err}`;
+                }
+              }
+              // a merged step is never a hold, whatever the handler returned
+              return { ...result, mergeHold: null, ...(mergeMonitorError ? { mergeMonitorError } : {}) };
             };
             return autoMerge.production ? exclusive(executeMerge) : executeMerge();
           });
@@ -536,7 +555,8 @@ export async function runQueue({
             return out(decisionResult.status, { class: 'decision', decision: decisionResult.decision });
           }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
-          if (phase === 'finalizing') return await finish('done', cls, undefined, 'done');
+          // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
+          if (phase === 'finalizing') return await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
