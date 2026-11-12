@@ -24,3 +24,19 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
     },
   };
 }
+
+/** Restricted issue mutations and comment lookup for daemon claims. */
+export function createGitHubWriter({ repo, run = async (args) => (await exec('gh', args, { maxBuffer: 16 * 1024 * 1024 })).stdout } = {}) {
+  const repository = repo ? ['--repo', repo] : [];
+  const id = (number) => {
+    const value = Number(number);
+    if (!Number.isSafeInteger(value) || value < 1) throw new TypeError('Invalid issue number');
+    return String(value);
+  };
+  return {
+    addLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--add-label', label]),
+    removeLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--remove-label', label]),
+    createComment: (number, body) => run(['issue', 'comment', id(number), ...repository, '--body', body]),
+    listComments: async (number) => JSON.parse(await run(['issue', 'view', id(number), ...repository, '--json', 'comments'])).comments,
+  };
+}
