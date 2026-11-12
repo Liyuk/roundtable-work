@@ -5,7 +5,9 @@ export function dependencies(body = '') {
   const found = new Set();
   for (const line of body.split(/\r?\n/)) {
     const match = line.match(/^\s*(?:(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)?(?:\*\*|__|\*|_)?(?:depends on|blocked by)(?:\*\*|__|\*|_)?\s+(.+)$/i);
-    if (match) for (const number of match[1].matchAll(/#(\d+)/g)) found.add(Number(number[1]));
+    // A repository-qualified reference (owner/repo#N) names a different
+    // tracker namespace. Intake only resolves bare #N references locally.
+    if (match) for (const number of match[1].matchAll(/(?<![\w./-])#(\d+)/g)) found.add(Number(number[1]));
   }
   return [...found];
 }
