@@ -35,18 +35,21 @@ export function exitCodeFor(result) {
  * scope mismatch (`out-of-scope`), not a developer failure.
  *
  * Liveness contract: the single-flight lock has a lease of `lockTtlMs`. It is renewed at the start of
- * every phase, by every `heartbeat()` call, and automatically on an unref'd timer while a handler runs
+ * every wake and phase, by every `heartbeat()` call, and automatically on an unref'd timer while the
+ * queue is being read (an injected queue provider may run for any length of time) and while a handler runs
  * (every `max(lockRenewMinMs, floor(lockTtlMs / 3))` ms, `lockRenewMinMs` defaults to 1000; a `TypeError` is
  * thrown up front unless both are positive and `lockRenewMinMs <= lockTtlMs / 2`), so a quiet
- * handler keeps the lock and no other process can run the same queue meanwhile. `heartbeat()` stays
+ * provider or handler keeps the lock and no other process can run the same queue meanwhile. `heartbeat()` stays
  * available as an extra liveness signal for the per-issue lease. When the lock is lost (a refresh fails
  * or throws) the `signal` passed to the handler is aborted and the wake is aborted once the handler
- * settles: no further handler runs, nothing more is recorded for the interrupted phase (the handler's
+ * settles. The lock is also checked once after the queue was read and again as the very first step of every
+ * wake, before any per-issue state is read or written: a pass that lost the lock while the queue was being
+ * read returns `lock_lost` with no outcomes and never starts a wake. No further handler runs, nothing more is recorded for the interrupted phase (the handler's
  * own `recordArtifacts()` / `heartbeat()` calls reject), the other process's lock is left alone,
  * per-issue state and artifacts are kept, and nothing at all is written for the issue afterwards (the
  * issue lease is not released; it expires on its own and the successor owns the state).
  * The pass then returns `{ status:'lock_lost', outcomes, skipped }` (outcomes holds finished issues
- * and the interrupted one with `status:'lock_lost'`). The CLI exits 0 for `ok`, 75 (`EXIT_LOCKED`) for
+ * and the interrupted one with `status:'lock_lost'`; it is empty when the lock was lost while the queue was read). The CLI exits 0 for `ok`, 75 (`EXIT_LOCKED`) for
  * `locked` and 76 (`EXIT_LOCK_LOST`) for `lock_lost`, see `exitCodeFor()`.
  *
  * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE`. `--handler` is trusted operator code,
@@ -70,8 +73,39 @@ export async function runQueue({
   const lock = await acquireLock({ lockPath: await store.confinement.resolve('rtd.lock'), owner, now, ttlMs: lockTtlMs });
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
 
+  // Lock-loss state is shared by the whole pass: queue reading, every wake and every handler.
+  let lockLost = false;
+  const abort = new AbortController();
+  const refreshLock = async () => {
+    if (!lockLost) {
+      let ok = false;
+      try { ok = await lock.refresh(); } catch { /* an unusable lock counts as lost */ }
+      if (!ok) { lockLost = true; abort.abort(new Error('single-flight lock lost')); }
+    }
+    return !lockLost;
+  };
+  // Renew the lock on an unref'd timer; the returned function stops it and waits for a renewal in flight.
+  const startRenewal = () => {
+    let renewing = null;
+    const timer = setInterval(() => {
+      if (renewing || lockLost) return;
+      renewing = refreshLock().finally(() => { renewing = null; });
+    }, Math.max(lockRenewMinMs, Math.floor(lockTtlMs / 3)));
+    timer.unref();
+    return async () => { clearInterval(timer); await renewing; };
+  };
+
   try {
-    const { items, skipped } = await readQueue(queue, { confinement: store.confinement });
+    let read;
+    const stopRenewal = startRenewal();
+    try {
+      read = await readQueue(queue, { confinement: store.confinement });
+    } finally {
+      await stopRenewal();
+    }
+    const { items, skipped } = read;
+    // Lost while the queue was read: another pass may own the state now, so do not start any wake.
+    if (lockLost || !(await refreshLock())) return { status: 'lock_lost', outcomes: [], skipped };
     const outcomes = [];
     for (const item of items) {
       const outcome = await wake(item);
@@ -86,6 +120,11 @@ export async function runQueue({
   async function wake(item) {
     const id = item.id;
     const out = (status, extra = {}) => ({ id, status, ...extra });
+    const lost = () => out('lock_lost', { reason: 'lock_lost', decision: 'wait' });
+
+    // First step, before `store.recover` or any other write: a lock lost since the last check (also in the
+    // gap between two issues) must not let this process touch state its successor may own.
+    if (!(await refreshLock())) return lost();
 
     const recovery = await store.recover(id);
     if (recovery.action === 'held') return out('held', { owner: recovery.owner });
@@ -105,21 +144,12 @@ export async function runQueue({
       store.update(id, (s) => { s.status = status; s.lastEvent = { type: cls, at: now(), ...(reason ? { detail: reason } : {}) }; })
         .then(() => out(status, { class: cls, reason, decision }));
 
-    let lockLost = false;
-    const abort = new AbortController();
-    const refreshLock = async () => {
-      if (!lockLost) {
-        let ok = false;
-        try { ok = await lock.refresh(); } catch { /* an unusable lock counts as lost */ }
-        if (!ok) { lockLost = true; abort.abort(new Error('single-flight lock lost')); }
-      }
-      return !lockLost;
-    };
-    const lost = () => out('lock_lost', { reason: 'lock_lost', decision: 'wait' });
-
     try {
       let phase = PHASES[PHASES.indexOf(state.checkpoint?.phase ?? null) + 1] ?? PHASES[0];
       for (;;) {
+        // After a lost lock nothing is written for this issue: not even beginPhase (the wake's first step and
+        // the check after each handler already ran a real refresh, this only reads the shared flag).
+        if (lockLost) return lost();
         await store.beginPhase(id, phase);
         if (!(await refreshLock())) return lost();
         state = await store.load(id);
@@ -134,12 +164,7 @@ export async function runQueue({
         };
 
         // Renew the lock while the handler runs, so a quiet handler never lets the lease expire.
-        let renewing = null;
-        const timer = setInterval(() => {
-          if (renewing || lockLost) return;
-          renewing = refreshLock().finally(() => { renewing = null; });
-        }, Math.max(lockRenewMinMs, Math.floor(lockTtlMs / 3)));
-        timer.unref();
+        const stopRenewal = startRenewal();
 
         let step;
         try {
@@ -150,8 +175,7 @@ export async function runQueue({
             ? { scopeMismatch: true, output: `handler error: ${err.message}` }
             : { exitCode: 1, output: `handler error: ${err?.message ?? err}` };
         } finally {
-          clearInterval(timer);
-          await renewing;
+          await stopRenewal();
         }
         if (lockLost || !(await refreshLock())) return lost();
         try {

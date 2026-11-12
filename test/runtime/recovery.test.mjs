@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { runQueue, EXIT_LOCKED } from '../../runtime/rtd.mjs';
+import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { acquireLock } from '../../runtime/lib/lock.mjs';
 
@@ -470,3 +471,87 @@ for (const [name, failure] of [['failure', { exitCode: 1, output: 'push failed' 
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
+
+// --- Lock renewal and lock loss while the queue is being read (injected provider) ---
+
+// Generous margins: the lease is 600 ms, renewed every 200 ms (a third of it); a slow provider runs 2.5x the lease.
+const QTTL = 600;
+const QRENEW = { lockTtlMs: QTTL, lockRenewMinMs: 20 };
+const qsleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const stealLock = (root, token) => writeFileSync(join(root, 'rtd.lock'), JSON.stringify({ owner: 'successor', pid: process.pid, token, acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 }));
+async function snapshotState(root) {
+  const dir = join(root, 'state');
+  const names = await readdir(dir).catch((err) => { if (err.code === 'ENOENT') return []; throw err; });
+  return Object.fromEntries(await Promise.all(names.sort().map(async (n) => [n, await readFile(join(dir, n), 'utf8')])));
+}
+
+test('a slow injected queue provider (longer than lockTtlMs) keeps the lock: a second runQueue gets locked', async () => {
+  const root = await tmp();
+  try {
+    const probes = [];
+    let secondRuns = 0;
+    const provider = async () => {
+      const end = Date.now() + Math.round(2.5 * QTTL);
+      while (Date.now() < end) {
+        await qsleep(150);
+        const second = await runQueue({ workRoot: root, queue: ['1'], handler: async () => { secondRuns++; return { exitCode: 0 }; }, ...QRENEW });
+        probes.push(second.status);
+      }
+      return ['1'];
+    };
+    const phases = [];
+    const handler = async ({ phase }) => { phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }; };
+    const result = await runQueue({ workRoot: root, queue: provider, handler, ...QRENEW });
+    assert.ok(probes.length >= 5, `probed ${probes.length} times`);
+    assert.ok(probes.every((status) => status === 'locked'), JSON.stringify(probes));
+    assert.equal(secondRuns, 0);
+    assert.equal(result.status, 'ok');
+    assert.equal(result.outcomes[0].status, 'done');
+    assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
+    assert.equal((await runQueue({ workRoot: root, queue: ['2'], handler, ...QRENEW })).status, 'ok', 'the lock was released afterwards');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('lock lost while the queue provider runs: lock_lost, no wake, handler never called, no state file created or changed', async () => {
+  const root = await tmp();
+  try {
+    // Issue 8 already has state (written by an earlier pass); issue 9 has none.
+    const seed = await createStateStore({ workRoot: root });
+    await seed.update('8', (s) => { s.lease = { owner: 'rtd-successor', expiresAt: Date.now() + 60_000 }; s.checkpoint = { phase: 'testing', at: 1 }; });
+    let before;
+    let calls = 0;
+    const provider = async () => {
+      stealLock(root, 'succ-1'); // another process takes over the lock while the provider is still running
+      before = await snapshotState(root);
+      return [{ id: '8' }, { id: '9' }, { id: '10', state: 'done' }];
+    };
+    const handler = async () => { calls++; return { exitCode: 0, output: 'ok' }; };
+    const result = await runQueue({ workRoot: root, queue: provider, handler, ...QRENEW });
+    assert.equal(result.status, 'lock_lost');
+    assert.deepEqual(result.outcomes, []);
+    assert.deepEqual(result.skipped.map((x) => x.id), ['10']);
+    assert.equal(exitCodeFor(result), EXIT_LOCK_LOST);
+    assert.equal(calls, 0, 'the handler was never called');
+    assert.deepEqual(Object.keys(before), ['8.json']);
+    assert.deepEqual(await snapshotState(root), before, 'no state file was created or changed, byte for byte');
+    assert.equal(JSON.parse(await readFile(join(root, 'rtd.lock'), 'utf8')).token, 'succ-1', 'the successor\'s lock is untouched');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('lock lost between two issues: the next wake stops on its first step, before any state for that issue is written', async () => {
+  const root = await tmp();
+  try {
+    const seen = [];
+    const handler = async ({ item, phase }) => {
+      seen.push(`${item.id}:${phase}`);
+      if (item.id !== '1' || phase !== 'finalizing') return { exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' };
+      // Issue 1's last refresh has already passed when `artifacts` is read, so the lock is lost in the gap before issue 2.
+      return { exitCode: 0, output: 'ok', artifacts: { get output() { stealLock(root, 'succ-2'); return 'out/1.txt'; } } };
+    };
+    const result = await runQueue({ workRoot: root, queue: ['1', '2'], handler, ...QRENEW });
+    assert.equal(result.status, 'lock_lost');
+    assert.deepEqual(result.outcomes.map((o) => [o.id, o.status]), [['1', 'done'], ['2', 'lock_lost']]);
+    assert.deepEqual(seen, ['1:developing', '1:testing', '1:reviewing', '1:finalizing']);
+    assert.deepEqual(Object.keys(await snapshotState(root)), ['1.json'], 'no state file was created for issue 2');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
