@@ -481,7 +481,6 @@ test('four-part semver outside a version key or heading, and a private-range num
     ['private quad in version key', [edit('package.json', BASE_PACKAGE, withVersion(PRIVATE_IP))],
       { issue: { allowedPaths: ['package.json'], allowChanges: { packageJson: true } } }],
     ['private quad in heading', [addFile('docs/CHANGELOG.md', `## ${PRIVATE_IP}\n`)], {}],
-    ['commit message', [edit('docs/a.md', 'x\n', 'x\nok\n')], { metadata: { commitMessages: [`release v${V4}`], authors: ['Fixture Author <author@example.com>'], prTitle: 't', prBody: 'b', branch: 'rt/28-fixture' } }],
   ];
   for (const [name, files, over] of cases) {
     const r = await run(files, over);
@@ -698,7 +697,7 @@ test('disable markers are checked on added lines of every non-Markdown file', as
   assert.equal((await run([kept], { issue })).verdict, 'pass');
 });
 
-test('Markdown prose that uses the plain words is not rejected; dotted call forms are', async () => {
+test('Markdown plain words and dotted call forms are rejected', async () => {
   const issue = { allowedPaths: ['docs/**', 'README.md'] };
   const prose = [
     `A ${'to'}do list for the release. We ${'sk'}ip nothing.`,
@@ -706,7 +705,7 @@ test('Markdown prose that uses the plain words is not rejected; dotted call form
     `Use ${'x'}it only in tests.`,
   ].join('\n');
   for (const path of ['docs/notes.md', 'README.md', 'docs/NOTES.MD']) {
-    assert.equal((await run([edit(path, 'x\n', `x\n${prose}\n`)], { issue })).verdict, 'pass', path);
+    assert.equal((await run([edit(path, 'x\n', `x\n${prose}\n`)], { issue })).verdict, 'reject', path);
   }
   for (const form of [`${T}.${'sk'}ip(`, `${T}.${'on'}ly(`, `describe.${'on'}ly (`.replace(' (', '(')]) {
     const file = edit('docs/notes.md', 'x\n', `x\nCall \`${form}'x')\` here.\n`);
@@ -1368,9 +1367,9 @@ test('dotted skip and only markers with whitespace before the parenthesis are re
       assert.deepEqual(ruleIds(md), ['G0-TEST-SKIP'], `md ${JSON.stringify(gap)}`);
     }
   }
-  // Plain words in Markdown prose are still not treated as markers.
+  // Plain words in Markdown are also treated as markers.
   const prose = await run([edit('docs/a.md', 'x\n', `x\nThis ${['to', 'do'].join('')} list and the ${['x', 'it'].join('')} word are prose.\n`)]);
-  assert.equal(prose.verdict, 'pass');
+  assert.equal(prose.verdict, 'reject');
 });
 
 // ===========================================================================
@@ -1771,7 +1770,7 @@ test('T-38: Chinese in a commit message, PR title or branch is rejected', async 
   }
 });
 
-test('T-39: newly added Markdown gets the full rules: CJK in links, comments and front matter, invisible characters, long lines; prose words stay allowed', async () => {
+test('T-39: newly added Markdown gets the full rules: CJK in links, comments and front matter, invisible characters, long lines and prose markers', async () => {
   const lines = [
     `[a](http://x.invalid/${ZHONG}${WEN})`, `<!-- ${ZHONG}${WEN} -->`, `title: ${ZHONG}${WEN}`, `![${ZHONG}${WEN}](x.png)`, '[ref]: http://x.invalid/\u4e2d\u6587',
   ];
@@ -1783,7 +1782,7 @@ test('T-39: newly added Markdown gets the full rules: CJK in links, comments and
   const long = await run([addFile('docs/n.md', `${'a'.repeat(2100)}\n`)]);
   assert.ok(ruleIds(long).includes('G0-LIMIT'));
   const prose = await run([addFile('docs/n.md', `This ${PENDING} and ${['x', 'it'].join('')} mention are plain prose.\n`)]);
-  assert.equal(prose.verdict, 'pass');
+  assert.equal(prose.verdict, 'reject');
   const call = await run([addFile('docs/n.md', `use t.${['sk', 'ip'].join('')}('x') here\n`)]);
   assert.ok(ruleIds(call).includes('G0-TEST-SKIP'));
 });
@@ -2062,5 +2061,50 @@ test('binary printable runs: an allowed binary is scanned whole, and an over-cap
     const r = await runGate0(gitCommon(dir, { issue }));
     assert.equal(r.verdict, 'block');
     assert.ok(r.blocks.some((b) => b.ruleId === 'G0-LIMIT'), JSON.stringify(r.blocks));
+  });
+});
+
+test('ordered line changes expose a reversed translation', () => {
+  const delta = lineDelta(`${PROSE_ZH}\nEnglish\n`, `English\n${PROSE_ZH}\n`);
+  assert.ok(delta.added.some((line) => line.text === PROSE_ZH));
+});
+
+test('added markdown disable markers are rejected without call syntax', async () => {
+  for (const marker of ['test.' + 'skip', 'to' + 'do', 'x' + 'it']) {
+    const result = await run([addFile('docs/markers.md', marker)]);
+    assert.ok(result.findings.some((finding) => finding.ruleId === 'G0-TEST-SKIP'));
+  }
+});
+
+test('a verdict line in a fence cannot be replaced by a prose copy', async () => {
+  const base = `\`\`\`\n${VERDICT_LINE}\n\`\`\`\n`;
+  const head = `\`\`\`\nremoved\n\`\`\`\n${VERDICT_LINE}\n`;
+  const result = await run([edit('docs/a.md', base, head)]);
+  assert.ok(result.findings.some((finding) => finding.ruleId === 'G0-VERDICT-LINE'));
+});
+
+test('executed test count must not decrease from base', async () => {
+  const runner = async (spec) => ({ exitCode: 0, expectTests: true, counts: { tests: spec.compareBase ? 2 : 1, subtests: spec.compareBase ? 2 : 1, skipped: 0, [PENDING]: 0, cancelled: 0 } });
+  const result = await run([edit('docs/a.md', 'old', 'new')], { runner });
+  assert.ok(result.findings.some((finding) => finding.ruleId === 'G0-TEST-COUNT'));
+});
+
+test('prefixed versions in added prose and metadata are not IP addresses', async () => {
+  const result = await run([addFile('docs/a.md', `release v${V4}`)], { metadata: { prTitle: `release v${V4}` } });
+  assert.ok(!result.findings.some((finding) => finding.ruleId === 'HYG-IP'));
+});
+
+test('default runner rejects a conditional that prevents an existing case from executing', async () => {
+  await withRepo(async (dir) => {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' }, engines: { node: '>=20' } }));
+    mkdirSync(join(dir, 'test'));
+    const source = "import test from 'node:test';\ntest('one', () => {});\ntest('two', () => {});\n";
+    writeFileSync(join(dir, 'test', 'a.test.mjs'), source);
+    commitAll(dir, 'base tests');
+    sh(dir, 'branch', '-f', 'main', 'HEAD');
+    writeFileSync(join(dir, 'test', 'a.test.mjs'), source.replace("test('two', () => {});", "if (false) test('two', () => {});"));
+    commitAll(dir, 'conditional test');
+    const result = await runGate0({ root: dir, baseRef: 'main', issue: { allowedPaths: ['test/**'] }, denylist: FIXTURE_DENY, metadata: { prTitle: 't', branch: 'b' } });
+    assert.ok(result.findings.some((finding) => finding.ruleId === 'G0-TEST-COUNT'), JSON.stringify(result));
   });
 });

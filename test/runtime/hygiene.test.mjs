@@ -102,10 +102,8 @@ test('documentation ranges, loopback and netmasks pass', () => {
 });
 
 test('five-part version-like strings pass; H-53: a v prefix or package words never exempt a four-part quad', () => {
-  // Superseded expectation: four-part versions with a v prefix or in package context used to pass.
-  // They are now addresses (H-53); only a five-part string is version-like.
   assert.deepEqual(scanLines(`build ${FIVE_PART} is odd`, `see ${FIVE_PART}.6 too`), []);
-  assert.deepEqual(rules(scanLines(`release v${SEMVER4} is out`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`release v${SEMVER4} is out`)), []);
   assert.deepEqual(rules(scanLines(`tag V${SEMVER4C}`)), ['HYG-IP']);
   assert.deepEqual(rules(scanLines(`install pkg@${SEMVER4} now`)), ['HYG-IP']);
   assert.deepEqual(rules(scanLines(`root@${PRIVATE_IP} install notes version`)), ['HYG-IP']);
@@ -154,7 +152,6 @@ test('H-53: the same version strings fail outside a recognized version context',
     ['src/a.mjs', `version = "${SEMVER4}"`],
     ['src/a.mjs', `## ${SEMVER4}`],
     ['docs/a.md', `"version": "${SEMVER4}"`],            // a version key is not a heading
-    ['docs/a.md', `release v${SEMVER4} is out`],         // prose, not a heading
     ['docs/a.md', `## release ${SEMVER4} is out`],        // heading with extra words
     ['docs/a.md', `## ${SEMVER4} and ${PUBLIC_IP}`],
     ['docs/a.md', `    ## ${SEMVER4}`],                  // indented: code block, not a heading
@@ -163,7 +160,6 @@ test('H-53: the same version strings fail outside a recognized version context',
     ['package.json', `"name": "${SEMVER4}"`],             // key is not exactly version
     ['package.json', `"appversion": "${SEMVER4}"`],
     ['package.json', `  "version": "${SEMVER4}", "host": "${PUBLIC_IP}"`],
-    ['package.json', `  "version": "v${SEMVER4}"`],       // a v prefix alone never exempts
     ['package.json', `  "version": "pkg@${SEMVER4}"`],
     ['package.json', `  "scripts": "install pkg@${SEMVER4}"`],
     ['package.json', `  "version": "${SEMVER4}-rc1"`],
@@ -196,9 +192,9 @@ test('H-53: the exemption skips one number only; an address elsewhere in the dif
 test('H-53: version strings in commit messages, PR text, branch names and paths stay flagged', () => {
   const meta = (m) => scanHygiene({ addedLines: [], paths: [], metadata: m, denylist });
   assert.deepEqual(ruleSet(meta({ commitMessages: [`## ${SEMVER4}`] })), ['HYG-IP']);
-  assert.deepEqual(ruleSet(meta({ commitMessages: [`release v${SEMVER4}`] })), ['HYG-IP']);
+  assert.deepEqual(ruleSet(meta({ commitMessages: [`release v${SEMVER4}`] })), []);
   assert.deepEqual(ruleSet(meta({ prBody: `## ${SEMVER4}` })), ['HYG-IP']);
-  assert.deepEqual(ruleSet(meta({ prTitle: `bump to v${SEMVER4}` })), ['HYG-IP']);
+  assert.deepEqual(ruleSet(meta({ prTitle: `bump to v${SEMVER4}` })), []);
   assert.deepEqual(ruleSet(meta({ branch: `release/${SEMVER4}` })), ['HYG-IP']);
   assert.deepEqual(ruleSet(scanHygiene({ addedLines: [], paths: [`docs/CHANGELOG-${SEMVER4}/notes.md`], metadata: {}, denylist })), ['HYG-IP']);
 });

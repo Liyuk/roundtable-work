@@ -566,23 +566,22 @@ export function binaryStrings(buf, maxChars = MAX_BINARY_CHARS) {
   return out;
 }
 
-/** Multiset line diff of two texts (no git attribute or driver involved). */
+/** Ordered line diff; retain unchanged lines only when their order is preserved. */
 export function lineDelta(baseText, headText) {
   const split = (t) => (t === '' ? [] : t.replace(/\r$/gm, '').split('\n'));
-  const b = split(baseText);
-  const h = split(headText);
-  const pool = new Map();
-  for (const l of b) pool.set(l, (pool.get(l) || 0) + 1);
-  const added = [];
-  h.forEach((text, i) => {
-    if (pool.get(text) > 0) pool.set(text, pool.get(text) - 1); else added.push({ line: i + 1, text });
-  });
-  const hp = new Map();
-  for (const l of h) hp.set(l, (hp.get(l) || 0) + 1);
-  const removed = [];
-  b.forEach((text, i) => {
-    if (hp.get(text) > 0) hp.set(text, hp.get(text) - 1); else removed.push({ line: i + 1, text });
-  });
+  const b = split(baseText), h = split(headText);
+  if (b.length * h.length > 4000000) throw new GateSignal('G0-LIMIT');
+  const dp = Array.from({ length: b.length + 1 }, () => new Uint32Array(h.length + 1));
+  for (let i = b.length - 1; i >= 0; i--) for (let j = h.length - 1; j >= 0; j--) {
+    dp[i][j] = b[i] === h[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  }
+  const added = [], removed = [];
+  let i = 0, j = 0;
+  while (i < b.length || j < h.length) {
+    if (i < b.length && j < h.length && b[i] === h[j]) { i++; j++; }
+    else if (j === h.length || (i < b.length && (dp[i + 1][j] > dp[i][j + 1] || (dp[i + 1][j] === dp[i][j + 1] && HAS_CJK_RE.test(b[i]))))) removed.push({ line: ++i, text: b[i - 1] });
+    else added.push({ line: ++j, text: h[j - 1] });
+  }
   return { added, removed };
 }
 
@@ -804,9 +803,6 @@ const BRACKET_SKIP_RE = new RegExp(
 );
 const DYNAMIC_EVAL_RE = /\beval\s*\(|\bnew\s+Function\b/;
 const MARKDOWN_RE = /\.(?:md|markdown|mdx)$/i;
-// Markdown prose may contain the plain words; only the dotted call forms count there
-// (whitespace before the opening parenthesis is allowed, as in code).
-const MD_SKIP_RE = new RegExp(`\\.${'sk'}ip\\s*\\(|\\.${'on'}ly\\s*\\(`);
 const REGEX_PREV = '(,=:[!&|?{};+-*%<>~^';
 const REGEX_WORDS = new Set(['return', 'typeof', 'case', 'delete', 'void', 'throw', 'in', 'of', 'new', 'else', 'do', 'yield', 'await']);
 
@@ -1264,7 +1260,11 @@ const squash = (t) => String(t).replace(/\r/g, '').replace(/[ \t]+/g, ' ').trim(
 const unparen = (t) => squash(String(t).replace(/\s*\([^()\n]*\)/g, ''));
 function verdictLinesOf(text, registry) {
   const out = [];
-  for (const m of maskNonProse(text).matchAll(registry.verdictLine)) out.push(unparen(m[0]));
+  let fence = false;
+  for (const line of String(text).split('\n')) {
+    if (/^\s{0,3}(?:`{3,}|~{3,})/.test(line)) { fence = !fence; continue; }
+    for (const m of line.matchAll(registry.verdictLine)) out.push(`${fence ? 'fence' : 'prose'}:${unparen(m[0])}`);
+  }
   return out;
 }
 const multiset = (arr) => { const m = new Map(); for (const x of arr) m.set(x, (m.get(x) || 0) + 1); return m; };
@@ -1359,7 +1359,7 @@ export function checkFrozenTokens(files, registry) {
       const after = countTokenForInvariant(f.headContent, token);
       if (after < before) findings.push(mk('G0-TOKEN', f.path, 0, token));
     }
-    // The verdict line: every anchored base line (outside code fences and comments) must still
+    // The verdict line: every anchored base line, including fenced lines, must still
     // exist, as its own line, in the head version of the same file; a decoy elsewhere does not count.
     if (missingFrom(verdictLinesOf(f.baseContent, registry), verdictLinesOf(f.headContent, registry)).length > 0) {
       findings.push(mk('G0-VERDICT-LINE', f.path, 0, 'first-line'));
@@ -1459,7 +1459,7 @@ export function checkTestIntegrity(files, issue) {
   }
   if (issue.allowSkip !== true) {
     // Every added line of every file is checked, not just recognized test files. The same
-    // rules apply to newly added Markdown (dotted call forms only; prose words stay allowed).
+    // rules apply to newly added Markdown.
     for (const f of files) {
       if (f.status === 'D') continue;
       const md = MARKDOWN_RE.test(f.path);
@@ -1468,7 +1468,7 @@ export function checkTestIntegrity(files, issue) {
         const texts = [l.text];
         const norm = normalizeText(l.text);
         if (norm !== l.text) texts.push(norm);
-        const bad = texts.some((t) => (md ? MD_SKIP_RE : SKIP_RE).test(t)
+        const bad = texts.some((t) => SKIP_RE.test(t)
           || (code && BRACKET_SKIP_RE.test(t))
           || (code && TEST_DIR_RE.test(f.path) && DYNAMIC_EVAL_RE.test(t)));
         if (bad) findings.push(mk('G0-TEST-SKIP', f.path, l.line, l.text));
@@ -1718,6 +1718,12 @@ async function execute(opts, deadline) {
     // Evidence of execution (T-25, T-26): a passing exit code with no executed tests, or with
     // skipped, pending or cancelled tests, is not a pass. Injected runners may omit counters.
     if (result.exitCode === 0 && result.counts && typeof result.counts === 'object') {
+      if (result.expectTests === true) {
+        const baseResult = await withTimeout(() => Promise.resolve(runner({ ...spec, headSha: ctx.shas?.base, compareBase: true })), runnerTimeoutMs, controller);
+        if (!baseResult || baseResult.timedOut || baseResult.limit || baseResult.exitCode !== 0 || baseResult.expectTests !== true) throw new GateSignal('G0-RUNNER');
+        if (!Number.isInteger(result.counts.tests) || !Number.isInteger(baseResult.counts?.tests)) throw new GateSignal('G0-RUNNER');
+        if (result.counts.tests < baseResult.counts.tests) return [mk('G0-TEST-COUNT', '<tests>', 0, 'executed')];
+      }
       const c = result.counts;
       if (result.expectTests === true && !(c.tests > 0)) throw new GateSignal('G0-TESTS-NONE');
       // A touched test file that had cases on the base but whose run executes no case at all.

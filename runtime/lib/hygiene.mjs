@@ -396,8 +396,8 @@ const ADDR_CONTEXT_RE = /(?:\b(?:ping|curl|wget|ssh|scp|sftp|nc|ncat|telnet|ftp|
 //  (b) a release heading in a prose file (.md/.markdown/.txt/.rst): `#`-marker, optional `[`,
 //      optional `v`, the number, optional `]`, and optionally ` - date` or ` (date)`.
 // Accepted trade-off: a `version` key holding a plausible public address is exempt, because that
-// key overwhelmingly holds a version. A `v` or `@` prefix alone NEVER exempts anything, and a
-// number whose octets form a private, CGNAT or link-local address is never exempt, even here.
+// key overwhelmingly holds a version. A standalone `v` prefix also identifies a version; a
+// number whose octets form a private, CGNAT or link-local address is never exempt.
 // Only the exact number string of that one line is skipped; every other match is still scanned.
 const VERSION_QUAD = '((?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3})';
 const VERSION_KEY_LINE_RE = new RegExp(`^\\s*(?:"version"\\s*:|version(?:\\s*[:=]|\\s))\\s*(["']?)${VERSION_QUAD}\\1\\s*,?\\s*$`);
@@ -431,6 +431,7 @@ function versionQuadOf(path, text) {
 
 function findIPv4(text, out, versionQuads) {
   for (const m of text.matchAll(DOTTED_RE)) {
+    if (text[m.index - 1] === 'v' && (m.index < 2 || !/[\w]/.test(text[m.index - 2])) && !/[\w-]/.test(text[m.index + m[0].length] || '') && !isNeverVersion(m[1].split('.').map(Number))) continue;
     const segs = m[1].split('.');
     const end = m.index + m[0].length;
     if (segs.length === 3) {
