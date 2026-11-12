@@ -162,3 +162,12 @@ test('runQueue selects tracker fixtures after dependencies close', async () => {
     assert.deepEqual((await runQueue({ workRoot: root, queue: provider, handler })).outcomes.map(({ id, status }) => [id, status]), [['10', 'done']]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('tracker intake includes rt:ask and rt:blocked issues and carries owner identity for resumption', async () => {
+  const paused = issue(32, ['rt:ask'], { title: '[A] paused' });
+  const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [paused] }, { includeRunning: true });
+  const items = await provider();
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].author, paused.author);
+  assert.deepEqual(items[0].labels.map(label => label.name), ['rt:ask']);
+});

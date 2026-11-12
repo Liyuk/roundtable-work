@@ -19,8 +19,8 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
   for (const issue of issues) {
     if (issue.state?.toUpperCase() !== 'OPEN' || issue.author?.login?.toLowerCase() !== owner.toLowerCase()) continue;
     const labels = labelsOf(issue);
-    if (labels.some(label => excluded.has(label) && !(includeRunning && label === 'rt:running')) || /^\[owner\]/i.test(issue.title ?? '') || /^\[epic\]/i.test(issue.title ?? '') || /^(?:\[[^\]]+\]\s*)?epic\s*:/i.test(issue.title ?? '') || labels.includes('type:epic')) continue;
-    const recovering = includeRunning && labels.includes('rt:running');
+    if (labels.some(label => excluded.has(label) && !(includeRunning && ['rt:running', 'rt:ask', 'rt:blocked'].includes(label))) || /^\[owner\]/i.test(issue.title ?? '') || /^\[epic\]/i.test(issue.title ?? '') || /^(?:\[[^\]]+\]\s*)?epic\s*:/i.test(issue.title ?? '') || labels.includes('type:epic')) continue;
+    const recovering = includeRunning && labels.some(label => ['rt:running', 'rt:ask', 'rt:blocked'].includes(label));
     if (!recovering && labels.includes('rt:proposed') && !labels.includes('rt:approved')) continue;
     if (!labels.length) { triage.push(issue); continue; }
     if (!recovering && !labels.includes('type:bug') && !labels.includes('type:feature')) continue;
@@ -29,7 +29,7 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
     candidates.push({ issue, bug: labels.includes('type:bug') ? 0 : 1, rank: rank < 0 ? 3 : rank, self: labels.includes('rt:self') ? 0 : 1 });
   }
   candidates.sort((a, b) => a.bug - b.bug || a.rank - b.rank || a.self - b.self || String(a.issue.createdAt).localeCompare(String(b.issue.createdAt)) || a.issue.number - b.issue.number);
-  return { issues: candidates.map(({ issue }) => ({ id: String(issue.number), priority: 0, state: 'queued', title: issue.title, series: /^\[([^\]]+)\]/.exec(issue.title ?? '')?.[1] ?? null, number: issue.number, url: issue.url, ...(includeRunning ? { labels: issue.labels, body: issue.body } : {}) })), triage };
+  return { issues: candidates.map(({ issue }) => ({ id: String(issue.number), priority: 0, state: 'queued', title: issue.title, series: /^\[([^\]]+)\]/.exec(issue.title ?? '')?.[1] ?? null, number: issue.number, url: issue.url, ...(includeRunning ? { labels: issue.labels, body: issue.body, author: issue.author } : {}) })), triage };
 }
 
 /** A fresh tracker snapshot is read for each queue pass. Triage is available on the provider. */
