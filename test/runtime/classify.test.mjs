@@ -66,3 +66,12 @@ test('bad input is rejected', () => {
   assert.throws(() => classify(null), TypeError);
   assert.throws(() => classify({ stage: 'nope' }), TypeError);
 });
+
+test('a failed or timed-out finalize step is its own class: asks a person and never spends a developer retry', () => {
+  for (const [event, reason] of [[{ exitCode: 1 }, 'nonzero_exit'], [{ timedOut: true }, 'timeout']]) {
+    const r = classify({ stage: 'finalize', ...event });
+    assert.deepEqual([r.class, r.decision, r.reason, r.consumesDeveloperRetry, r.preserveArtifacts], ['finalize_failure', 'ask', reason, false, true]);
+    assert.ok(CLASSES.includes(r.class));
+  }
+  assert.deepEqual([classify({ stage: 'finalize', exitCode: 0 }).class, classify({ stage: 'finalize', exitCode: 0 }).decision], ['ok', 'done']);
+});

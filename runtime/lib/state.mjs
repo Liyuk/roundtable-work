@@ -99,6 +99,30 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
       s.attempts[key] += 1;
     }),
 
+    /**
+     * Spend one developer retry and reset the checkpoint in a single atomic write, so a crash can
+     * never leave a bumped counter with the old checkpoint (or the reverse). Returns the saved state.
+     */
+    retryDeveloper: (id, type, detail) => update(id, (s) => {
+      s.attempts.developer += 1;
+      s.checkpoint = null;
+      event(s, type, detail);
+    }),
+
+    /**
+     * End a wake in `interrupted` for a non-resumable phase that failed, using the same recovery
+     * record shape as crash recovery. Artifacts are only recorded, never touched.
+     */
+    markInterrupted: (id, phase, type) => update(id, (s) => {
+      if (!NON_RESUMABLE_PHASES.includes(phase)) throw new TypeError(`Phase is resumable: ${phase}`);
+      s.status = 'interrupted';
+      s.recovery = {
+        at: now(), interruptedPhase: phase, lastCheckpoint: s.checkpoint?.phase ?? null,
+        resumePhase: phase, artifacts: { ...s.artifacts },
+      };
+      event(s, type, phase);
+    }),
+
     /** Take the per-issue lease unless another owner holds an unexpired one. */
     async acquireLease(id, owner) {
       let acquired = false;

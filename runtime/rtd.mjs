@@ -21,10 +21,15 @@ export const EXIT_LOCKED = 75;
  * It must not delete worktree / diff / output artifacts; it reports their paths (returned or via
  * `recordArtifacts`, which persists them immediately so a crash cannot lose the record).
  *
+ * A failed or timed-out `finalizing` step ends the wake as `interrupted` (decision `ask`, class
+ * `finalize_failure`, `recovery.resumePhase = 'finalizing'`): it is not retried from development and
+ * spends no developer retry. A `PathEscapeError` thrown by the handler's own `recordArtifacts()` is a
+ * scope mismatch (`out-of-scope`), not a developer failure.
+ *
  * Liveness contract: the single-flight lock has a lease of `lockTtlMs`. It is renewed at the start of
  * every phase and by every `heartbeat()` call, so a handler that runs longer than `lockTtlMs / 2`
  * must call `heartbeat()` at least that often. A handler that does not may find its lock taken over
- * by another process. When the lock is lost (a refresh fails) the wake is aborted: no further handler
+ * by another process. Known limitation: there is no automatic lock renewal while a handler runs. When the lock is lost (a refresh fails) the wake is aborted: no further handler
  * runs, nothing more is recorded for the interrupted phase, the other process's lock is left alone,
  * per-issue state and artifacts are kept, and the issue lease is released only if it is still ours.
  * The pass then returns `{ status:'lock_lost', outcomes, skipped }` (outcomes holds finished issues
@@ -98,7 +103,10 @@ export async function runQueue({
         try {
           step = { ...(await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts })) };
         } catch (err) {
-          step = { exitCode: 1, output: `handler error: ${err?.message ?? err}` };
+          // A path escape from the handler's own recordArtifacts() is a scope problem, not a developer failure.
+          step = err instanceof PathEscapeError
+            ? { scopeMismatch: true, output: `handler error: ${err.message}` }
+            : { exitCode: 1, output: `handler error: ${err?.message ?? err}` };
         }
         if (lockLost || !(await refreshLock())) return lost();
         try {
@@ -116,10 +124,14 @@ export async function runQueue({
           if (phase === 'finalizing') return await finish('done', cls, undefined, 'done');
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
-          const next = await store.bump(id, 'developer');
+          // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
+          const next = await store.retryDeveloper(id, cls, reason);
           if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop');
-          await store.update(id, (s) => { s.checkpoint = null; s.lastEvent = { type: cls, at: now(), detail: reason }; });
           phase = PHASES[0];
+        } else if (cls === 'finalize_failure') {
+          // Finalizing may already have had external side effects: never re-run it automatically.
+          await store.markInterrupted(id, phase, cls);
+          return out('interrupted', { class: cls, reason, decision: 'ask', phase });
         } else if (cls === 'reviewer_unavailable') {
           const next = await store.bump(id, 'reviewerUnavailable');
           if (next.attempts.reviewerUnavailable >= maxReviewerUnavailable) return await finish('stop', cls, 'reviewer_unavailable_budget_exhausted', 'stop');

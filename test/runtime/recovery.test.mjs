@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import fsp from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { runQueue, EXIT_LOCKED } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
@@ -353,6 +355,117 @@ for (const useHeartbeat of [true, false]) {
       await assertFixturesIntact(root, files);
       assert.equal((await store.load('10')).attempts.wakes, 0, 'the next issue was never woken');
       await thief.release();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test('developer retry: counter and checkpoint reset are one durable write; a crash right after it resumes at developing', async () => {
+  const root = await tmp();
+  const realRename = fsp.rename;
+  const snapshots = [];
+  let crashed = false;
+  try {
+    const clock = { t: 1_000_000 };
+    // Simulate a process crash: once the retry write has landed, no further write reaches the disk.
+    fsp.rename = async (from, to) => {
+      if (crashed) throw new Error('simulated crash');
+      await realRename(from, to);
+      if (String(to).endsWith('49.json')) {
+        const s = JSON.parse(await readFile(to, 'utf8'));
+        snapshots.push({ developer: s.attempts.developer, checkpoint: s.checkpoint?.phase ?? null });
+        if (s.attempts.developer === 1) crashed = true;
+      }
+    };
+    syncBuiltinESMExports();
+    const handler = async ({ phase }) => phase === 'developing' ? { exitCode: 0, output: 'ok' }
+      : phase === 'testing' ? { exitCode: 0 } : { exitCode: 0, output: '审查结论：打回\nfix it' };
+    await assert.rejects(runQueue({ workRoot: root, queue: ['49'], handler, now: () => clock.t }), /simulated crash/);
+    fsp.rename = realRename;
+    syncBuiltinESMExports();
+
+    for (const snap of snapshots) if (snap.developer === 1) assert.equal(snap.checkpoint, null, 'no durable state has the bumped counter with the old checkpoint');
+    const store = await createStateStore({ workRoot: root, now: () => clock.t });
+    const mid = await store.load('49');
+    assert.equal(mid.attempts.developer, 1);
+    assert.equal(mid.checkpoint, null);
+
+    clock.t += 3_600_000;
+    const phases = [];
+    const result = await runQueue({
+      workRoot: root, queue: ['49'], now: () => clock.t, maxDeveloperAttempts: 2,
+      handler: async (ctx) => { phases.push(ctx.phase); return handler(ctx); },
+    });
+    assert.equal(phases[0], 'developing', 'recovery resumes at developing, not at a later phase');
+    assert.equal(result.outcomes[0].reason, 'developer_budget_exhausted');
+    assert.equal((await store.load('49')).attempts.developer, 2, 'exactly one more retry was spent');
+  } finally {
+    fsp.rename = realRename;
+    syncBuiltinESMExports();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a path escape thrown by the handler\'s own recordArtifacts() is a scope mismatch: no developer retry, artifacts kept', async () => {
+  const root = await tmp();
+  try {
+    const outside = await mkdtemp(join(tmpdir(), 'rt-outside-'));
+    try {
+      await symlink(outside, join(root, 'dirlink'));
+      const files = await writeFixtures(root, '12');
+      const escapes = { dotdot: '../../etc/passwd', symlink: 'dirlink/secret' };
+      for (const [name, bad] of Object.entries(escapes)) {
+        const id = `esc-${name}`;
+        let calls = 0;
+        const handler = async ({ recordArtifacts }) => {
+          calls++;
+          await recordArtifacts({ output: files.output });
+          await recordArtifacts({ diff: bad });
+          return { exitCode: 0, output: 'ok' };
+        };
+        const r = await runQueue({ workRoot: root, queue: [id], handler, maxDeveloperAttempts: 5 });
+        assert.deepEqual([r.outcomes[0].status, r.outcomes[0].class, r.outcomes[0].decision], ['out-of-scope', 'scope_mismatch', 'ask'], name);
+        assert.equal(calls, 1, `${name}: handler not rerun`);
+        const s = await (await createStateStore({ workRoot: root })).load(id);
+        assert.equal(s.attempts.developer, 0, `${name}: no developer retry spent`);
+        assert.equal(s.artifacts.output, files.output, `${name}: artifacts recorded before the escape are kept`);
+        assert.equal(s.artifacts.diff, undefined);
+      }
+      await assertFixturesIntact(root, files);
+    } finally { await rm(outside, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const [name, failure] of [['failure', { exitCode: 1, output: 'push failed' }], ['timeout', { timedOut: true }], ['handler error', null]]) {
+  test(`finalizing ${name}: wake ends interrupted/ask, finalizing is not rerun, no developer retry spent, artifacts kept`, async () => {
+    const root = await tmp();
+    try {
+      const files = await writeFixtures(root, '13');
+      const phases = [];
+      const handler = async ({ phase }) => {
+        phases.push(phase);
+        if (phase === 'developing') return { exitCode: 0, output: 'ok', artifacts: files, changedFiles: 1 };
+        if (phase === 'finalizing') { if (failure === null) throw new Error('boom'); return failure; }
+        return { exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' };
+      };
+      const opts = { workRoot: root, queue: ['13'], handler, maxDeveloperAttempts: 5 };
+      const r = await runQueue(opts);
+      assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing'], 'no rerun from development');
+      assert.deepEqual([r.outcomes[0].status, r.outcomes[0].class, r.outcomes[0].decision, r.outcomes[0].phase], ['interrupted', 'finalize_failure', 'ask', 'finalizing']);
+      const store = await createStateStore({ workRoot: root });
+      const s = await store.load('13');
+      assert.equal(s.status, 'interrupted');
+      assert.equal(s.attempts.developer, 0);
+      assert.equal(s.checkpoint.phase, 'reviewing', 'work checkpoint kept');
+      assert.equal(s.recovery.resumePhase, 'finalizing');
+      assert.equal(s.recovery.interruptedPhase, 'finalizing');
+      assert.equal(s.recovery.lastCheckpoint, 'reviewing');
+      assert.deepEqual(s.recovery.artifacts, files);
+      assert.equal(s.lease, null);
+      await assertFixturesIntact(root, files);
+      // A later pass does not pick it up on its own.
+      const again = await runQueue(opts);
+      assert.equal(again.outcomes[0].status, 'interrupted');
+      assert.equal(phases.length, 4);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }

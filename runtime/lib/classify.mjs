@@ -12,6 +12,7 @@ export const CLASSES = Object.freeze([
   'review_rejected',
   'human_block',
   'scope_mismatch',
+  'finalize_failure',
 ]);
 
 // First-line verdict contract: `审查结论：通过 | 打回 | 阻塞`. The regex only captures the word;
@@ -46,7 +47,8 @@ export function classify(event) {
       if (failed(event)) return result('test_failure', 'continue', { reason: event.timedOut ? 'timeout' : 'nonzero_exit' });
       return result('ok', 'continue');
     case 'finalize':
-      if (failed(event)) return result('developer_failure', 'continue', { reason: event.timedOut ? 'timeout' : 'nonzero_exit' });
+      // Finalizing may have had external side effects, so a failure is never retried from development.
+      if (failed(event)) return result('finalize_failure', 'ask', { reason: event.timedOut ? 'timeout' : 'nonzero_exit' });
       return result('ok', 'done');
     case 'reviewer': {
       if (event.timedOut) return result('reviewer_unavailable', 'wait', { reason: 'timeout' });
