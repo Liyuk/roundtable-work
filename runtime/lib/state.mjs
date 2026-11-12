@@ -9,6 +9,9 @@ export const PHASES = Object.freeze(['developing', 'testing', 'reviewing', 'fina
 /** Phases with external side effects: a crash inside them is never silently re-run. */
 export const NON_RESUMABLE_PHASES = Object.freeze(['finalizing']);
 
+/** Per-state-file tail of the update queue (see `update`). Shared by all stores in the process. */
+const CHAINS = new Map();
+
 const ARTIFACT_KEYS = ['worktree', 'diff', 'output'];
 
 export const freshState = (id) => ({
@@ -57,10 +60,28 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
     return state;
   }
 
+  /**
+   * Read-modify-write one issue's state. Calls for the same state file run strictly one after another
+   * (a per-file promise chain shared by every store in this process), so two overlapping updates, e.g.
+   * a heartbeat and a recordArtifacts, can never load the same snapshot and overwrite each other. A
+   * failing call (the callback throws) does not block the calls queued behind it. `fn` must not call
+   * `update` for the same id itself (it would wait for its own turn forever). Nothing is written when
+   * `fn` leaves the state unchanged, so a no-op (e.g. releasing a lease we do not own) never rewrites
+   * state that another process may have changed in the meantime.
+   */
   async function update(id, fn) {
-    const state = await load(id);
-    const next = (await fn(state)) ?? state;
-    return save(next);
+    const key = await fileFor(id);
+    const previous = CHAINS.get(key) ?? Promise.resolve();
+    const run = previous.then(async () => {
+      const state = await load(id);
+      const before = JSON.stringify(state);
+      const next = (await fn(state)) ?? state;
+      return JSON.stringify(next) === before ? next : save(next);
+    });
+    const tail = run.then(() => {}, () => {});
+    CHAINS.set(key, tail);
+    tail.then(() => { if (CHAINS.get(key) === tail) CHAINS.delete(key); });
+    return run;
   }
 
   const event = (state, type, detail) => { state.lastEvent = { type, at: now(), ...(detail === undefined ? {} : { detail }) }; };
@@ -87,9 +108,11 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
       event(s, 'checkpoint', phase);
     }),
 
+    /** Liveness signal from the lease owner. Does nothing when another owner holds the lease. */
     heartbeat: (id, owner) => update(id, (s) => {
+      if (s.lease && s.lease.owner !== owner) return;
       s.heartbeatAt = now();
-      if (s.lease && s.lease.owner === owner) s.lease.expiresAt = now() + leaseTtlMs;
+      if (s.lease) s.lease.expiresAt = now() + leaseTtlMs;
     }),
 
     setEvent: (id, type, detail) => update(id, (s) => event(s, type, detail)),
@@ -135,6 +158,7 @@ export async function createStateStore({ workRoot, now = Date.now, leaseTtlMs = 
       return { acquired, state };
     },
 
+    /** Release the lease only if it is ours; otherwise nothing is written. */
     releaseLease: (id, owner) => update(id, (s) => { if (s.lease?.owner === owner) s.lease = null; }),
 
     /** Record artifact locations (worktree / diff / output). Paths must stay inside the work root. */

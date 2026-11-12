@@ -36,13 +36,15 @@ export function exitCodeFor(result) {
  *
  * Liveness contract: the single-flight lock has a lease of `lockTtlMs`. It is renewed at the start of
  * every phase, by every `heartbeat()` call, and automatically on an unref'd timer while a handler runs
- * (every `max(lockRenewMinMs, floor(lockTtlMs / 3))` ms, `lockRenewMinMs` defaults to 1000), so a quiet
+ * (every `max(lockRenewMinMs, floor(lockTtlMs / 3))` ms, `lockRenewMinMs` defaults to 1000; a `TypeError` is
+ * thrown up front unless both are positive and `lockRenewMinMs <= lockTtlMs / 2`), so a quiet
  * handler keeps the lock and no other process can run the same queue meanwhile. `heartbeat()` stays
  * available as an extra liveness signal for the per-issue lease. When the lock is lost (a refresh fails
  * or throws) the `signal` passed to the handler is aborted and the wake is aborted once the handler
  * settles: no further handler runs, nothing more is recorded for the interrupted phase (the handler's
  * own `recordArtifacts()` / `heartbeat()` calls reject), the other process's lock is left alone,
- * per-issue state and artifacts are kept, and the issue lease is released only if it is still ours.
+ * per-issue state and artifacts are kept, and nothing at all is written for the issue afterwards (the
+ * issue lease is not released; it expires on its own and the successor owns the state).
  * The pass then returns `{ status:'lock_lost', outcomes, skipped }` (outcomes holds finished issues
  * and the interrupted one with `status:'lock_lost'`). The CLI exits 0 for `ok`, 75 (`EXIT_LOCKED`) for
  * `locked` and 76 (`EXIT_LOCK_LOST`) for `lock_lost`, see `exitCodeFor()`.
@@ -58,6 +60,11 @@ export async function runQueue({
   maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
+  // The lock must be renewed well before it expires: at least two renewals fit into one lease.
+  for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs]]) {
+    if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
+  }
+  if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
   const lock = await acquireLock({ lockPath: await store.confinement.resolve('rtd.lock'), owner, now, ttlMs: lockTtlMs });
@@ -181,7 +188,8 @@ export async function runQueue({
         }
       }
     } finally {
-      await store.releaseLease(id, owner);
+      // After a lost lock another process owns the state: write nothing. Our lease simply expires.
+      if (!lockLost) await store.releaseLease(id, owner);
     }
   }
 }

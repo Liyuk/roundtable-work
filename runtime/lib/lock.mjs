@@ -33,6 +33,71 @@ async function createExclusive(path, content, tmp) {
 }
 
 /**
+ * Remove the file `path` that was judged stale because its content was `staleRaw`, without ever
+ * deleting a different file that replaced it in the meantime. A plain "re-read, then unlink" is a
+ * check-then-act race. So the file is first renamed to the unique name `aside` (atomic: whatever sits
+ * at `path` at that instant is the file we hold), then its content is read. Only if it equals
+ * `staleRaw` is it deleted; otherwise it was somebody's live file, and it is put back with `link()`
+ * (never overwriting: EEXIST is ignored).
+ *
+ * Known limitation: while a live file is held aside, `path` is absent for the duration of one read and
+ * one link (microseconds). A third process creating `path` in that gap would overlap the live
+ * holder, and the put-back is then lost (EEXIST). Or the live file's holder may already have finished;
+ * the put-back then restores a guard whose pid is still alive and unexpired, which is not judged stale, so
+ * it can block further breaking for up to `MUTEX_TTL_MS` (about 10 s). Meanwhile `withMutex` gives up
+ * after about 2 s and returns `ok:false`. That is a liveness effect, not an exclusion violation: the lock
+ * acquisition fails and the issue is retried on the next wake. It needs a crashed holder plus several
+ * simultaneous contenders at the same instant. It is only used for the `.break` guard below, which is
+ * itself held for microseconds, so a stale one needs a crash inside that window; no atomic primitive
+ * available here closes the gap completely.
+ */
+export async function removeStaleFile(path, staleRaw, aside) {
+  try {
+    await rename(path, aside);
+  } catch (err) {
+    if (err.code === 'ENOENT') return; // someone else already removed it
+    throw err;
+  }
+  try {
+    if ((await readRaw(aside)) !== staleRaw) {
+      await link(aside, path).catch((err) => { if (err.code !== 'EEXIST') throw err; });
+    }
+  } finally {
+    await unlink(aside).catch(() => {});
+  }
+}
+
+const isStaleMutexBody = (raw) => {
+  const other = raw === null ? null : parse(raw);
+  return raw !== null && (!other || !pidAlive(other.pid) || !(other.expiresAt > Date.now()));
+};
+
+/**
+ * Remove the mutex `mutexPath` whose content `raw` was judged stale (crashed holder). Several
+ * contenders may judge it stale at once, and "check content, then unlink" would let a slow one delete
+ * the live mutex a faster one created in between. So removal is serialised by a second guard file
+ * `<mutex>.break`, created exclusively like the mutex; only its holder re-checks the content and
+ * unlinks, so while the guard is held nobody else removes the mutex and a replaced mutex (content
+ * differs) is left alone. A guard left behind by a crashed breaker is itself removed with
+ * `removeStaleFile` (see its known limitation). Returns false when another breaker holds the guard.
+ */
+async function breakStaleMutex(mutexPath, raw, id) {
+  const breakPath = `${mutexPath}.break`;
+  const mine = JSON.stringify({ pid: process.pid, id, expiresAt: Date.now() + MUTEX_TTL_MS });
+  if (await createExclusive(breakPath, mine, `${breakPath}.${process.pid}.${id}.tmp`)) {
+    try {
+      if ((await readRaw(mutexPath)) === raw) await unlink(mutexPath).catch(() => {});
+    } finally {
+      if ((await readRaw(breakPath)) === mine) await unlink(breakPath).catch(() => {});
+    }
+    return true;
+  }
+  const guard = await readRaw(breakPath);
+  if (isStaleMutexBody(guard)) await removeStaleFile(breakPath, guard, `${breakPath}.${process.pid}.${id}.stale`);
+  return false;
+}
+
+/**
  * Run `fn` while holding the short-lived mutex `<lockPath>.mutex`. Every mutation of an existing lock
  * (stale takeover, refresh, release) happens inside it, so none of them can interleave. The mutex is
  * created atomically with its pid and a short expiry; one whose pid is dead or whose expiry has
@@ -47,12 +112,7 @@ async function withMutex(lockPath, fn, waitMs = MUTEX_WAIT_MS) {
   for (;;) {
     if (await createExclusive(mutexPath, mine, `${mutexPath}.${process.pid}.${id}.tmp`)) break;
     const raw = await readRaw(mutexPath);
-    const other = raw === null ? null : parse(raw);
-    if (raw !== null && (!other || !pidAlive(other.pid) || !(other.expiresAt > Date.now()))) {
-      // Stale mutex: remove it only if it is still the very file we judged stale.
-      if ((await readRaw(mutexPath)) === raw) await unlink(mutexPath).catch(() => {});
-      continue;
-    }
+    if (isStaleMutexBody(raw) && (await breakStaleMutex(mutexPath, raw, id))) continue;
     if (Date.now() >= deadline) return { ok: false };
     await sleep(5 + Math.floor(Math.random() * 10));
   }

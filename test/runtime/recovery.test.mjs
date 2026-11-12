@@ -350,7 +350,8 @@ for (const useHeartbeat of [true, false]) {
       const store = await createStateStore({ workRoot: root, now: () => clock.t });
       const state = await store.load('9');
       assert.equal(state.checkpoint, null, 'the interrupted phase is not checkpointed');
-      assert.equal(state.lease, null, 'our own issue lease is released');
+      // Old behaviour (lease released after the loss) was dropped on purpose: after a lost lock nothing is written.
+      assert.equal(state.lease?.owner, `rtd-${process.pid}`, 'the lease is left as it was and expires on its own');
       assert.equal(state.artifacts.worktree, files.worktree);
       await assertFixturesIntact(root, files);
       assert.equal((await store.load('10')).attempts.wakes, 0, 'the next issue was never woken');

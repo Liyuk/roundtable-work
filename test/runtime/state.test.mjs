@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStateStore } from '../../runtime/lib/state.mjs';
@@ -114,5 +114,59 @@ test('unknown phases are rejected', async () => {
   try {
     await assert.rejects(store.beginPhase('1', 'dancing'), TypeError);
     await assert.rejects(store.checkpoint('1', 'dancing'), TypeError);
+  } finally { await cleanup(); }
+});
+
+test('concurrent heartbeat and recordArtifacts never lose an artifact (updates for one id are serialised)', async () => {
+  const { root, store, cleanup } = await setup();
+  try {
+    for (let round = 0; round < 60; round++) {
+      const id = `c${round}`;
+      await store.acquireLease(id, 'a');
+      // A second store on the same work root shares the queue: serialisation is per state file, not per store object.
+      const other = await createStateStore({ workRoot: root, now: () => 1_000_000, leaseTtlMs: 1000 });
+      await Promise.all([
+        store.heartbeat(id, 'a'), other.heartbeat(id, 'a'),
+        store.recordArtifacts(id, { worktree: `wt/${round}` }),
+        other.heartbeat(id, 'a'),
+        other.recordArtifacts(id, { diff: `out/${round}.diff` }),
+        store.heartbeat(id, 'a'),
+        store.recordArtifacts(id, { output: `out/${round}.txt` }),
+        store.heartbeat(id, 'a'),
+      ]);
+      assert.deepEqual((await store.load(id)).artifacts, { worktree: `wt/${round}`, diff: `out/${round}.diff`, output: `out/${round}.txt` }, `round ${round}`);
+    }
+  } finally { await cleanup(); }
+});
+
+test('a failing update does not wedge later updates for the same id, and nothing is written for it', async () => {
+  const { store, cleanup } = await setup();
+  try {
+    await store.update('1', (s) => { s.changedFiles = 1; });
+    const results = await Promise.allSettled([
+      store.update('1', (s) => { s.changedFiles = 2; }),
+      store.update('1', () => { throw new Error('boom'); }),
+      store.recordArtifacts('1', { diff: '../escape.diff' }),
+      store.update('1', (s) => { s.changedFiles += 10; }),
+    ]);
+    assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected', 'rejected', 'fulfilled']);
+    assert.equal((await store.load('1')).changedFiles, 12);
+  } finally { await cleanup(); }
+});
+
+test('an update that changes nothing, or a lease release by a non-owner, writes nothing', async () => {
+  const { root, store, cleanup } = await setup();
+  try {
+    await store.acquireLease('1', 'a');
+    const file = join(root, 'state', '1.json');
+    const snap = async () => ({ raw: await readFile(file, 'utf8'), ino: (await stat(file)).ino });
+    const before = await snap();
+    await store.releaseLease('1', 'intruder');
+    await store.update('1', () => {});
+    await store.heartbeat('1', 'intruder');
+    assert.deepEqual(await snap(), before);
+    await store.releaseLease('1', 'a');
+    assert.equal((await store.load('1')).lease, null);
+    assert.notEqual((await snap()).ino, before.ino, 'the owner\'s release is written');
   } finally { await cleanup(); }
 });

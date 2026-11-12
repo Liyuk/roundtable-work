@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,7 +80,8 @@ test('lock lost during a quiet handler: the signal aborts, the wake ends lock_lo
     const state = await store.load('5');
     assert.equal(state.checkpoint, null);
     assert.equal(state.artifacts.output, undefined);
-    assert.equal(state.lease, null);
+    // Old behaviour (lease released after the loss) was dropped on purpose: after a lost lock nothing is written.
+    assert.equal(state.lease?.owner, `rtd-${process.pid}`, 'the lease is left as it was and expires on its own');
     assert.equal((await store.load('6')).attempts.wakes, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -128,5 +129,60 @@ export default async function ({ phase }) {
     const ok = await cli('plain');
     assert.equal(ok.code, 0);
     assert.equal(JSON.parse(ok.out).status, 'ok');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('bad lock timing is rejected up front with a TypeError; valid and default timing is accepted', async () => {
+  const root = await tmp();
+  try {
+    const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' });
+    const bad = [
+      { lockTtlMs: 100, lockRenewMinMs: 1000 }, // expires before the first renewal
+      { lockTtlMs: 1000, lockRenewMinMs: 1000 },
+      { lockTtlMs: 1000, lockRenewMinMs: 501 }, // more than half a lease
+      { lockTtlMs: 1000, lockRenewMinMs: 0 },
+      { lockTtlMs: 1000, lockRenewMinMs: -5 },
+      { lockTtlMs: 0, lockRenewMinMs: 1 },
+      { lockTtlMs: Number.NaN, lockRenewMinMs: 1 },
+      { lockTtlMs: 1000, lockRenewMinMs: '10' },
+      { lockTtlMs: Infinity, lockRenewMinMs: 10 },
+    ];
+    for (const opts of bad) {
+      await assert.rejects(runQueue({ workRoot: root, queue: ['1'], handler, ...opts }), TypeError, JSON.stringify(opts));
+    }
+    // Rejected before anything ran: no lock file, no state.
+    await assert.rejects(readFile(join(root, 'rtd.lock')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(root, 'state', '1.json')), { code: 'ENOENT' });
+    // Exactly half a lease, and the defaults, are valid.
+    assert.equal((await runQueue({ workRoot: root, queue: ['1'], handler, lockTtlMs: 1000, lockRenewMinMs: 500 })).status, 'ok');
+    assert.equal((await runQueue({ workRoot: root, queue: ['2'], handler })).status, 'ok');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('after a lost lock the successor\'s lease, checkpoint, artifacts and state file are not written to', async () => {
+  const root = await tmp();
+  try {
+    const lockPath = join(root, 'rtd.lock');
+    const store = await createStateStore({ workRoot: root });
+    let before;
+    const handler = async ({ signal }) => {
+      // The successor takes the lock and the issue state while this handler is still running.
+      await writeFile(lockPath, JSON.stringify({ owner: 'successor', pid: process.pid, token: 'succ', acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 }));
+      await store.update('7', (s) => {
+        s.lease = { owner: 'rtd-successor', expiresAt: Date.now() + 60_000 };
+        s.checkpoint = { phase: 'testing', at: 1 };
+        s.artifacts = { output: 'out/successor.txt' };
+      });
+      before = { raw: await readFile(join(root, 'state', '7.json'), 'utf8'), ino: (await stat(join(root, 'state', '7.json'))).ino };
+      await new Promise((resolve) => { if (signal.aborted) return resolve(); signal.addEventListener('abort', resolve, { once: true }); setTimeout(resolve, 5000); });
+      return { exitCode: 0, output: 'ok', artifacts: { output: 'out/ours.txt' } };
+    };
+    const result = await runQueue({ workRoot: root, queue: ['7'], handler, ...RENEW });
+    assert.equal(result.status, 'lock_lost');
+    const file = join(root, 'state', '7.json');
+    assert.equal(await readFile(file, 'utf8'), before.raw, 'the successor\'s state is byte-for-byte unchanged');
+    assert.equal((await stat(file)).ino, before.ino, 'the state file was not rewritten at all');
+    const state = await store.load('7');
+    assert.deepEqual([state.lease.owner, state.checkpoint.phase, state.artifacts.output], ['rtd-successor', 'testing', 'out/successor.txt']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
