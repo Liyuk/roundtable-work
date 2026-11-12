@@ -171,3 +171,28 @@ test('an update that changes nothing, or a lease release by a non-owner, writes 
     assert.notEqual((await snap()).ino, before.ino, 'the owner\'s release is written');
   } finally { await cleanup(); }
 });
+
+test('state save cannot follow an ancestor swapped during the write', async () => {
+  const fs = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'rt-state-race-'));
+  const outside = await mkdtemp(join(tmpdir(), 'rt-state-outside-'));
+  try {
+    await fs.mkdir(join(root, 'state'));
+    let swapped = false;
+    const store = await createStateStore({ workRoot: root, fs: { ...fs, async mkdir(...args) {
+      const result = await fs.mkdir(...args);
+      if (!swapped) {
+        swapped = true;
+        await fs.rename(join(root, 'state'), join(root, 'moved'));
+        await fs.symlink(outside, join(root, 'state'));
+      }
+      return result;
+    } } });
+    await store.save({ id: '1' }).catch(() => {});
+    assert.equal(swapped, true);
+    assert.deepEqual(await fs.readdir(outside), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});

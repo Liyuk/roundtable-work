@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { assertSafeId } from './paths.mjs';
 
 /** States the loop never picks up on its own (final, or waiting for a person / explicit recovery). */
@@ -22,7 +23,7 @@ function normalize(entry, index) {
 
 /** Read a queue file without following a growing file past `maxBytes` (TypeError before any parse). */
 async function readBounded(path, maxBytes) {
-  const fh = await open(path, 'r');
+  const fh = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const { size } = await fh.stat();
     if (size > maxBytes) throw new TypeError(`Queue file is larger than ${maxBytes} bytes`);
@@ -43,14 +44,14 @@ async function readBounded(path, maxBytes) {
  * `maxBytes` (default 1 MiB) is a `TypeError`, nothing is parsed. The queue's `state` is advisory only: the
  * durable per-issue state always wins (a durable terminal state is never resurrected by the queue).
  * @param {Array|Function|string} source
- * @param {{ confinement?: { resolve(p: string): Promise<string> }, maxBytes?: number, signal?: AbortSignal }} [options]
+ * @param {{ confinement?: object, maxBytes?: number, signal?: AbortSignal }} [options]
  */
 export async function readQueue(source, { confinement, maxBytes = MAX_QUEUE_BYTES, signal } = {}) {
   let entries;
   if (typeof source === 'function') entries = await source({ signal });
   else if (typeof source === 'string') {
     if (!confinement) throw new TypeError('A file-backed queue needs a confinement');
-    entries = JSON.parse(await readBounded(await confinement.resolve(source), maxBytes));
+    entries = JSON.parse(await confinement.withParent(source, (dir, name) => readBounded(`${dir}/${name}`, maxBytes)));
   } else entries = source;
   if (entries && !Array.isArray(entries) && Array.isArray(entries.issues)) entries = entries.issues;
   if (!Array.isArray(entries)) throw new TypeError('Queue must be an array (or an object with an "issues" array)');

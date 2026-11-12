@@ -82,3 +82,27 @@ test('a durably terminal issue is not woken again even if the source still lists
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('queue read cannot follow an ancestor swapped after validation', async () => {
+  const root = await tmp();
+  const outside = await tmp();
+  try {
+    const fs = await import('node:fs/promises');
+    await fs.mkdir(join(root, 'queue'));
+    await writeFile(join(root, 'queue', 'items.json'), '[{"id":"inside"}]');
+    await writeFile(join(outside, 'items.json'), '[{"id":"outside"}]');
+    const confinement = await createConfinement(root);
+    const original = confinement.resolve;
+    confinement.resolve = async (...parts) => {
+      const path = await original(...parts);
+      await fs.rename(join(root, 'queue'), join(root, 'moved'));
+      await symlink(outside, join(root, 'queue'));
+      return path;
+    };
+    const result = await readQueue('queue/items.json', { confinement }).catch(() => null);
+    assert.notEqual(result?.items[0]?.id, 'outside');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});

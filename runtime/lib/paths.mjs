@@ -1,5 +1,6 @@
-import { lstat, realpath } from 'node:fs/promises';
-import { isAbsolute, parse, resolve, sep } from 'node:path';
+import { lstat, realpath, open, mkdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
 
 export class PathEscapeError extends Error {
   constructor(message) {
@@ -21,6 +22,7 @@ export async function createConfinement(workRoot) {
   if (typeof workRoot !== 'string' || workRoot === '') throw new TypeError('workRoot must be a non-empty string');
   const lexicalRoot = resolve(workRoot);
   const realRoot = await realpath(lexicalRoot);
+  const rootStat = await lstat(realRoot);
   // A filesystem root would make every path "inside" (and `root + sep` is `//`): refuse it up front.
   for (const root of [lexicalRoot, realRoot]) {
     if (root === parse(root).root) throw new TypeError(`workRoot must not be a filesystem root: ${root}`);
@@ -64,7 +66,33 @@ export async function createConfinement(workRoot) {
     }
   }
 
-  return { root: lexicalRoot, realRoot, resolve: resolveInside };
+  // Pin every directory while it is used. /proc/self/fd gives Node's pathname-only APIs
+  // an fd-relative anchor; O_NOFOLLOW prevents a swapped component redirecting traversal.
+  async function withParent(path, fn, { create = false, fs = { mkdir } } = {}) {
+    const lexical = await this.resolve(path);
+    const components = relative(lexicalRoot, dirname(lexical)).split(sep).filter(Boolean);
+    const handles = [];
+    try {
+      const rootHandle = await open(realRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      handles.push(rootHandle);
+      const stat = await rootHandle.stat();
+      if (stat.dev !== rootStat.dev || stat.ino !== rootStat.ino) throw new PathEscapeError('Work root changed');
+      for (const component of components) {
+        const next = `/proc/self/fd/${handles.at(-1).fd}/${component}`;
+        if (create) await fs.mkdir(next, { recursive: true });
+        try { handles.push(await open(next, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)); }
+        catch (err) {
+          if (err.code === 'ELOOP' || err.code === 'ENOTDIR') throw new PathEscapeError('Symlink or non-directory in confined path');
+          throw err;
+        }
+      }
+      return await fn(`/proc/self/fd/${handles.at(-1).fd}`, basename(lexical));
+    } finally {
+      for (const handle of handles.reverse()) await handle.close();
+    }
+  }
+
+  return { root: lexicalRoot, realRoot, resolve: resolveInside, withParent };
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

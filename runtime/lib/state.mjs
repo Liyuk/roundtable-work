@@ -1,5 +1,5 @@
 import fsPromises from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createConfinement, assertSafeId } from './paths.mjs';
 import { isTerminal } from './queue.mjs';
@@ -95,13 +95,16 @@ export async function createStateStore({
   async function load(id) {
     const safeId = assertSafeId(id);
     let text;
-    const base = await fileFor(safeId);
-    let names;
-    try { names = await (fs.readdir ?? fsPromises.readdir)(dirname(base)); } catch (err) { if (err.code !== 'ENOENT') throw err; names = []; }
-    const prefix = `~${Buffer.from(safeId).toString('hex')}.epoch-`;
-    const epochs = names.filter((name) => name.startsWith(prefix) && /^\d+\.json$/.test(name.slice(prefix.length))).map((name) => Number(name.slice(prefix.length, -5))).filter(Number.isSafeInteger);
-    const file = epochs.length ? await confinement.resolve('state', `${prefix}${Math.max(...epochs)}.json`) : base;
-    try { text = await fs.readFile(file, 'utf8'); } catch (err) {
+    try {
+      text = await confinement.withParent(`state/${safeId}.json`, async (dir, name) => {
+        const names = await (fs.readdir ?? fsPromises.readdir)(dir);
+        const prefix = `~${Buffer.from(safeId).toString('hex')}.epoch-`;
+        const epochs = names.filter((n) => n.startsWith(prefix) && /^\d+\.json$/.test(n.slice(prefix.length))).map((n) => Number(n.slice(prefix.length, -5))).filter(Number.isSafeInteger);
+        const file = `${dir}/${epochs.length ? `${prefix}${Math.max(...epochs)}.json` : name}`;
+        const fh = await fsPromises.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try { return await fh.readFile('utf8'); } finally { await fh.close(); }
+      });
+    } catch (err) {
       if (err.code === 'ENOENT') return freshState(safeId);
       throw err;
     }
@@ -118,29 +121,30 @@ export async function createStateStore({
   }
 
   async function save(state) {
-    const base = await fileFor(assertSafeId(state.id));
+    const id = assertSafeId(state.id);
     if (epoch !== undefined) state.lockEpoch = epoch;
-    const file = epoch === undefined ? base : await confinement.resolve('state', `~${Buffer.from(state.id).toString('hex')}.epoch-${epoch}.json`);
-    const dir = dirname(file);
-    await fs.mkdir(dir, { recursive: true });
-    const body = `${JSON.stringify(state, null, 2)}\n`;
-    let tmp;
-    let fh;
-    for (let attempt = 0; ; attempt++) {
-      tmp = `${file}.${process.pid}.${randomId()}.tmp`;
-      try { fh = await fs.open(tmp, 'wx', 0o600); break; } catch (err) {
-        if (err.code === 'EEXIST' && attempt < 4) continue; // never reuse or follow a pre-existing name
+    const name = epoch === undefined ? `${id}.json` : `~${Buffer.from(id).toString('hex')}.epoch-${epoch}.json`;
+    await confinement.withParent(`state/${name}`, async (dir, leaf) => {
+      const file = `${dir}/${leaf}`;
+      const body = `${JSON.stringify(state, null, 2)}\n`;
+      let tmp;
+      let fh;
+      for (let attempt = 0; ; attempt++) {
+        tmp = `${file}.${process.pid}.${randomId()}.tmp`;
+        try { fh = await fs.open(tmp, 'wx', 0o600); break; } catch (err) {
+          if (err.code === 'EEXIST' && attempt < 4) continue;
+          throw err;
+        }
+      }
+      try {
+        try { await fh.writeFile(body); await fh.sync(); } finally { await fh.close(); }
+        await fs.rename(tmp, file);
+      } catch (err) {
+        await fs.unlink(tmp).catch(() => {});
         throw err;
       }
-    }
-    try {
-      try { await fh.writeFile(body); await fh.sync(); } finally { await fh.close(); }
-      await fs.rename(tmp, file);
-    } catch (err) {
-      await fs.unlink(tmp).catch(() => {});
-      throw err;
-    }
-    await syncDir(dir);
+      await syncDir(dir);
+    }, { create: true, fs });
     return state;
   }
 
