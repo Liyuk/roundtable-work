@@ -14,7 +14,7 @@ function conflicts(a, b) {
 }
 
 /** Run eligible issues with cross-process per-issue locks and in-process series/dependency exclusion. */
-export async function runWorkers({ issues, workRoot, workers = 2, run, now = Date.now, lockTtlMs = 60_000, worktreeManager, prepare = async () => true, shouldStop = () => false, onSkip = () => {} }) {
+export async function runWorkers({ issues, workRoot, repoRoot, workers = 2, run, now = Date.now, lockTtlMs = 60_000, worktreeManager, prepare = async () => true, shouldStop = () => false, onSkip = () => {} }) {
   if (!Array.isArray(issues) || typeof run !== 'function') throw new TypeError('issues and run are required');
   if (!Number.isSafeInteger(workers) || workers < 1) throw new TypeError('workers must be a positive integer');
   const confinement = await createConfinement(workRoot);
@@ -26,7 +26,7 @@ export async function runWorkers({ issues, workRoot, workers = 2, run, now = Dat
   const launch = (issue) => {
     const id = assertSafeId(issue.id ?? issue.number);
     const promise = (async () => {
-      const lock = await acquireLock({ lockPath: join(lockRoot, `${id}.lock.d`), owner: `worker-${process.pid}-${id}`, now, ttlMs: lockTtlMs });
+      const lock = await acquireLock({ lockPath: join(lockRoot, `${id}.lock.d`), repoRoot: repoRoot ?? confinement.root, owner: `worker-${process.pid}-${id}`, now, ttlMs: lockTtlMs });
       if (!lock.acquired) {
         const item = { id, reason: 'issue_locked', holder: lock.holder };
         skipped.push(item); await onSkip(item); return;

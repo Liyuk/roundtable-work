@@ -62,7 +62,7 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
 
   async function acquire(rawId, owner = `worker-${process.pid}`) {
     const id = assertSafeId(rawId);
-    return acquireLock({ lockPath: join(locks, `${id}.lock.d`), owner, now, ttlMs: lockTtlMs });
+    return acquireLock({ lockPath: join(locks, `${id}.lock.d`), repoRoot, owner, now, ttlMs: lockTtlMs });
   }
 
   async function inspect(rawId) {

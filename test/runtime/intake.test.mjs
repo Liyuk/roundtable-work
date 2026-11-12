@@ -5,6 +5,14 @@ import { createGitHubReader } from '../../scripts/github-read.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
 import { runQueue } from '../../runtime/rtd.mjs';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-intake-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', body: '', ...extra });
 const select = (issues, states = {}) => selectIssues({ issues, owner: 'owner', dependencyStates: states });
