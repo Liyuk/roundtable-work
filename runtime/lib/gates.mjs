@@ -14,20 +14,7 @@ export function createGateStateStore({ load, save }) {
   };
 }
 
-/**
- * Run injected gates in order; only this orchestrator may authorize the merge entry point.
- *
- * Non-merge outcomes keep `status: 'blocked'` (the established "not merged" status) and carry a boolean
- * `hold` discriminator, so the caller can tell a resumable hold from a genuine failure:
- * - `hold: true` — nothing was merged and the same head/tree may be retried once the condition clears:
- *   pending CI, missing/stale recorded safety approval, reviewer unavailable after the retry, or a gate/CI
- *   provider that threw (a transient error). Required CI is only reported as green/not green, so red and
- *   pending are indistinguishable here; that is safe because the merge entry point rechecks live CI
- *   immediately before squash, so red CI can never merge.
- * - `hold: false` — an explicit gate verdict that did not pass, or a configuration error that will not
- *   clear by waiting (gate0/gate2 not-pass, reviewer rejection or stale-head evidence, missing cross-check).
- * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
- */
+/** Run injected gates in order; only this orchestrator may authorize the merge entry point. */
 export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, github }) {
   const id = assertSafeId(issue);
   if (![head, tree].every((v) => typeof v === 'string' && v.length)) throw new TypeError('head and tree are required');
@@ -48,13 +35,11 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     record = { issue: id, head, tree, passed: [...passed], safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
     await state.put(id, record);
   };
-  // `hold` separates a resumable wait from a genuine failure; see the runGates contract above. Default is
-  // fail-closed (`hold: false`), so a new non-merge outcome never silently becomes retryable.
-  const failed = async (gate, reason, hold = false) => ({ status: 'blocked', gate, reason, hold });
+  const failed = async (gate, reason) => ({ status: 'blocked', gate, reason });
 
   if (!passed.has('gate0')) {
     let result;
-    try { result = await gates.gate0({ issue: id, head, tree, changedFiles }); } catch (error) { return failed('gate0', error.message, true); }
+    try { result = await gates.gate0({ issue: id, head, tree, changedFiles }); } catch (error) { return failed('gate0', error.message); }
     if (!PASS(result)) return failed('gate0', result?.reason ?? 'Gate 0 failed');
     await persist('gate0');
   }
@@ -62,7 +47,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     let result;
     for (let attempt = 0; attempt < 2; attempt++) {
       try { result = await gates.reviewer({ issue: id, head, tree, model: 'sonnet', attempt: attempt + 1 }); }
-      catch (error) { if (!UNAVAILABLE(error)) return failed('gate1', error.message, true); result = null; } // a thrown provider is transient until proven otherwise
+      catch (error) { if (!UNAVAILABLE(error)) return failed('gate1', error.message); result = null; }
       if (result && PASS(result) && result.head !== head) return failed('gate1', 'Reviewer evidence is missing current-head confirmation');
       if (result?.head && result.head !== head) return failed('gate1', 'Reviewer evidence is for a stale head');
       if (PASS(result)) break;
@@ -71,7 +56,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     }
     if (!result) {
       await github.addLabel(pr, 'rt:ready-to-merge');
-      return failed('gate1', 'Reviewer unavailable after one retry; labeled rt:ready-to-merge', true);
+      return failed('gate1', 'Reviewer unavailable after one retry; labeled rt:ready-to-merge');
     }
     await persist('gate1');
   }
@@ -79,7 +64,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     if (typeof gates.crossCheck !== 'function') return failed('gate2', 'High-risk diff has no cross-check implementation');
     let result;
     try { result = await gates.crossCheck({ issue: id, head, tree, model: 'gpt-6.1-terra', changedFiles }); }
-    catch (error) { return failed('gate2', error.message, true); }
+    catch (error) { return failed('gate2', error.message); }
     if (!PASS(result)) return failed('gate2', result?.reason ?? 'Cross-check failed');
     await persist('gate2');
   }
@@ -87,14 +72,12 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     const approval = await github.recordedEscalationApproval(pr);
     if (approval?.approved !== true || approval?.model !== 'gpt-6.1-terra' || approval?.head !== head) {
       await github.addLabel(pr, 'rt:ready-to-merge');
-      return failed('safety-approval', 'Safety-file changes require recorded escalation-model approval for this head', true);
+      return failed('safety-approval', 'Safety-file changes require recorded escalation-model approval for this head');
     }
   }
   let checks;
-  try { checks = await ci.requiredGreen(pr); } catch (error) { return failed('ci', error.message, true); }
-  // Pending and red CI share one provider answer here, so both are resumable states: the merge entry
-  // point rechecks live CI immediately before squash, which is what keeps a red CI from ever merging.
-  if (checks !== true && checks?.green !== true) return failed('ci', 'Required CI is red or pending', true);
+  try { checks = await ci.requiredGreen(pr); } catch (error) { return failed('ci', error.message); }
+  if (checks !== true && checks?.green !== true) return failed('ci', 'Required CI is red or pending');
   await persist('ci');
   // The adapter is the single merge entry point and must revalidate live PR/head/CI immediately before squash.
   const evidence = { issue: id, head, tree, highRisk, passed: [...passed], ciGreen: true, safetyFiles: gatedSafetyFiles, safetyApproved: gatedSafetyFiles.length > 0 };
