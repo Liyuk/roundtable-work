@@ -91,12 +91,14 @@ function denylistIsEmpty(d) {
 /**
  * Load the hostname/username denylist.
  * Production file: $RT_HOME/gate0/denylist.json (outside the repository).
+ * A `fixture` is honored only on a non-host run. On a host run it is ignored: the
+ * production file must be present, readable and valid, otherwise this throws (fail closed).
  * Error messages are fixed strings: they never contain paths, file content or
  * parser output.
  */
 export function loadDenylist({ env = process.env, hostRun = false, fixture } = {}) {
   let result;
-  if (fixture !== undefined) {
+  if (fixture !== undefined && !hostRun) {
     result = normalizeDenylist(fixture);
   } else {
     const home = env && typeof env.RT_HOME === 'string' ? env.RT_HOME : '';
@@ -288,19 +290,36 @@ function ipv6Allowed(g) {
   return false;
 }
 
-// A letters-only candidate (no decimal digit) is a plain word-like token such as `Add::fee`
-// or `a::b` far more often than an address. It is accepted only when it parses as IPv6 (every
-// group 1-4 hex digits; 8 groups, or `::` with a non-empty hex group on a side), uses one
-// letter case, and carries at least 4 hex digits in total (so `a::b` and `ab::c` pass).
+// A letters-only candidate (no decimal digit), for example a short or mixed-case pair of
+// words joined by a double colon, is a valid IPv6 value when it parses (every group 1-4 hex
+// digits; 8 groups, or a double colon with a non-empty hex group on a side). IPv6 is
+// case-insensitive and may use short groups, so such a value is flagged in every context
+// EXCEPT ordinary code. In a code file (see CODE_EXT_RE) a word-like pair (mixed letter case,
+// or fewer than 4 hex digits in total) that is not in a host context is a scope-resolution
+// path and is skipped. A single-case token with 4 or more hex digits is flagged in code as
+// well. Prose files, commit messages, PR text, branch names and paths never get the exemption.
 function plausibleLetterOnlyIPv6(s) {
-  if (/[a-f]/.test(s) && /[A-F]/.test(s)) return false;
-  if (s.replace(/:/g, '').length < 4) return false;
   const halves = s.split('::');
   if (halves.length === 1) return s.split(':').length === 8;
   return halves[0] !== '' || halves[1] !== '';
 }
 
-function findIPv6(text, out) {
+function looksLikeScopePath(s) {
+  if (/[a-f]/.test(s) && /[A-F]/.test(s)) return true;
+  return s.replace(/:/g, '').length < 4;
+}
+
+// Host context on the line: a remote-shell / network command word, a bracketed (URL style)
+// address, a `user@` prefix directly before the match, or an address-like word.
+const IPV6_HOST_WORD_RE = /(?<![A-Za-z])(?:ip|addr|address|host|hostname|ipv6|inet6)(?![A-Za-z])/i;
+function inIPv6HostContext(text, index, end) {
+  if (text[index - 1] === '[' || text[end] === ']') return true;
+  if (text[index - 1] === '@') return true;
+  if (inRemoteCommandContext(text, index)) return true;
+  return IPV6_HOST_WORD_RE.test(text);
+}
+
+function findIPv6(text, out, codeFile = false) {
   const re = /(?<![A-Za-z0-9_:.\-])[0-9A-Fa-f:]{2,}(?![A-Za-z0-9_:])(?!\.\d)/g;
   for (const m of text.matchAll(re)) {
     const s = m[0];
@@ -309,6 +328,7 @@ function findIPv6(text, out) {
     const groups = parseIPv6(s);
     if (!groups) continue;
     if (ipv6Allowed(groups)) continue;
+    if (!/\d/.test(s) && codeFile && looksLikeScopePath(s) && !inIPv6HostContext(text, m.index, m.index + s.length)) continue;
     out.push({ ruleId: RULES.IP, text: s });
   }
 }
@@ -511,13 +531,15 @@ const CRED_ASSIGN = /(?<![A-Za-z0-9])(?:token|secret|password|passwd|api[_-]?key
 //    4.0-4.4 at this length; a single ordinary word or a short concatenation stays below
 //    3.5 (very long compound words can reach it, which is accepted for a value that sits
 //    right after a token / secret / password / api-key name);
+//  - letters only, all uppercase: the same Shannon entropy >= 3.5 threshold as lowercase;
 //  - letters only, mixed case: needs Shannon entropy >= 3.5 and must not look like an
 //    identifier. A camelCase / PascalCase identifier is split into words; ordinary words
 //    average 3+ letters per word, a random mixed-case string averages about 2. Such
 //    identifier-like values are treated as references.
 // Reference-looking values (containing `.`, `(`, `$`, `{`, or a `process.env.X` style
 // reference) and snake_case / kebab-case names (containing `_` or `-`, no digit) never reach
-// the letters-only branches; an all-uppercase word and a repeated value do not trigger.
+// the letters-only branches; a repeated or low-entropy value (a single word, a short
+// run of letters) does not trigger.
 function looksLikeIdentifier(v) {
   const words = v.match(/[A-Z]?[a-z]+|[A-Z]+(?![a-z])/g) || [];
   return words.length > 0 && v.length / words.length >= 3;
@@ -526,7 +548,7 @@ function looksLikeIdentifier(v) {
 function highEntropy(v) {
   if (v.length < 16) return false;
   if (/^[A-Za-z]+$/.test(v)) {
-    if (!/[a-z]/.test(v)) return false;
+    if (!/[a-z]/.test(v)) return shannon(v) >= 3.5;
     if (/[A-Z]/.test(v) && looksLikeIdentifier(v)) {
       // A long lowercase run inside an identifier-looking value (a marker or capital glued to
       // a random string) is still judged on its own.
@@ -620,7 +642,7 @@ function findEncoded(text, denylist, depth, out, deadline, opts) {
 
 // `opts.allowFake` lets EXAMPLE / FAKE marked credentials pass. It is set only for
 // added lines in test-fixture paths; metadata, path names and other files never get it.
-// `opts.codeFile` enables the member-access FQDN exemption; it is set only for added
+// `opts.codeFile` enables the member-access FQDN and scope-path IPv6 exemptions; it is set only for added
 // lines in code files, never for metadata, path names or prose files.
 function scanText(text, denylist, depth = 0, deadline, opts = {}) {
   const out = [];
@@ -629,7 +651,7 @@ function scanText(text, denylist, depth = 0, deadline, opts = {}) {
   // so every detector is linear; see the long-line tests).
   const steps = [
     () => findIPv4(text, out),
-    () => findIPv6(text, out),
+    () => findIPv6(text, out, opts.codeFile === true),
     () => findNames(text, denylist, out),
     () => findFqdn(text, out, opts.codeFile === true),
     () => findHomePaths(text, out),

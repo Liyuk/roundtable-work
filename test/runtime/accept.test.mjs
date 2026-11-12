@@ -47,6 +47,13 @@ const FIXTURE_DENY = {
   hostnames: { distinctive: ['fixturehost-example'], common: [OS_IMAGE, 'toolbox'] },
   usernames: { distinctive: ['fixtureuser-example'], common: ['builder'] },
 };
+// A host run never honors an injected denylist: it reads $RT_HOME/gate0/denylist.json. Host-run
+// tests therefore point RT_HOME at a temp dir that holds the fixture denylist as a file.
+const HOST_HOME = mkdtempSync(join(tmpdir(), 'gate0-host-home-'));
+mkdirSync(join(HOST_HOME, 'gate0'), { recursive: true });
+writeFileSync(join(HOST_HOME, 'gate0', 'denylist.json'), JSON.stringify(FIXTURE_DENY));
+process.on('exit', () => { try { rmSync(HOST_HOME, { recursive: true, force: true }); } catch { /* best effort */ } });
+const HOST_ENV = { RT_HOME: HOST_HOME };
 const SECRET = ['gh', 'p_', 'Zk3pQ9vL2xR7tW5yB8nM4cD6fH1jK0aS'].join('');
 
 const BASE_PACKAGE = JSON.stringify({
@@ -415,7 +422,7 @@ test('a missing host denylist blocks and redacts every path, scope findings incl
     rmSync(home, { recursive: true, force: true });
   }
   // With a loaded denylist ordinary paths stay readable and only sensitive ones are replaced.
-  const ok = await run(files, { hostRun: true, networkIsolated: true, env: {} });
+  const ok = await run(files, { hostRun: true, networkIsolated: true, env: HOST_ENV });
   assert.ok(ok.findings.some((f) => f.path === 'src/other.js'));
   assert.ok(ok.findings.every((f) => !f.path.includes('fixturehost-example')));
 });
@@ -492,14 +499,49 @@ test('a host run without a denylist blocks; with the fixture denylist it proceed
   const noList = await run(files, { hostRun: true, networkIsolated: true, denylist: undefined, env: {} });
   assert.equal(noList.verdict, 'block');
   assert.deepEqual(noList.blocks, [{ ruleId: 'G0-DENYLIST' }]);
-  const ok = await run(files, { hostRun: true, networkIsolated: true, env: {} });
+  const ok = await run(files, { hostRun: true, networkIsolated: true, env: HOST_ENV });
   assert.equal(ok.verdict, 'pass');
-  const empty = await run(files, { hostRun: true, networkIsolated: true, denylist: { hostnames: {}, usernames: {} }, env: {} });
-  assert.deepEqual(empty.blocks, [{ ruleId: 'G0-DENYLIST' }]);
+  // An empty denylist file on a host run blocks as well (the intent of the old injected-empty case).
+  const emptyHome = mkdtempSync(join(tmpdir(), 'gate0-empty-home-'));
+  try {
+    mkdirSync(join(emptyHome, 'gate0'), { recursive: true });
+    writeFileSync(join(emptyHome, 'gate0', 'denylist.json'), JSON.stringify({ hostnames: {}, usernames: {} }));
+    const empty = await run(files, { hostRun: true, networkIsolated: true, env: { RT_HOME: emptyHome } });
+    assert.deepEqual(empty.blocks, [{ ruleId: 'G0-DENYLIST' }]);
+  } finally {
+    rmSync(emptyHome, { recursive: true, force: true });
+  }
+});
+
+test('a host run never honors an injected denylist; git mode never honors an injected baseline', async () => {
+  const files = [edit('docs/a.md', 'a\n', 'b\n')];
+  // Fixture denylist on a host run, production file missing: blocks (fail closed).
+  for (const env of [{}, { RT_HOME: join(HOST_HOME, 'missing-subdir') }]) {
+    const r = await run(files, { hostRun: true, networkIsolated: true, denylist: FIXTURE_DENY, env });
+    assert.equal(r.verdict, 'block');
+    assert.deepEqual(r.blocks, [{ ruleId: 'G0-DENYLIST' }]);
+  }
+  // Production file present: its content is used, not the injected fixture.
+  const other = { hostnames: { distinctive: ['otherhost-example'] }, usernames: {} };
+  const home = mkdtempSync(join(tmpdir(), 'gate0-other-home-'));
+  try {
+    mkdirSync(join(home, 'gate0'), { recursive: true });
+    writeFileSync(join(home, 'gate0', 'denylist.json'), JSON.stringify(other));
+    const host = { hostRun: true, networkIsolated: true, denylist: FIXTURE_DENY, env: { RT_HOME: home } };
+    const fromFile = await run([edit('docs/a.md', 'a\n', 'a\nsee otherhost-example\n')], host);
+    assert.deepEqual(ruleIds(fromFile), ['HYG-HOST']);
+    const fromFixture = await run([edit('docs/a.md', 'a\n', 'a\nsee fixturehost-example\n')], host);
+    assert.equal(fromFixture.verdict, 'pass');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+  // A non-host run still honors the injected fixture.
+  const local = await run([edit('docs/a.md', 'a\n', 'a\nsee fixturehost-example\n')]);
+  assert.deepEqual(ruleIds(local), ['HYG-HOST']);
 });
 
 test('a host run that does not assert network isolation blocks', async () => {
-  const r = await run([edit('docs/a.md', 'a\n', 'b\n')], { hostRun: true, env: {} });
+  const r = await run([edit('docs/a.md', 'a\n', 'b\n')], { hostRun: true, env: HOST_ENV });
   assert.deepEqual(r.blocks, [{ ruleId: 'G0-NETWORK' }]);
 });
 
@@ -567,7 +609,7 @@ test('a 50 KB line with a normal timeout finishes quickly and a secret inside it
 
 test('a host run without PR metadata blocks; with metadata it proceeds; non-host runs are unchanged', async () => {
   const files = [edit('docs/a.md', 'a\n', 'b\n')];
-  const host = { hostRun: true, networkIsolated: true, env: {} };
+  const host = { hostRun: true, networkIsolated: true, env: HOST_ENV };
   for (const metadata of [{}, { prTitle: 'T', prBody: 'B' }, { prTitle: 'T', branch: 'rt/28-fixture' }, { prBody: 'B', branch: 'rt/28-fixture' }, { prTitle: 'T', prBody: 7, branch: 'rt/28-fixture' }]) {
     const r = await run(files, { ...host, metadata });
     assert.equal(r.verdict, 'block', JSON.stringify(Object.keys(metadata)));
@@ -929,6 +971,43 @@ function cliCaller(dir) {
 
 const NODE_PACKAGE = JSON.stringify({ scripts: { test: 'node run-tests.mjs' }, engines: { node: '>=20' } });
 
+test('git mode: a caller-supplied baseline is ignored; only the merge-base baseline counts', async () => {
+  const dir = makeRepo({
+    'package.json': NODE_PACKAGE,
+    'run-tests.mjs': 'process.exit(0);\n',
+    [BASELINE_PATH]: JSON.stringify({ frozenTokens: ['zzfield'] }),
+    'docs/a.md': 'Read the task card first.\n',
+    'docs/x.md': 'The zzfield is set.\n',
+  });
+  try {
+    const permissive = { cjkPathAllowlist: ['docs/**'], frozenTokens: [], testFakes: [] };
+    const common = { root: dir, baseRef: 'main', issue: { allowedPaths: ['docs/**'] }, denylist: FIXTURE_DENY, runner: OK_RUNNER, metadata: { prTitle: 'T', branch: 'rt/fixture' } };
+    // A flipped-direction diff still fails although the caller allowlists every docs path.
+    writeFileSync(join(dir, 'docs/a.md'), `${PROSE_ZH}\n${PROSE_ZH_2}\n`);
+    commitAll(dir, 'Flip');
+    const flipped = await runGate0({ ...common, baseline: permissive });
+    assert.equal(flipped.verdict, 'reject');
+    assert.ok(ruleIds(flipped).includes('G0-LANG-CJK'));
+    assert.deepEqual(flipped, await runGate0(common));
+    // A rename of a base-side frozen token still fails although the caller drops it.
+    sh(dir, 'checkout', '-q', 'main', '--', 'docs/a.md');
+    writeFileSync(join(dir, 'docs/x.md'), 'The renamedfield is set.\n');
+    commitAll(dir, 'Rename');
+    const renamed = await runGate0({ ...common, baseline: permissive });
+    assert.equal(renamed.verdict, 'reject');
+    assert.ok(ruleIds(renamed).includes('G0-TOKEN'));
+    assert.deepEqual(renamed, await runGate0(common));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('diff mode: an injected baseline still applies', async () => {
+  const flip = [edit('docs/zh-ok/p.md', `${PROSE_ZH}\n`, `${PROSE_ZH} x\n`)];
+  assert.equal((await run(flip)).verdict, 'reject');
+  assert.equal((await run(flip, { baseline: { cjkPathAllowlist: ['docs/zh-ok/**'] } })).verdict, 'pass');
+});
+
 test('git mode: a Chinese->English translation in scope passes; rename, symlink and binary are caught', async () => {
   const dir = makeRepo({
     'package.json': NODE_PACKAGE,
@@ -1227,4 +1306,19 @@ test('subtest counting does not double count describe or top-level calls, nor re
   assert.equal(countTestCases(`describe('s', () => {\n  ${T}('a', () => {});\n  it('b', () => {});\n});`), 2);
   assert.equal(countTestCases(`${T}('a', () => {});`), 1);
   assert.equal(countTestCases(`const ok = re.${T}(value);\nconst k = obj.${T}(1);\nassert.ok(/x/.${T}('abc'));\nsome.deep.${T}('x', f);`), 0);
+});
+
+test('dotted skip and only markers with whitespace before the parenthesis are rejected (code and Markdown)', async () => {
+  const dotted = (name, gap) => `describe('x', () => { it.${name}${gap}('works', () => {}); });`;
+  for (const name of [['sk', 'ip'].join(''), ['on', 'ly'].join('')]) {
+    for (const gap of ['', ' ', '  ', '\t']) {
+      const code = await run([edit('test/a.test.mjs', "it('a', () => {});\n", `it('a', () => {});\n${dotted(name, gap)}\n`)], { issue: { allowedPaths: ['test/**'] } });
+      assert.ok(ruleIds(code).includes('G0-TEST-SKIP'), `code ${JSON.stringify(gap)}`);
+      const md = await run([edit('docs/a.md', 'x\n', `x\nUse it.${name}${gap}('works') here.\n`)]);
+      assert.deepEqual(ruleIds(md), ['G0-TEST-SKIP'], `md ${JSON.stringify(gap)}`);
+    }
+  }
+  // Plain words in Markdown prose are still not treated as markers.
+  const prose = await run([edit('docs/a.md', 'x\n', `x\nThis ${['to', 'do'].join('')} list and the ${['x', 'it'].join('')} word are prose.\n`)]);
+  assert.equal(prose.verdict, 'pass');
 });

@@ -78,7 +78,9 @@ test('IPv6 non-doc addresses fail, doc range and loopback pass', () => {
   assert.deepEqual(rules(scanLines(`addr ${pub}`)), ['HYG-IP']);
   assert.deepEqual(rules(scanLines(`addr [${linkLocal}]:22`)), ['HYG-IP']);
   assert.deepEqual(scanLines('addr 2001:db8::1 and ::1 and [2001:db8:85a3::8a2e:370:7334]:80'), []);
-  assert.deepEqual(scanLines('std::vector, Add::fee, 12:30:45, aa:bb:cc:dd:ee:ff'), []);
+  assert.deepEqual(scanLines('std::vector, 12:30:45, aa:bb:cc:dd:ee:ff'), []);
+  // Word-like scope paths stay clean in code files only (see the letters-only IPv6 tests below).
+  assert.deepEqual(scanCode('std::vector, Add::fee, 12:30:45, aa:bb:cc:dd:ee:ff'), []);
 });
 
 test('documentation ranges, loopback and netmasks pass', () => {
@@ -565,6 +567,38 @@ test('hostRun with an invalid or empty denylist file throws without echoing cont
   }
 });
 
+test('a host run ignores an injected fixture: the production file must exist and be valid', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hyg-'));
+  try {
+    // Fixture + missing RT_HOME / missing file: throws (fail closed), no matter what was injected.
+    for (const env of [{}, { RT_HOME: dir }]) {
+      assert.throws(() => loadDenylist({ env, hostRun: true, fixture: FIXTURE }), (err) => {
+        assert.ok(err instanceof HygieneError);
+        assert.match(err.code, /^DENYLIST_/);
+        return true;
+      });
+    }
+    // Fixture + invalid file: throws as well.
+    mkdirSync(join(dir, 'gate0'));
+    const file = join(dir, 'gate0', 'denylist.json');
+    writeFileSync(file, '{ not json');
+    assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true, fixture: FIXTURE }), HygieneError);
+    // Fixture + valid file: the file contents are used, not the fixture.
+    writeFileSync(file, JSON.stringify({ hostnames: { distinctive: ['filehost-example'] }, usernames: {} }));
+    const d = loadDenylist({ env: { RT_HOME: dir }, hostRun: true, fixture: FIXTURE });
+    assert.deepEqual(d.hostnames.distinctive, ['filehost-example']);
+    assert.deepEqual(d.usernames.common, []);
+    const hits = scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text: 'see filehost-example and fixturehost-example' }], paths: [], metadata: {}, denylist: d });
+    assert.deepEqual(rules(hits), ['HYG-HOST']);
+    assert.equal(hits[0].hash, hashText('filehost-example'));
+    // A non-host run still honors the injected fixture.
+    assert.deepEqual(loadDenylist({ env: { RT_HOME: dir }, fixture: FIXTURE }).hostnames.distinctive, ['fixturehost-example']);
+    assert.deepEqual(loadDenylist({ fixture: FIXTURE }).usernames.distinctive, ['fixtureuser-example']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('scanHygiene fails closed when no denylist is supplied', () => {
   assert.throws(() => scanHygiene({ addedLines: [], paths: [], metadata: {} }), (err) => {
     assert.ok(err instanceof HygieneError);
@@ -658,9 +692,55 @@ test('letters-only IPv6 addresses fail; loopback, documentation and code-like to
     assert.equal(f[0].hash, hashText(addr));
   }
   assert.deepEqual(scanLines(
-    'addr ::1 and 2001:db8:: and 2001:db8::1 and ::',
-    'a' + '::' + 'b', 'ab' + '::' + 'c', 'Add' + '::' + 'fee', 'Cafe' + '::' + 'dead', 'std::vector', 'a:b:c:d:e:f',
+    'addr ::1 and 2001:db8:: and 2001:db8::1 and ::', 'std::vector', 'a:b:c:d:e:f',
   ), []);
+  // Word-like scope paths (short or mixed-case) are exempt only as identifiers in code files.
+  assert.deepEqual(scanCode(
+    'a' + '::' + 'b', 'ab' + '::' + 'c', 'Add' + '::' + 'fee', 'Cafe' + '::' + 'dead', 'std::vector', 'Result::Err',
+  ), []);
+});
+
+test('letters-only IPv6 is flagged in prose, metadata and paths; code gets only the scope-path exemption', () => {
+  const a = 'a' + '::' + 'b';
+  const mixed = 'Cafe' + '::' + 'dead';
+  const addFee = 'Add' + '::' + 'fee';
+  // Non-code file: flagged always, whatever the case or length.
+  for (const tok of [a, mixed, addFee, 'abcd' + '::' + 'cafe']) {
+    const f = scanLines(`value ${tok} here`);
+    assert.deepEqual(rules(f), ['HYG-IP'], tok);
+    assert.equal(f[0].hash, hashText(tok));
+    assert.deepEqual(rules(scanAt('notes.txt', `x ${tok}`)), ['HYG-IP'], tok);
+    assert.deepEqual(rules(scanAt('config.yaml', `x: ${tok}`)), ['HYG-IP'], tok);
+    assert.deepEqual(rules(scanAt('Makefile', `x ${tok}`)), ['HYG-IP'], tok);
+  }
+  // Commit message, PR title / body, branch name, author and path.
+  const meta = scanHygiene({
+    addedLines: [], paths: [`docs/${a}.md`], denylist,
+    metadata: { commitMessages: [`Fix ${mixed}`], prTitle: `Use ${a}`, prBody: `line\nsee ${a}`, branch: `rt/${a}`, authors: [`Dev ${mixed}`] },
+  });
+  assert.deepEqual([...new Set(rules(meta))], ['HYG-IP']);
+  assert.deepEqual(
+    meta.map((f) => f.path).filter((p) => p.startsWith('<metadata:')).sort(),
+    ['<metadata:author#1>', '<metadata:branch>', '<metadata:commit#1>', '<metadata:prBody>', '<metadata:prTitle>'],
+  );
+  assert.ok(meta.some((f) => f.path.startsWith('<path:')));
+  // Code file: scope-resolution paths pass; a single-case address-like token still fails.
+  assert.deepEqual(scanCode(
+    `let x = ${addFee};`, `let y = ${a};`, `let z = ${mixed};`, 'let v = std::vector::new();', 'let e = Foo::bar();', 'let r = Result::Err(1);',
+  ), []);
+  assert.deepEqual(scanAt('src/lib.rs', `let x = ${addFee};`, 'let y = Result::Err(1);'), []);
+  assert.deepEqual(rules(scanCode(`let peer = ${'abcd' + '::' + 'cafe'};`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanAt('src/lib.rs', `let peer = ${'abcd' + '::' + 'cafe'};`)), ['HYG-IP']);
+  // Host context in code: the exemption is lost.
+  for (const line of [
+    `exec("ssh ${a}")`, `scp file ${mixed} /tmp`, `const url = "http://[${a}]:80/";`, `connect("user@${a}")`,
+    `const addr = ${a};`, `// host ${mixed}`, `let ip = ${addFee};`,
+  ]) {
+    assert.deepEqual(rules(scanCode(line)), ['HYG-IP'], line);
+  }
+  // Loopback and documentation addresses keep passing everywhere.
+  assert.deepEqual(scanLines('see ::1 and 2001:db8::5 here'), []);
+  assert.deepEqual(scanCode('see ::1 and 2001:db8::5 here'), []);
 });
 
 test('a bare quad shaped like a netmask is an address; netmask context exempts it', () => {
@@ -708,5 +788,34 @@ test('an all-lowercase high-entropy credential value fails; ordinary lowercase v
     piece('sec', 'ret = a-long-kebab-case-reference-name'),
     piece('pass', 'word: the password field is optional for this endpoint'),
     piece('to', 'ken: refreshes automatically when expired'),
+  ), []);
+});
+
+test('an all-uppercase high-entropy credential value fails; reference-like and low-entropy values pass', () => {
+  const RANDOM_UPPER = piece('KZQW', 'JXVM', 'PBTR', 'NHGF', 'DLSY', 'CEUA');
+  for (const a of [
+    piece('pass', 'word = "', RANDOM_UPPER, '"'),
+    piece('sec', 'ret: ', RANDOM_UPPER),
+    piece('api', '_key=', RANDOM_UPPER),
+    piece('to', 'ken = ', RANDOM_UPPER.slice(0, 24)),
+  ]) {
+    assert.deepEqual(rules(scanAt('src/config.mjs', a)), ['HYG-CRED'], a);
+    assert.deepEqual(rules(scanAt('docs/a.md', a)), ['HYG-CRED'], a);
+  }
+  assert.equal(new Set(RANDOM_UPPER.slice(0, 24)).size >= 16, true);
+  // In a test path the fake marker still exempts; an unmarked value fails.
+  assert.deepEqual(scanAt('test/a.test.mjs', piece('pass', 'word = "FAKE', RANDOM_UPPER, '"')), []);
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', piece('pass', 'word = "', RANDOM_UPPER, '"'))), ['HYG-CRED']);
+  assert.deepEqual(scanAt('src/a.mjs',
+    piece('pass', 'word: REQUIRED'),
+    piece('to', 'ken = MY_ENV_VAR_NAME'),
+    piece('sec', 'ret: CHANGEME'),
+    piece('to', 'ken = PROCESS_ENV_X'),
+    piece('api', '_key = API_KEY_NAME'),
+    piece('pass', 'word = ', 'A'.repeat(24)),
+    piece('pass', 'word = ', 'AB'.repeat(12)),
+    piece('sec', 'ret = ', 'LONGWORDSHORTNAMES'.slice(0, 8)),
+    piece('pass', 'word = ', 'PROCESS', '.env.X'),
+    piece('pass', 'word = $', 'SOME_VARIABLE_NAME'),
   ), []);
 });

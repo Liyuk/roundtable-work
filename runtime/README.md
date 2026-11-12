@@ -38,6 +38,7 @@ The diff under review can never widen what it is checked against. Everything bel
 - `.agents/skills/roundtable-work/prompts/shared.md` (backticked machine words in the status-vocabulary section),
 - the base lockfile (`package-lock.json`, or `npm-shrinkwrap.json`), compared with the supplied dependency directory,
 - `runtime/gate0-baseline.json` (optional): `{ "cjkPathAllowlist": [...globs], "testFakes": [{ "path", "hash" }], "frozenTokens": [...] }`. The CJK path allowlist exempts only the added-line CJK check; the per-file CJK balance check applies to every file.
+  In git mode this file is read from the merge base only; a caller-supplied baseline is ignored (an injected baseline is for the pre-parsed-diff unit fixtures only).
 
 ## Supplied metadata is additive
 
@@ -50,7 +51,9 @@ them, never instead of them, so a clean supplied list cannot hide a real commit 
 The production hostname / username denylist lives outside the repository at `$RT_HOME/gate0/denylist.json`
 and must never be committed. On a host run (`--host-run`) a missing, unreadable or empty denylist is a block
 (every path in the findings is then redacted to `<redacted:LEN:HASH8>`), and so is a missing `--network-isolated` assertion (run Gate 0 in a network-less namespace; pure Node cannot sandbox the network).
-Repository tests inject a fixture denylist with obviously fake names.
+A host run never honors an injected fixture denylist: the production file is always read, so a missing one fails closed.
+Repository tests inject a fixture denylist with obviously fake names only on non-host runs; host-run tests point `RT_HOME` at a temp dir holding a fixture file.
+Letters-only IPv6 candidates (such as a short mixed-case pair joined by two colons) are flagged everywhere except as a scope-resolution path in a code file outside any host context (ssh / scp / bracketed / `user@` / address words).
 
 ## Host-run inputs and fail-closed behavior
 
@@ -78,7 +81,7 @@ Repository tests inject a fixture denylist with obviously fake names.
   Commenting out a test or deleting a subtest lowers the count. It is a heuristic scanner,
   not a parser, and it does not execute code; the base test command is the authority on what actually runs.
 - Disable markers (skip, only, pending and todo forms) are matched on the added lines of every non-Markdown file, test
-  file or not. In Markdown only the dotted call forms are matched, so prose that uses the plain words is not rejected.
+  file or not. In Markdown only the dotted call forms are matched (whitespace before the opening parenthesis included), so prose that uses the plain words is not rejected.
   A prose use of those words in a source comment can be a false reject; the issue may allow it explicitly.
 - Frozen English tokens such as `done` or `review` are ordinary words: the per-file count must not drop, so rewording
   prose that contains them can be a false reject. Chinese tokens are counted only when not adjacent to another Han

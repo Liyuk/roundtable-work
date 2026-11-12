@@ -28,11 +28,13 @@
 //   diff                 pre-parsed diff (see `normalizeDiff`); replaces git mode
 //   issue                { allowedPaths, allowChanges?, allowSkip? }
 //   metadata             { commitMessages, authors, prTitle, prBody, branch }
-//   denylist | hostRun   fixture denylist, or load from $RT_HOME (outside the repo)
+//   denylist | hostRun   fixture denylist (non-host runs only; ignored on a host run), or
+//                        load from $RT_HOME (outside the repo)
 //                        The CLI defaults to host-run (production) semantics; see below.
 //   runner               injected async test runner (see `defaultRunner`)
 //   baseline             { cjkPathAllowlist, testFakes, frozenTokens, templates }
 //                        in git mode read from `runtime/gate0-baseline.json` at the base
+//                        only (a caller-supplied value is ignored); injectable in diff mode
 //   timeoutMs, runnerTimeoutMs, networkIsolated, depsDir, env
 //   (in diff mode)       base: { packageJson, lockfile, templates, sharedPrompt, verdictSource, baseline }
 //
@@ -579,8 +581,9 @@ const CASE_RE = new RegExp(
   'gm',
 );
 const MARKDOWN_RE = /\.(?:md|markdown|mdx)$/i;
-// Markdown prose may contain the plain words; only the dotted call forms count there.
-const MD_SKIP_RE = new RegExp(`\\.${'sk'}ip\\(|\\.${'on'}ly\\(`);
+// Markdown prose may contain the plain words; only the dotted call forms count there
+// (whitespace before the opening parenthesis is allowed, as in code).
+const MD_SKIP_RE = new RegExp(`\\.${'sk'}ip\\s*\\(|\\.${'on'}ly\\s*\\(`);
 const REGEX_PREV = '(,=:[!&|?{};+-*%<>~^';
 const REGEX_WORDS = new Set(['return', 'typeof', 'case', 'delete', 'void', 'throw', 'in', 'of', 'new', 'else', 'do', 'yield', 'await']);
 
@@ -1007,7 +1010,10 @@ async function execute(opts, deadline) {
     : { ...(await collectGitDiff({ root: opts.root, baseRef: opts.baseRef })) };
   const { files } = ctx;
   const base = ctx.base || {};
-  const baseline = validateBaseline(opts.baseline !== undefined ? opts.baseline : base.baseline);
+  // Git mode: the baseline comes ONLY from the merge base; a caller-supplied `baseline` is
+  // ignored, so a run can never widen CJK allowlists, test fakes or frozen tokens. An injected
+  // baseline is honored only for a pre-parsed diff (unit fixtures).
+  const baseline = validateBaseline(opts.diff && opts.baseline !== undefined ? opts.baseline : base.baseline);
   const templates = baseline.templates ?? base.templates ?? [];
 
   // Supplied metadata is additive: in git mode the real commit messages and identities are
