@@ -51,7 +51,11 @@ export function exitCodeFor(result) {
  * A failed or timed-out `finalizing` step ends the wake as `interrupted` (decision `ask`, class
  * `finalize_failure`, `recovery.resumePhase = 'finalizing'`): it is not retried from development and
  * spends no developer retry. A `PathEscapeError` thrown by the handler's own `recordArtifacts()` is a
- * scope mismatch (`out-of-scope`), not a developer failure.
+ * scope mismatch (`out-of-scope`), not a developer failure. A gate *hold* in the finalizing auto-merge
+ * step (nothing merged: pending CI, missing recorded safety approval, reviewer unavailable, or a
+ * transient gate/CI error) is not terminal: the wake ends as `waiting_external` (decision `wait`, class
+ * `finalize_hold`) with `recovery` untouched and the persisted gate record kept, so a later wake resumes
+ * at `finalizing` and reuses the gates that already passed.
  *
  * Liveness contract: the single-flight lock has a lease of `lockTtlMs`. It is renewed at the start of
  * every wake and phase, by every `heartbeat()` call, and automatically on an unref'd timer while the
@@ -459,9 +463,17 @@ export async function runQueue({
                 return squash(...args);
               };
               const gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, merge: { squash: guardedSquash } });
-              if (gated.status !== 'merged') throw new Error(`${gated.gate}: ${gated.reason}`);
+              if (gated.status !== 'merged') {
+                // A hold merged nothing and has no side effect to repeat: hand it back to the wake loop so the
+                // issue waits instead of failing closed. The passed gates are already persisted, so the next
+                // wake resumes at finalizing and reuses them (only live CI and the safety approval are rechecked).
+                if (gated.hold === true) return { ...result, mergeHold: { gate: gated.gate, reason: gated.reason } };
+                // A genuine gate failure (an explicit not-pass verdict, or a merge entry point rejection such as
+                // a stale head or a changed safety-file set) stays fail-closed: interrupted, decision ask.
+                throw new Error(`${gated.gate}: ${gated.reason}`);
+              }
               if (autoMerge.production) await monitorMain(signal);
-              return result;
+              return { ...result, mergeHold: null }; // a merged step is never a hold, whatever the handler returned
             };
             return autoMerge.production ? exclusive(executeMerge) : executeMerge();
           });
@@ -506,6 +518,14 @@ export async function runQueue({
 
         const verdict = classify({ ...step, stage: STAGE[phase] });
         const { class: cls, reason } = verdict;
+
+        // Checked before the ok/finalize_failure branches: a gate hold is neither success nor failure. Nothing
+        // was merged (so main is not paused and no squash ran), the checkpoint still points at the last
+        // completed phase (finalizing resumes), `recovery` is untouched, no developer retry is spent and the
+        // persisted gateRecord survives for the next wake.
+        if (phase === 'finalizing' && autoMerge && step.mergeHold) {
+          return await finish('waiting_external', 'finalize_hold', `${step.mergeHold.gate}: ${step.mergeHold.reason}`, 'wait');
+        }
 
         if (cls === 'ok' || cls === 'review_passed') {
           const decision = step.decisionFile ?? step.decision;
