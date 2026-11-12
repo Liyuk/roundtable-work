@@ -416,6 +416,60 @@ test('developer retry: counter and checkpoint reset are one durable write; a cra
   }
 });
 
+for (const failedPhase of ['developing', 'reviewing']) {
+  test(`exhausted developer budget survives a crash after ${failedPhase} failure is recorded`, async () => {
+    const root = await tmp();
+    const realRename = fsp.rename;
+    let crashed = false;
+    try {
+      const clock = { t: 1_000_000 };
+      fsp.rename = async (from, to) => {
+        if (crashed) throw new Error('simulated crash');
+        await realRename(from, to);
+        if (String(to).endsWith('~3636.epoch-1.json')) {
+          const state = JSON.parse(await readFile(to, 'utf8'));
+          if (state.attempts.developer === 1) crashed = true;
+        }
+      };
+      syncBuiltinESMExports();
+      const handler = async ({ phase }) => phase === failedPhase
+        ? failedPhase === 'reviewing' ? { exitCode: 0, output: '审查结论：打回\nfix it' } : { exitCode: 1 }
+        : { exitCode: 0, output: 'ok' };
+      await assert.rejects(runQueue({ workRoot: root, queue: ['66'], handler, now: () => clock.t, maxDeveloperAttempts: 1 }), /simulated crash/);
+      fsp.rename = realRename;
+      syncBuiltinESMExports();
+      const store = await createStateStore({ workRoot: root, now: () => clock.t });
+      assert.equal((await store.load('66')).attempts.developer, 1);
+      clock.t += 3_600_000;
+      let calls = 0;
+      const result = await runQueue({ workRoot: root, queue: ['66'], now: () => clock.t, maxDeveloperAttempts: 1,
+        handler: async () => { calls++; return { exitCode: 0, output: PASS }; } });
+      assert.equal(calls, 0, 'no phase starts after the final failure');
+      assert.deepEqual([result.outcomes[0].status, result.outcomes[0].reason, result.outcomes[0].decision], ['stop', 'developer_budget_exhausted', 'stop']);
+      const state = await store.load('66');
+      assert.equal(state.status, 'stop');
+      assert.equal(state.attempts.developer, 1);
+    } finally {
+      fsp.rename = realRename;
+      syncBuiltinESMExports();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('exhausted developer budget does not block resuming later checkpointed phases', async () => {
+  const root = await tmp();
+  try {
+    const store = await createStateStore({ workRoot: root });
+    await store.update('66', (s) => { s.attempts.developer = 1; s.checkpoint = { phase: 'testing', at: 1 }; });
+    const phases = [];
+    const result = await runQueue({ workRoot: root, queue: ['66'], maxDeveloperAttempts: 1,
+      handler: async ({ phase }) => { phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }; } });
+    assert.deepEqual(phases, ['reviewing', 'finalizing']);
+    assert.equal(result.outcomes[0].status, 'done');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('a path escape thrown by the handler\'s own recordArtifacts() is a scope mismatch: no developer retry, artifacts kept', async () => {
   const root = await tmp();
   try {
