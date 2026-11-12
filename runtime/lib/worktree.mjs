@@ -34,6 +34,23 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
       const { stdout } = await execFile('git', ['-C', path, 'branch', '--show-current'], { maxBuffer: 1024 * 1024 });
       const checkedOutBranch = stdout.trim();
       if (checkedOutBranch !== branch) {
+        if (!checkedOutBranch) {
+          try {
+            await execFile('git', ['-C', repoRoot, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { maxBuffer: 1024 * 1024 });
+            const [{ stdout: detachedHead }, { stdout: branchHead }] = await Promise.all([
+              execFile('git', ['-C', path, 'rev-parse', 'HEAD'], { maxBuffer: 1024 * 1024 }),
+              execFile('git', ['-C', repoRoot, 'rev-parse', `refs/heads/${branch}`], { maxBuffer: 1024 * 1024 }),
+            ]);
+            if (detachedHead.trim() === branchHead.trim()) {
+              await execFile('git', ['-C', path, 'switch', branch], { maxBuffer: 1024 * 1024 });
+              return { path, branch, existing: true };
+            }
+          } catch (error) {
+            if (error.cmd?.includes('switch')) {
+              throw new Error(`Unable to reattach existing detached worktree at ${path} to expected branch ${branch}: ${error.stderr?.trim() || error.message}`, { cause: error });
+            }
+          }
+        }
         throw new Error(`Existing worktree at ${path} is on branch ${checkedOutBranch || '(detached HEAD)'}, expected ${branch}`);
       }
       return { path, branch, existing: true };

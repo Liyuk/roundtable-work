@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createClaimCoordinator } from '../../runtime/lib/claim.mjs';
 import { runWorkers } from '../../runtime/lib/workers.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
-const scratch = join(process.cwd(), '.roundtable/scratch/92-impl/tmp');
+const scratch = join(process.cwd(), '.roundtable/scratch/94-dev-1/tmp');
 const temp = async () => { await mkdir(scratch, { recursive: true }); return mkdtemp(join(scratch, 'workers-')); };
 
 test('claim ticks add one running label and one marker comment, then resume stale orphan without reclaiming', async () => {
@@ -143,5 +143,28 @@ test('existing issue worktree is reused when checked out on the expected branch'
     assert.equal(created.branch, 'rt/92-pi');
     assert.equal(created.existing, false);
     assert.deepEqual(await manager.create('92'), { ...created, existing: true });
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test('existing detached issue worktree is reattached to and reused on the expected branch', async () => {
+  const base = await temp();
+  const repo = join(base, 'repo'), workRoot = join(base, 'work');
+  await mkdir(repo); await mkdir(workRoot);
+  try {
+    const init = spawnSync('git', ['-C', repo, 'init', '-b', 'main'], { encoding: 'utf8' });
+    assert.equal(init.status, 0, init.stderr);
+    await writeFile(join(repo, 'README.md'), 'fixture\n');
+    spawnSync('git', ['-C', repo, 'add', 'README.md']);
+    const commit = spawnSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture'], { encoding: 'utf8' });
+    assert.equal(commit.status, 0, commit.stderr);
+    const manager = await createWorktreeManager({ workRoot, repoRoot: repo });
+    const created = await manager.create('94');
+    const detached = spawnSync('git', ['-C', created.path, 'switch', '--detach', 'HEAD'], { encoding: 'utf8' });
+    assert.equal(detached.status, 0, detached.stderr);
+
+    assert.deepEqual(await manager.create('94'), { ...created, existing: true });
+    const currentBranch = spawnSync('git', ['-C', created.path, 'branch', '--show-current'], { encoding: 'utf8' });
+    assert.equal(currentBranch.status, 0, currentBranch.stderr);
+    assert.equal(currentBranch.stdout.trim(), 'rt/94-pi');
   } finally { await rm(base, { recursive: true, force: true }); }
 });
