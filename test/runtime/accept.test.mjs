@@ -9,7 +9,7 @@ import {
   runGate0, buildRegistry, deriveVerdictTokens, deriveTemplateTokens, countToken, countCjk,
   stripFrozenCjk, globToRegExp, matchesAny, buildRunnerEnv, resolveTestSteps, nodeSatisfies,
   formatResult, isTestFile, countTestCases, BASELINE_PATH, stripNonCode, verifyDepsDir,
-  deriveSharedPromptTokens,
+  deriveSharedPromptTokens, countTokenForInvariant,
 } from '../../runtime/lib/accept.mjs';
 import { hashText } from '../../runtime/lib/hygiene.mjs';
 
@@ -334,7 +334,8 @@ test('head package.json test no-op is ignored: the base command still runs; scop
 
 test('CJK path allowlist is base-side only and cannot be extended by the diff', async () => {
   const base = { cjkPathAllowlist: ['docs/zh-fixtures/**'] };
-  const files = [addFile('docs/zh-fixtures/p.md', `${PROSE_ZH}\n`)];
+  // The allowlisted file is edited in place (added CJK <= removed CJK), so the balance check holds too.
+  const files = [edit('docs/zh-fixtures/p.md', `${PROSE_ZH}\n`, `${PROSE_ZH} x\n`)];
   assert.equal((await run(files, { baseline: base })).verdict, 'pass');
   // Not allowlisted on base: fails, even if the same diff adds an allowlist entry.
   const extend = edit(BASELINE_PATH, '{"cjkPathAllowlist":[]}\n', '{"cjkPathAllowlist":["docs/**"]}\n');
@@ -344,6 +345,78 @@ test('CJK path allowlist is base-side only and cannot be extended by the diff', 
   assert.ok(ruleIds(r).includes('G0-SCOPE-PROTECTED'));
   // A path outside the allowlist is still checked.
   assert.equal((await run([addFile('docs/zh-other/p.md', `${PROSE_ZH}\n`)], { baseline: base })).verdict, 'reject');
+});
+
+// ---------------------------------------------------------------------------
+// Gate fix round 2: accept module regressions
+// ---------------------------------------------------------------------------
+
+test('a frozen Chinese token embedded in Han text cannot be renamed unnoticed', async () => {
+  const STATE = '\u72b6\u6001';
+  const MID = '\u4e2d';
+  const base = `${STATE}${LABEL}${PASS}${MID}\n`;
+  // Renamed field: the label token is gone, the surrounding Han text is unchanged.
+  const renamed = `${STATE}\u68c0\u67e5\u7ed3\u679c${PASS}${MID}\n`;
+  const r = await run([edit('docs/a.md', base, renamed)]);
+  assert.equal(r.verdict, 'reject');
+  assert.ok(ruleIds(r).includes('G0-TOKEN'), JSON.stringify(r));
+  // Keeping the token passes the invariant; head >= base still holds when occurrences grow.
+  const kept = await run([edit('docs/a.md', base, `${base}${STATE}${LABEL}${PASS}${MID}\n`)]);
+  assert.ok(!ruleIds(kept).includes('G0-TOKEN'));
+  // A correct Chinese -> English translation keeps the token and adds an English parenthetical.
+  const tr = await run([edit('docs/a.md', `${PROSE_ZH}\n${LABEL}${COLON}${PASS} | ${REJ} | ${BLK}\n`,
+    `This module checks every delivery.\n${LABEL}${COLON}${PASS} (pass) | ${REJ} (reject) | ${BLK} (block)\n`)]);
+  assert.ok(!ruleIds(tr).includes('G0-TOKEN'), JSON.stringify(tr));
+  const embedded = await run([edit('docs/a.md', base, `Status ${LABEL}${PASS} (passed) in progress\n`)]);
+  assert.ok(!ruleIds(embedded).includes('G0-TOKEN'), JSON.stringify(embedded));
+  // The adjacency-aware countToken keeps its documented behaviour; the invariant counter is a substring count.
+  assert.equal(countTokenForInvariant(base, LABEL), 1);
+  assert.equal(countTokenForInvariant(renamed, LABEL), 0);
+  assert.equal(countTokenForInvariant('done, abandoned', 'done'), 1);
+});
+
+test('the CJK path allowlist exempts the added-line check but not the per-file balance check', async () => {
+  const baseline = { cjkPathAllowlist: ['docs/zh-fixtures/**'] };
+  // Added CJK exceeds removed CJK in an allowlisted file: balance fails, added-line check stays exempt.
+  const more = await run([edit('docs/zh-fixtures/p.md', `${PROSE_ZH}\n`, `${PROSE_ZH}\n${PROSE_ZH_2}\n`)], { baseline });
+  assert.equal(more.verdict, 'reject');
+  assert.deepEqual(ruleIds(more), ['G0-LANG-BALANCE']);
+  assert.equal(more.findings[0].path, 'docs/zh-fixtures/p.md');
+  // A brand-new allowlisted file with CJK also fails the balance check.
+  assert.deepEqual(ruleIds(await run([addFile('docs/zh-fixtures/n.md', `${PROSE_ZH}\n`)], { baseline })), ['G0-LANG-BALANCE']);
+  // Added CJK <= removed CJK passes.
+  assert.equal((await run([edit('docs/zh-fixtures/p.md', `${PROSE_ZH}\n${PROSE_ZH_2}\n`, `${PROSE_ZH}\n`)], { baseline })).verdict, 'pass');
+  assert.equal((await run([edit('docs/zh-fixtures/p.md', `${PROSE_ZH}\n`, `${PROSE_ZH} x\n`)], { baseline })).verdict, 'pass');
+});
+
+test('a missing host denylist blocks and redacts every path, scope findings included', async () => {
+  const leakyDir = 'docs/fixturehost-example-' + 'fixtureuser-example';
+  const files = [edit(`${leakyDir}/a.md`, 'a\n', 'b\n'), edit('src/other.js', 'a\n', 'b\n')];
+  const r = await run(files, { hostRun: true, networkIsolated: true, denylist: undefined, env: {} });
+  assert.equal(r.verdict, 'block');
+  assert.deepEqual(r.blocks, [{ ruleId: 'G0-DENYLIST' }]);
+  assert.ok(r.findings.some((f) => f.ruleId === 'G0-SCOPE-PATH'));
+  const out = JSON.stringify(r) + formatResult(r);
+  for (const word of ['fixturehost-example', 'fixtureuser-example', 'src/other.js', 'docs/']) assert.ok(!out.includes(word), word);
+  assert.ok(r.findings.every((f) => /^<redacted:\d+:[0-9a-f]{8}>$/.test(f.path)), JSON.stringify(r.findings));
+  const first = r.findings.find((f) => f.ruleId === 'G0-SCOPE-PATH');
+  assert.ok(first.path.startsWith(`<redacted:${'src/other.js'.length}:`) || first.path.startsWith(`<redacted:${`${leakyDir}/a.md`.length}:`));
+  // An unreadable denylist file behaves the same way (fixed-string block, no echo).
+  const home = mkdtempSync(join(tmpdir(), 'gate0-home-'));
+  try {
+    mkdirSync(join(home, 'gate0'), { recursive: true });
+    writeFileSync(join(home, 'gate0', 'denylist.json'), '{not json');
+    const bad = await run(files, { hostRun: true, networkIsolated: true, denylist: undefined, env: { RT_HOME: home } });
+    assert.equal(bad.verdict, 'block');
+    assert.ok(!(JSON.stringify(bad) + formatResult(bad)).includes('fixtureuser-example'));
+    assert.ok(bad.findings.every((f) => f.path.startsWith('<redacted:')));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+  // With a loaded denylist ordinary paths stay readable and only sensitive ones are replaced.
+  const ok = await run(files, { hostRun: true, networkIsolated: true, env: {} });
+  assert.ok(ok.findings.some((f) => f.path === 'src/other.js'));
+  assert.ok(ok.findings.every((f) => !f.path.includes('fixturehost-example')));
 });
 
 // ---------------------------------------------------------------------------
@@ -936,10 +1009,11 @@ test('git mode: the base-side allowlist file is read from base, and an unknown b
     'package.json': NODE_PACKAGE,
     'run-tests.mjs': 'process.exit(0);\n',
     [BASELINE_PATH]: JSON.stringify({ cjkPathAllowlist: ['docs/zh/**'] }),
+    'docs/zh/p.md': `${PROSE_ZH}\n`,
   });
   try {
-    mkdirSync(join(dir, 'docs/zh'), { recursive: true });
-    writeFileSync(join(dir, 'docs/zh/p.md'), `${PROSE_ZH}\n`);
+    // Edited in place: added CJK equals removed CJK, so the balance check holds for the allowlisted file.
+    writeFileSync(join(dir, 'docs/zh/p.md'), `${PROSE_ZH} x\n`);
     commitAll(dir, 'Add bilingual parser fixture');
     const issue = { allowedPaths: ['docs/**'] };
     const r = await runGate0({ root: dir, baseRef: 'main', issue, denylist: FIXTURE_DENY, runner: OK_RUNNER });

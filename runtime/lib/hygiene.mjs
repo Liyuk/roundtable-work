@@ -332,7 +332,11 @@ function findNames(text, denylist, out) {
 // ---------------------------------------------------------------------------
 
 // Heuristic: `process.env.HOME`, `env.HOME`, `this.local`, `user.home` are JS member
-// accesses, not hosts. A match is skipped when every label left of the private suffix
+// accesses, not hosts. The exemption applies ONLY to added lines in code files (see
+// CODE_EXT_RE); it never applies to prose files (markdown, text, ...), other files,
+// commit messages, PR title/body, branch names, authors or paths, where such a word
+// with a private suffix is a private-suffix host name. In a code file a match is
+// skipped when every label left of the private suffix
 // is a common member-access root word (case-insensitive) AND it is not in a host
 // position: after `://` or `@`, or on the argument side of a remote-shell / copy /
 // network command (ssh, scp, rsync, sftp, mosh and similar), including a bare word
@@ -354,6 +358,15 @@ function inRemoteCommandContext(text, index) {
   return REMOTE_COMMAND_RE.test(segment);
 }
 
+const CODE_EXT_RE = /\.(?:js|mjs|cjs|jsx|ts|mts|cts|tsx|json|jsonc|json5|vue|svelte|py|rb|go|rs|java|kt|cs|php|c|h|cc|cpp|hpp)$/i;
+
+/** True for source-code paths where a JS-style member access can legitimately appear. */
+function isCodePath(path) {
+  if (typeof path !== 'string' || path === '') return false;
+  const file = path.split(/[\\/]/).pop();
+  return CODE_EXT_RE.test(file) && !DOC_EXT_RE.test(file);
+}
+
 function isMemberAccess(text, index, match) {
   const labels = match.split('.');
   labels.pop();
@@ -365,7 +378,7 @@ function isMemberAccess(text, index, match) {
   return true;
 }
 
-function findFqdn(text, out) {
+function findFqdn(text, out, codeFile) {
   const suffixes = PRIVATE_SUFFIXES.join('|');
   const re = new RegExp(
     `(?<![A-Za-z0-9_.\\-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\\.)+(?:${suffixes})(?!\\.?[A-Za-z0-9_-])`,
@@ -374,7 +387,7 @@ function findFqdn(text, out) {
   for (const m of text.matchAll(re)) {
     // A path component such as src/config.local is not a host name.
     if (m.index > 0 && text[m.index - 1] === '/' && !(m.index > 1 && (text[m.index - 2] === '/' || text[m.index - 2] === ':'))) continue;
-    if (isMemberAccess(text, m.index, m[0])) continue;
+    if (codeFile && isMemberAccess(text, m.index, m[0])) continue;
     if (isAllowedHost(m[0])) continue;
     out.push({ ruleId: RULES.FQDN, text: m[0] });
   }
@@ -446,8 +459,28 @@ const CRED_URL = /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s\/:@'"<>]+:([^\s\/@'"<>]+)@[^
 // after any separator) and made the scan quadratic; the suffix repetition is bounded.
 const CRED_ASSIGN = /(?<![A-Za-z0-9])(?:token|secret|password|passwd|api[_-]?key)(?:[_.-][A-Za-z0-9]{1,40}){0,6}["']?\s*[:=]>?\s*["']?([^\s"'`,;]+)/gi;
 
+// High-entropy heuristic for a credential assignment value (length >= 16):
+//  - letters and digits mixed: Shannon entropy >= 3.25;
+//  - letters only (no digit): needs mixed case and Shannon entropy >= 3.5, and must
+//    not look like an identifier. A camelCase / PascalCase identifier is split into
+//    words; ordinary words average 3+ letters per word, a random mixed-case string
+//    averages about 2. Such identifier-like values are treated as references.
+// Reference-looking values (containing `.`, `(`, `$`, `{`, or a `process.env.X` style
+// reference) are never letters-only, so they cannot reach the letters-only branch
+// (the digit branch is unchanged); a long all-lowercase word has no mixed case and a repeated value has low
+// entropy, so neither triggers.
+function looksLikeIdentifier(v) {
+  const words = v.match(/[A-Z]?[a-z]+|[A-Z]+(?![a-z])/g) || [];
+  return words.length > 0 && v.length / words.length >= 3;
+}
+
 function highEntropy(v) {
   if (v.length < 16) return false;
+  if (/^[A-Za-z]+$/.test(v)) {
+    if (!/[a-z]/.test(v) || !/[A-Z]/.test(v)) return false;
+    if (looksLikeIdentifier(v)) return false;
+    return shannon(v) >= 3.5;
+  }
   if (!/\d/.test(v) || !/[A-Za-z]/.test(v)) return false;
   return shannon(v) >= 3.25;
 }
@@ -533,6 +566,8 @@ function findEncoded(text, denylist, depth, out, deadline, opts) {
 
 // `opts.allowFake` lets EXAMPLE / FAKE marked credentials pass. It is set only for
 // added lines in test-fixture paths; metadata, path names and other files never get it.
+// `opts.codeFile` enables the member-access FQDN exemption; it is set only for added
+// lines in code files, never for metadata, path names or prose files.
 function scanText(text, denylist, depth = 0, deadline, opts = {}) {
   const out = [];
   if (typeof text !== 'string' || text.length === 0) return out;
@@ -542,7 +577,7 @@ function scanText(text, denylist, depth = 0, deadline, opts = {}) {
     () => findIPv4(text, out),
     () => findIPv6(text, out),
     () => findNames(text, denylist, out),
-    () => findFqdn(text, out),
+    () => findFqdn(text, out, opts.codeFile === true),
     () => findHomePaths(text, out),
     () => findCredentials(text, out, opts.allowFake === true),
     () => findEncoded(text, denylist, depth, out, deadline, opts),
@@ -619,7 +654,7 @@ export function scanHygiene({ addedLines = [], paths = [], metadata = {}, denyli
       throw new HygieneError('INPUT_INVALID', 'gate0: addedLines entry is invalid');
     }
     const line = Number.isInteger(entry.line) ? entry.line : 0;
-    const opts = { allowFake: isTestFixturePath(entry.path) };
+    const opts = { allowFake: isTestFixturePath(entry.path), codeFile: isCodePath(entry.path) };
     record(entry.path, shownPath(entry.path), line, scanText(entry.text, denylist, 0, deadline, opts), true);
   }
 

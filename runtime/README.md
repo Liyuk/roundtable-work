@@ -37,7 +37,7 @@ The diff under review can never widen what it is checked against. Everything bel
   names are added on top),
 - `.agents/skills/roundtable-work/prompts/shared.md` (backticked machine words in the status-vocabulary section),
 - the base lockfile (`package-lock.json`, or `npm-shrinkwrap.json`), compared with the supplied dependency directory,
-- `runtime/gate0-baseline.json` (optional): `{ "cjkPathAllowlist": [...globs], "testFakes": [{ "path", "hash" }], "frozenTokens": [...] }`.
+- `runtime/gate0-baseline.json` (optional): `{ "cjkPathAllowlist": [...globs], "testFakes": [{ "path", "hash" }], "frozenTokens": [...] }`. The CJK path allowlist exempts only the added-line CJK check; the per-file CJK balance check applies to every file.
 
 ## Supplied metadata is additive
 
@@ -48,8 +48,8 @@ them, never instead of them, so a clean supplied list cannot hide a real commit 
 ## Host denylist
 
 The production hostname / username denylist lives outside the repository at `$RT_HOME/gate0/denylist.json`
-and must never be committed. On a host run (`--host-run`) a missing, unreadable or empty denylist is a block,
-and so is a missing `--network-isolated` assertion (run Gate 0 in a network-less namespace; pure Node cannot sandbox the network).
+and must never be committed. On a host run (`--host-run`) a missing, unreadable or empty denylist is a block
+(every path in the findings is then redacted to `<redacted:LEN:HASH8>`), and so is a missing `--network-isolated` assertion (run Gate 0 in a network-less namespace; pure Node cannot sandbox the network).
 Repository tests inject a fixture denylist with obviously fake names.
 
 ## Host-run inputs and fail-closed behavior

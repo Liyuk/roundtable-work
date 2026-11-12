@@ -42,6 +42,13 @@ function scanLines(...texts) {
     paths: [], metadata: {}, denylist,
   });
 }
+// Same as scanLines, but the added lines sit in a JavaScript code file.
+function scanCode(...texts) {
+  return scanHygiene({
+    addedLines: texts.map((text, i) => ({ path: 'src/a.mjs', line: i + 1, text })),
+    paths: [], metadata: {}, denylist,
+  });
+}
 const rules = (findings) => findings.map((f) => f.ruleId);
 
 test('private and public IPv4 addresses fail', () => {
@@ -123,7 +130,7 @@ test('an address behind an @ prefix fails without an ssh word; package versions 
 });
 
 test('JS member access with a private-looking suffix is not a host; real hosts still fail', () => {
-  assert.deepEqual(scanLines(
+  assert.deepEqual(scanCode(
     'const home = process.env.HOME;',
     'const h = env.HOME || os.tmp;',
     'this.local = true; user.home = x; config.internal = 1;',
@@ -156,11 +163,43 @@ test('a member-access word with a private suffix is a host in ssh/scp/rsync cont
     }
   }
   // Ordinary code is still fine, also when a remote command is a separate statement.
-  assert.deepEqual(scanLines(
+  assert.deepEqual(scanCode(
     'const h = process.env.HOME; const l = this.local;',
     'if (user.home && config.internal) { env.HOME = os.homedir(); }',
     'ssh host1; const x = config.internal;',
   ), []);
+});
+
+test('the member-access exemption applies only to added lines in code files', () => {
+  const host = ['config', 'local'].join('.');
+  const prose = `see ${host} for details`;
+  // Prose and other non-code files: a private-suffix FQDN, whatever its first label.
+  for (const path of ['docs/a.md', 'README.markdown', 'notes.txt', 'doc/x.rst', 'Makefile', 'cfg/app.yaml', 'x.mjs.md', 'src']) {
+    assert.deepEqual(rules(scanAt(path, prose)), ['HYG-FQDN'], path);
+  }
+  // Commit message, PR title/body, author, branch and added paths never get it.
+  const f = scanHygiene({
+    addedLines: [], paths: [host], denylist,
+    metadata: { commitMessages: [prose], authors: [host], prTitle: prose, prBody: 'ok\n' + prose, branch: host },
+  });
+  assert.deepEqual(f.map((x) => [x.ruleId, x.path, x.line]), [
+    ['HYG-FQDN', `<path:${hashText(host)}>`, 0],
+    ['HYG-FQDN', '<metadata:commit#1>', 1],
+    ['HYG-FQDN', '<metadata:author#1>', 0],
+    ['HYG-FQDN', '<metadata:prTitle>', 0],
+    ['HYG-FQDN', '<metadata:prBody>', 2],
+    ['HYG-FQDN', '<metadata:branch>', 0],
+  ]);
+  // JS property access in code files still passes.
+  for (const path of ['src/a.mjs', 'a.cjs', 'b.js', 'c.ts', 'd.tsx', 'e.jsx', 'f.json', 'lib/G.MJS']) {
+    assert.deepEqual(scanAt(path, 'const a = config.local; x = process.env.HOME; this.local = 1; user.home = 2;'), [], path);
+  }
+  // In a code file the ssh / URL / user@ host contexts still fail.
+  for (const text of [`ssh ${host}`, `ssh admin@${host}`, `open https://${host}/x`, `scp f ${host}:/tmp`, `contact admin@${host}`]) {
+    assert.deepEqual(rules(scanAt('src/a.mjs', text)), ['HYG-FQDN'], text);
+  }
+  // A real host name in a code file also still fails.
+  assert.deepEqual(rules(scanAt('src/a.mjs', 'const h = "db1.' + 'local";')), ['HYG-FQDN']);
 });
 
 test('private-suffix FQDNs fail; example, test, invalid, localhost and public hosts pass', () => {
@@ -321,6 +360,53 @@ test('low-entropy or placeholder credential assignments pass', () => {
     'api_key = <your key>',
     'password=$PASSWORD_FROM_ENV_VARIABLE_1',
     ['a', 's', 'k-about-something-long-hyphenated-1'].join(''),
+  ), []);
+});
+
+// Letter-only credential values (no digit), assembled from pieces.
+const LETTERS_ONLY = piece('qWzRt', 'YuPlK', 'jHgFd', 'SaMnB', 'vCxZ');
+
+test('a letter-only high-entropy credential value fails, with or without a marker, outside test paths', () => {
+  const assigns = [
+    piece('api', '_key = "', 'FAKE', LETTERS_ONLY, '"'),
+    piece('api', '_key = "', LETTERS_ONLY, '"'),
+    piece('pass', 'word: ', LETTERS_ONLY),
+    piece('"to', 'ken": "', LETTERS_ONLY, '"'),
+  ];
+  for (const a of assigns) {
+    assert.deepEqual(rules(scanAt('src/config.mjs', a)), ['HYG-CRED'], a);
+    assert.deepEqual(rules(scanAt('docs/a.md', a)), ['HYG-CRED'], a);
+  }
+  // Metadata: no marker exemption either.
+  assert.deepEqual(rules(scanHygiene({ addedLines: [], paths: [], denylist, metadata: { prBody: assigns[0] } })), ['HYG-CRED']);
+  // In a test path an unmarked value still fails; a FAKE / EXAMPLE marked one passes.
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', assigns[1])), ['HYG-CRED']);
+  assert.deepEqual(scanAt('test/a.test.mjs', assigns[0]), []);
+  assert.deepEqual(scanAt('test/a.test.mjs', piece('api', '_key = "', 'EXAMPLE', LETTERS_ONLY, '"')), []);
+});
+
+test('references, identifiers, low-entropy and ordinary prose values do not trigger the letter-only rule', () => {
+  assert.deepEqual(scanAt('src/a.mjs',
+    piece('pass', 'word: getPasswordFromEnv()'),
+    piece('to', 'ken = process.env.TOKEN_NAME'),
+    piece('to', 'ken = process.env.someLongMixedCaseName'),
+    piece('to', 'ken = config.getSecretValueStore'),
+    piece('pass', 'word = ${PASSWORD_VALUE_FROM_ENV}'),
+    piece('pass', 'word = $passwordFromTheEnvironment'),
+    // camelCase / PascalCase identifiers
+    piece('to', 'ken = someLongCamelCaseIdentifierName'),
+    piece('to', 'ken: ThisIsAVeryLongDescriptiveTypeName'),
+    piece('sec', 'ret = PasswordManagerFactoryImplementation'),
+    // a long all-lowercase or all-uppercase word, low-entropy repeated values
+    piece('api', '_key = internationalizationconfiguration'),
+    piece('api', '_key = INTERNATIONALIZATIONCONFIGURATION'),
+    piece('to', 'ken = ', 'AbAb'.repeat(8)),
+    piece('pass', 'word = ', 'a'.repeat(30)),
+    piece('pass', 'word = ', 'aA'.repeat(16)),
+    // ordinary prose after a keyword
+    piece('to', 'ken: description of the thing'),
+    piece('pass', 'word: Authentication is required for this endpoint'),
+    piece('secret = "', 'short', 'Mixed', '"'),
   ), []);
 });
 

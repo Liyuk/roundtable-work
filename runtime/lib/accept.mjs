@@ -360,6 +360,19 @@ export function countToken(text, token) {
   return m ? m.length : 0;
 }
 
+const substringReCache = new Map();
+/**
+ * Occurrences for the frozen-token invariant. Chinese tokens are counted as plain
+ * substrings (also when embedded in or adjacent to other Han text), so a machine field
+ * inside Chinese prose cannot be renamed unnoticed. Other tokens use countToken rules.
+ */
+export function countTokenForInvariant(text, token) {
+  if (!hasCjk(token)) return countToken(text, token);
+  let re = substringReCache.get(token);
+  if (!re) { re = new RegExp(escapeRe(token), 'gu'); substringReCache.set(token, re); }
+  return countRegex(text, re);
+}
+
 function countRegex(text, re) {
   const m = String(text).match(re);
   return m ? m.length : 0;
@@ -829,9 +842,9 @@ export function checkFrozenTokens(files, registry) {
   for (const f of files) {
     if (f.binary || f.oldMode === '120000' || f.newMode === '120000' || f.oldMode === '160000' || f.newMode === '160000') continue;
     for (const token of registry.tokens) {
-      const before = countToken(f.baseContent, token);
+      const before = countTokenForInvariant(f.baseContent, token);
       if (before === 0) continue;
-      const after = countToken(f.headContent, token);
+      const after = countTokenForInvariant(f.headContent, token);
       if (after < before) findings.push(mk('G0-TOKEN', f.path, 0, token));
     }
     const lineBefore = countRegex(f.baseContent, registry.verdictLine);
@@ -850,11 +863,13 @@ export function checkDirection(files, registry, cjkPathAllowlist = []) {
   const findings = [];
   for (const f of files) {
     if (f.binary) continue;
-    if (matchesAny(f.path, cjkPathAllowlist)) continue;
-    for (const l of f.added) {
-      const residue = stripFrozenCjk(l.text, registry.tokens);
-      const n = countCjk(residue);
-      if (n > 0) findings.push(mk('G0-LANG-CJK', f.path, l.line, residue.match(CJK_RE).join('')));
+    // The allowlist exempts only the added-line check; the per-file balance check applies to every file.
+    if (!matchesAny(f.path, cjkPathAllowlist)) {
+      for (const l of f.added) {
+        const residue = stripFrozenCjk(l.text, registry.tokens);
+        const n = countCjk(residue);
+        if (n > 0) findings.push(mk('G0-LANG-CJK', f.path, l.line, residue.match(CJK_RE).join('')));
+      }
     }
     const added = f.added.reduce((s, l) => s + countCjk(l.text), 0);
     const removed = f.removed.reduce((s, l) => s + countCjk(l.text), 0);
@@ -902,13 +917,20 @@ function collectHygiene(files, metadata, denylist, baseline, deadline) {
   return scanHygiene({ addedLines, paths, metadata, denylist, deadline, allowlist: { testFakes: baseline.testFakes || [] } });
 }
 
-const EMPTY_DENYLIST = { hostnames: { distinctive: [], common: [] }, usernames: { distinctive: [], common: [] } };
-
-/** Replace paths that themselves look sensitive with `<path:HASH8>`. */
+/**
+ * Replace paths that themselves look sensitive with `<path:HASH8>`.
+ * When the denylist is unavailable (denylist === undefined) nothing can be vetted, so every
+ * path (the fixed `<tests>` placeholder aside) becomes `<redacted:LEN:HASH8>`.
+ */
 function redactPaths(findings, denylist) {
   const cache = new Map();
   const show = (p) => {
     if (!cache.has(p)) {
+      if (denylist === undefined) {
+        const s = String(p);
+        cache.set(p, s === '<tests>' ? s : `<redacted:${s.length}:${hashText(s)}>`);
+        return cache.get(p);
+      }
       const dirty = !/^<[^<>]*>$/.test(p) && scanHygiene({ paths: [p], denylist }).length > 0;
       cache.set(p, dirty ? `<path:${hashText(p)}>` : p);
     }
@@ -1027,7 +1049,7 @@ async function execute(opts, deadline) {
   if (denylist) await step(() => collectHygiene(files, metadata, denylist, baseline, deadline));
 
   let redacted;
-  try { redacted = redactPaths(findings, denylist || EMPTY_DENYLIST); } catch { addBlock('G0-INTERNAL'); redacted = []; }
+  try { redacted = redactPaths(findings, denylist); } catch { addBlock('G0-INTERNAL'); redacted = []; }
   const verdict = blocks.length ? 'block' : redacted.length ? 'reject' : 'pass';
   return { verdict, findings: redacted, blocks };
 }
