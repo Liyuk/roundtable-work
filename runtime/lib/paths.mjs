@@ -80,7 +80,10 @@ export async function createConfinement(workRoot) {
       if (stat.dev !== rootStat.dev || stat.ino !== rootStat.ino) throw new PathEscapeError('Work root changed');
       for (const component of components) {
         const next = `${FD_PATH}/${handles.at(-1).fd}/${component}`;
-        if (create) await fs.mkdir(next, { recursive: true });
+        if (create) {
+          try { await fs.mkdir(next); }
+          catch (err) { if (err.code !== 'EEXIST') throw err; }
+        }
         try { handles.push(await open(next, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)); }
         catch (err) {
           if (err.code === 'ELOOP' || err.code === 'ENOTDIR') throw new PathEscapeError('Symlink or non-directory in confined path');

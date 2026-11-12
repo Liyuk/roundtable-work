@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createConfinement, assertSafeId, PathEscapeError } from '../../runtime/lib/paths.mjs';
 
 async function setup() {
@@ -38,6 +39,32 @@ test('withParent anchors paths through the portable file descriptor namespace', 
     }, { create: true });
     assert.equal(contents, 'portable');
   } finally { await cleanup(); }
+});
+
+test('withParent promptly rejects creation beneath a deleted pinned parent', async () => {
+  const base = await mkdtemp(join(process.cwd(), '.rt-paths-'));
+  const root = join(base, 'root');
+  try {
+    await mkdir(root);
+    const script = `
+      import assert from 'node:assert/strict';
+      import { mkdir, rm } from 'node:fs/promises';
+      import { createConfinement } from './runtime/lib/paths.mjs';
+      const root = process.argv[1];
+      const c = await createConfinement(root);
+      await assert.rejects(c.withParent('state/file', () => {
+        throw new Error('callback must not run');
+      }, { create: true, fs: { mkdir: async (...args) => {
+        await rm(root, { recursive: true });
+        return mkdir(...args);
+      } } }), { code: 'ENOENT' });
+    `;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, root], {
+      cwd: process.cwd(), encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL',
+    });
+    assert.equal(child.error?.code, undefined, `child failed or timed out: ${child.error}`);
+    assert.equal(child.status, 0, child.stderr);
+  } finally { await rm(base, { recursive: true, force: true }); }
 });
 
 test('retries when an entry is created between realpath and lstat', async (t) => {
