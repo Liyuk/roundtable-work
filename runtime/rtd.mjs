@@ -11,7 +11,10 @@ import { randomUUID } from 'node:crypto';
 import { createStateStore, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
 import { createIntakeProvider } from './lib/intake.mjs';
-import { createGitHubReader } from '../scripts/github-read.mjs';
+import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.mjs';
+import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
+import { runWorkers } from './lib/workers.mjs';
+import { createWorktreeManager } from './lib/worktree.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 export const EXIT_LOCKED = 75;
@@ -87,8 +90,10 @@ export async function runQueue({
   leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000, lockTtlMs = 5 * 60_000, lockRenewMinMs = 1000,
   maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
+  githubClient, repoRoot, workers = 2, baseBranch = 'main',
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
+  if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -149,12 +154,55 @@ export async function runQueue({
     // Lost while the queue was read: another pass may own the state now, so do not start any wake.
     if (lockLost || !(await refreshLock())) return { status: 'lock_lost', outcomes: [], skipped };
     const outcomes = [];
-    for (const item of items) {
-      const outcome = await wakeGuarded(item);
-      outcomes.push(outcome);
-      // An abandoned handler may still be running: wake nothing else, and say so (the caller must not outlive it).
-      if (outcome.status === 'lock_lost') return { status: 'lock_lost', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
-      if (abandonedHandler) break;
+    if (githubClient) {
+      const manager = await createWorktreeManager({ workRoot, repoRoot, baseBranch, now });
+      const coordinator = createClaimCoordinator({
+        client: githubClient, stateRoot: await store.confinement.resolve('locks'),
+        loadState: (id) => store.load(id), isStale: async (state) => store.staleness(state).stale,
+        // The scheduler already holds the issue lock. Existing worktrees prevent new claims,
+        // but a stale claimed issue must reuse its durable worktree.
+        isInFlight: async (issue) => !(issue.labels ?? []).some((l) => (typeof l === 'string' ? l : l.name) === 'rt:running') && (await manager.inspect(issue.id)).liveWorktree,
+        resume: async (issue, state) => {
+          if (!state.claimPending) return;
+          const comments = typeof githubClient.listComments === 'function' ? await githubClient.listComments(issue.number ?? issue.id) : issue.comments ?? [];
+          if (!comments.some((comment) => String(comment.body ?? comment).includes(CLAIM_MARKER))) {
+            await githubClient.createComment(issue.number ?? issue.id, `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`);
+          }
+          await store.update(issue.id, (current) => { current.claimPending = false; });
+        },
+        beforeClaim: async (issue) => { await store.update(issue.id, (state) => { state.claimPending = true; }); },
+        afterClaim: async (issue) => { await store.update(issue.id, (state) => { state.claimPending = false; }); },
+        canResume: (state) => state.status === 'working' || (['queued', 'waiting_external'].includes(state.status) && (state.claimPending === true || state.attempts.wakes > 0)), now,
+      });
+      const stopSchedulingRenewal = startRenewal();
+      let scheduled;
+      try { scheduled = await runWorkers({ issues: items, workRoot, workers, worktreeManager: manager, now,
+        shouldStop: () => lockLost || abandonedHandler,
+        prepare: async (item) => {
+          if (lockLost || abandonedHandler || !(await refreshLock())) return false;
+          const state = await store.load(item.id);
+          if (isTerminal(state.status)) { skipped.push({ id: item.id, reason: 'terminal' }); return false; }
+          const claim = await coordinator.tick([item]);
+          if (!claim.claimed && !claim.resumed) { skipped.push(...claim.skipped); return false; }
+          return true;
+        },
+        run: async (item, worker) => {
+          worker.signal.addEventListener('abort', markLost, { once: true });
+          try { outcomes.push(await wakeGuarded({ ...item, worktree: worker.worktree })); }
+          finally { worker.signal.removeEventListener('abort', markLost); }
+        },
+      });
+      } finally { await stopSchedulingRenewal(); }
+      skipped.push(...scheduled.skipped);
+      if (lockLost) return { status: 'lock_lost', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
+      if (scheduled.failed.length) throw scheduled.failed[0].error;
+    } else {
+      for (const item of items) {
+        const outcome = await wakeGuarded(item);
+        outcomes.push(outcome);
+        if (outcome.status === 'lock_lost') return { status: 'lock_lost', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
+        if (abandonedHandler) break;
+      }
     }
     return { status: 'ok', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
   } catch (err) {
@@ -362,13 +410,13 @@ function withTimeout(ms, onTimeout) {
 async function main(argv) {
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
   }
   if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github)) {
-    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO]) --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
     return 2;
   }
   const timeouts = {};
@@ -382,8 +430,8 @@ async function main(argv) {
     timeouts[option] = n;
   }
   const { default: handler } = await import(pathToFileURL(resolve(args.handler)).href);
-  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo })) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, ...timeouts });
+  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) result.triage = queue.triage;
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {

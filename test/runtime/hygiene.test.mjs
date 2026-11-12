@@ -35,7 +35,12 @@ test('runtime code never shells out or touches the network', async () => {
   const files = await runtimeOnly();
   assert.ok(files.length >= 5);
   for (const { file, text } of files) {
-    assert.doesNotMatch(text, /child_process/, file);
+    if (file === 'runtime/lib/worktree.mjs') {
+      // Git worktree lifecycle is the sole subprocess integration; keep it argument-based and local.
+      assert.match(text, /node:child_process/);
+      assert.match(text, /execFile/);
+      assert.doesNotMatch(text, /\bexec\(/);
+    } else assert.doesNotMatch(text, /child_process/, file);
     assert.doesNotMatch(text, /\bgh\s+(issue|pr|api|repo|release|label)\b/, file);
     assert.doesNotMatch(text, /node:(https?|net|dgram|tls)\b|\bfetch\(/, file);
   }
