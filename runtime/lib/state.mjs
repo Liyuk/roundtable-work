@@ -217,10 +217,18 @@ export async function createStateStore({
     /**
      * Spend one developer retry and reset the checkpoint in a single atomic write, so a crash can
      * never leave a bumped counter with the old checkpoint (or the reverse). Returns the saved state.
+     * With `suspendPhase` (a phase that timed out while its handler may still run) the same write also leaves
+     * the issue `queued` with a recovery record that resumes from the first phase, so the next wake retries.
      */
-    retryDeveloper: (id, type, detail) => update(id, (s) => {
+    retryDeveloper: (id, type, detail, { suspendPhase } = {}) => update(id, (s) => {
+      const lastCheckpoint = s.checkpoint?.phase ?? null;
       s.attempts.developer += 1;
       s.checkpoint = null;
+      if (suspendPhase !== undefined) {
+        if (!PHASES.includes(suspendPhase)) throw new TypeError(`Unknown phase: ${suspendPhase}`);
+        s.status = 'queued';
+        s.recovery = { at: now(), interruptedPhase: suspendPhase, lastCheckpoint, resumePhase: PHASES[0], artifacts: { ...s.artifacts } };
+      }
       event(s, type, detail);
     }),
 

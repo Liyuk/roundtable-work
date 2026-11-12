@@ -57,11 +57,19 @@ export function exitCodeFor(result) {
  * `exitCode === 0` with no `signal` (see classify). `phaseTimeoutMs` (default 1 h) aborts a handler that does not settle
  * (its `signal` fires and the step is classified as a timeout for its stage); `queueTimeoutMs` (default 10 min) rejects
  * `runQueue` with `code: 'RT_QUEUE_TIMEOUT'` for a queue provider that does not settle (both release the lock;
- * `Infinity` disables). State writes are fenced by the lock epoch (`StaleEpochError` -> `lock_lost`). A corrupt state
+ * `Infinity` disables). A phase that times out is closed: the handler may keep running (it is only signalled), but its
+ * `heartbeat()` and `recordArtifacts()` throw `phase closed` and write nothing from then on. The wake waits up to
+ * `graceMs` (default 5 s) for the abandoned handler to settle, records a recoverable state and ends: a timed-out
+ * developer or test phase spends one developer retry and leaves the issue `queued` (resume from developing, outcome
+ * status `queued`, decision `wait`; the retry budget still applies), a timed-out reviewer is `waiting_external`, a timed-out
+ * finalizing is `interrupted`. No new phase or retry starts in the same wake, so work on one issue never overlaps and
+ * the lease is only released after the handler settled or the grace period ended; the next wake resumes. The phase
+ * and queue timeout timers keep the process alive (not unref'd), so a never-settling handler or queue provider ends
+ * with the timeout recorded (or `RT_QUEUE_TIMEOUT` thrown) instead of a silent exit. State writes are fenced by the lock epoch (`StaleEpochError` -> `lock_lost`). A corrupt state
  * file ends that issue as `{status:'failed', reason:'corrupt_state', decision:'ask'}` and the file is left untouched; the pass
  * continues. The default `owner` is unique per call. One work root per queue: the lock is per work root.
  *
- * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE`. `--handler` is trusted operator code,
+ * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N]`. `--handler` is trusted operator code,
  * deliberately outside work-root confinement (only paths under the work root are confined).
  *
  * @returns {Promise<{status:'locked', holder:object} | {status:'lock_lost', outcomes:object[], skipped:object[]} | {status:'ok', outcomes:object[], skipped:object[]}>}
@@ -70,7 +78,7 @@ export async function runQueue({
   workRoot, queue, handler, now = Date.now, owner = `rtd-${process.pid}-${randomUUID()}`,
   leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000, lockTtlMs = 5 * 60_000, lockRenewMinMs = 1000,
   maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
-  phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000,
+  phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
@@ -80,6 +88,7 @@ export async function runQueue({
   for (const [name, value] of [['phaseTimeoutMs', phaseTimeoutMs], ['queueTimeoutMs', queueTimeoutMs]]) {
     if (!(typeof value === 'number' && value > 0)) throw new TypeError(`${name} must be a positive number (Infinity disables it)`);
   }
+  if (!(typeof graceMs === 'number' && Number.isFinite(graceMs) && graceMs >= 0)) throw new TypeError('graceMs must be a non-negative number');
   if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
@@ -192,12 +201,17 @@ export async function runQueue({
         await store.beginPhase(id, phase);
         if (!(await refreshLock())) return lost();
         state = await store.load(id);
+        // Closed when the race between the handler and its timeout ends: a handler that is still running (it only
+        // got a signal) can no longer write anything for this issue.
+        let closed = false;
         const heartbeat = async () => {
+          if (closed) throw new Error('phase closed');
           if (lockLost) throw new Error('single-flight lock lost');
           await store.heartbeat(id, owner);
           if (!(await refreshLock())) throw new Error('single-flight lock lost');
         };
         const recordArtifacts = async (artifacts) => {
+          if (closed) throw new Error('phase closed');
           if (lockLost) throw new Error('single-flight lock lost');
           return store.recordArtifacts(id, artifacts);
         };
@@ -206,14 +220,17 @@ export async function runQueue({
         const stopRenewal = startRenewal();
 
         let step;
+        let phaseTimedOut = false;
+        let running;
         const phaseAbort = new AbortController();
         const signal = AbortSignal.any([abort.signal, phaseAbort.signal]);
         const guard = withTimeout(phaseTimeoutMs, () => phaseAbort.abort(new Error('phase timed out')));
         try {
-          const running = Promise.resolve().then(() => handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal }));
+          running = Promise.resolve().then(() => handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal }));
           running.catch(() => {}); // a handler that settles after its timeout must not become an unhandled rejection
           const returned = await Promise.race([running, guard.timeout.then(() => TIMED_OUT)]);
-          step = returned === TIMED_OUT
+          phaseTimedOut = returned === TIMED_OUT;
+          step = phaseTimedOut
             ? { exitCode: null, timedOut: true, output: `handler did not settle within ${phaseTimeoutMs} ms` }
             // Anything but a plain object (undefined, null, a primitive, an array) is a failed result, never success.
             : returned !== null && typeof returned === 'object' && !Array.isArray(returned)
@@ -225,7 +242,11 @@ export async function runQueue({
             ? { scopeMismatch: true, output: `handler error: ${err.message}` }
             : { exitCode: 1, output: `handler error: ${err?.message ?? err}` };
         } finally {
+          closed = true;
           guard.clear();
+          // The abandoned handler gets a bounded grace period to settle before anything else happens (the lease is
+          // released after this, and no retry starts in this wake); the lock stays renewed meanwhile.
+          if (phaseTimedOut) await settleWithin(running, graceMs);
           await stopRenewal();
         }
         if (lockLost || !(await refreshLock())) return lost();
@@ -245,8 +266,10 @@ export async function runQueue({
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
-          const next = await store.retryDeveloper(id, cls, reason);
+          // After a phase timeout the abandoned handler may still be running: never start the retry in this wake.
+          const next = await store.retryDeveloper(id, cls, reason, phaseTimedOut ? { suspendPhase: phase } : undefined);
           if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop');
+          if (phaseTimedOut) return out('queued', { class: cls, reason, decision: 'wait', phase: PHASES[0] });
           phase = PHASES[0];
         } else if (cls === 'finalize_failure') {
           // Finalizing may already have had external side effects: never re-run it automatically.
@@ -271,13 +294,21 @@ export async function runQueue({
 
 const TIMED_OUT = Symbol('timed out');
 
+/** Wait until `promise` settles (either way) or `ms` passed, whichever comes first; the delay timer is always cleared. */
+async function settleWithin(promise, ms) {
+  let timer;
+  try {
+    await Promise.race([promise.then(() => {}, () => {}), new Promise((resolve) => { timer = setTimeout(resolve, ms); })]);
+  } finally { clearTimeout(timer); }
+}
+
 /** `timeout` resolves after `ms` (never when `ms` is Infinity); `clear()` cancels the timer. Runs `onTimeout` when it fires. */
 function withTimeout(ms, onTimeout) {
   let timer;
   const timeout = new Promise((resolve) => {
     if (ms === Infinity) return;
+    // Deliberately not unref'd: a never-settling handler or queue provider must still end with the timeout recorded.
     timer = setTimeout(() => { onTimeout(); resolve(); }, Math.min(ms, 2 ** 31 - 1));
-    timer.unref();
   });
   return { timeout, clear: () => clearTimeout(timer) };
 }
@@ -285,17 +316,27 @@ function withTimeout(ms, onTimeout) {
 async function main(argv) {
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, handler: { type: 'string' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, handler: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
   }
   if (!args['work-root'] || !args.queue || !args.handler) {
-    console.error('usage: rtd.mjs --work-root DIR --queue FILE --handler MODULE (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
     return 2;
   }
+  const timeouts = {};
+  for (const [flag, option] of [['phase-timeout-ms', 'phaseTimeoutMs'], ['queue-timeout-ms', 'queueTimeoutMs'], ['grace-ms', 'graceMs']]) {
+    if (args[flag] === undefined) continue;
+    const n = Number(args[flag]);
+    if (!/^\d+$/.test(args[flag]) || !Number.isSafeInteger(n) || (option !== 'graceMs' && n === 0)) {
+      console.error(`--${flag} must be a ${option === 'graceMs' ? 'non-negative' : 'positive'} integer (milliseconds)`);
+      return 2;
+    }
+    timeouts[option] = n;
+  }
   const { default: handler } = await import(pathToFileURL(resolve(args.handler)).href);
-  const result = await runQueue({ workRoot: args['work-root'], queue: args.queue, handler });
+  const result = await runQueue({ workRoot: args['work-root'], queue: args.queue, handler, ...timeouts });
   console.log(JSON.stringify(result));
   return exitCodeFor(result);
 }

@@ -3,6 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fsp, { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { runQueue } from '../../runtime/rtd.mjs';
@@ -10,6 +12,8 @@ import { createStateStore, StaleEpochError } from '../../runtime/lib/state.mjs';
 import { classify } from '../../runtime/lib/classify.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
 import { createConfinement } from '../../runtime/lib/paths.mjs';
+
+const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-hard-'));
 const PASS = '审查结论：通过\nok';
@@ -90,13 +94,13 @@ test('renewal: phaseTimeoutMs aborts a never-settling handler', withRoot(async (
     a.signal.addEventListener('abort', () => { aborted = true; });
     return new Promise(() => {});
   };
-  const reviewer = await runQueue({ workRoot: root, queue: ['r'], handler: hang('reviewer'), phaseTimeoutMs: 80 });
+  const reviewer = await runQueue({ workRoot: root, queue: ['r'], handler: hang('reviewer'), phaseTimeoutMs: 80, graceMs: 20 });
   assert.equal(aborted, true, 'the handler signal was aborted');
   assert.deepEqual([reviewer.outcomes[0].status, reviewer.outcomes[0].class, reviewer.outcomes[0].reason], ['waiting_external', 'reviewer_unavailable', 'timeout']);
   aborted = false;
-  const developer = await runQueue({ workRoot: root, queue: ['d'], handler: hang('developer'), phaseTimeoutMs: 80, maxDeveloperAttempts: 1 });
+  const developer = await runQueue({ workRoot: root, queue: ['d'], handler: hang('developer'), phaseTimeoutMs: 80, graceMs: 20, maxDeveloperAttempts: 1 });
   assert.deepEqual([developer.outcomes[0].status, developer.outcomes[0].class], ['stop', 'developer_failure']);
-  const finalizer = await runQueue({ workRoot: root, queue: ['f'], handler: hang('finalize'), phaseTimeoutMs: 80 });
+  const finalizer = await runQueue({ workRoot: root, queue: ['f'], handler: hang('finalize'), phaseTimeoutMs: 80, graceMs: 20 });
   assert.deepEqual([finalizer.outcomes[0].status, finalizer.outcomes[0].class, finalizer.outcomes[0].reason], ['interrupted', 'finalize_failure', 'timeout']);
   // The lock was released: the next pass acquires it right away.
   const next = await runQueue({ workRoot: root, queue: ['n'], handler: okHandler });
@@ -351,3 +355,129 @@ test('paths: workRoot \'/\' is rejected up front', async () => {
   await assert.rejects(createConfinement('/'), TypeError);
   await assert.rejects(runQueue({ workRoot: '/', queue: [], handler: okHandler }), TypeError);
 });
+
+// ---- R2 follow-up: a timed-out phase is closed, never overlaps a retry, and the timers keep the process alive ----
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+for (const hungPhase of ['developing', 'testing']) {
+  test(`timeout: an abandoned ${hungPhase} handler cannot write after its phase closed, and no retry starts in the same wake`, withRoot(async (root) => {
+    await writeFile(join(root, 'late.txt'), 'x');
+    let invocations = 0;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let late;
+    const handler = async (a) => {
+      if (a.phase !== hungPhase || invocations > 0) return okHandler(a);
+      invocations++;
+      // Ignores the abort signal; acts only after the wake ended (graceMs is much shorter than the gate).
+      await gate;
+      late = await Promise.allSettled([a.recordArtifacts({ output: 'late.txt' }), a.heartbeat()]);
+      return { exitCode: 0, output: 'late' };
+    };
+    const first = await runQueue({ workRoot: root, queue: ['A'], handler, phaseTimeoutMs: 60, graceMs: 30, maxDeveloperAttempts: 3 });
+    assert.equal(first.status, 'ok');
+    assert.equal(invocations, 1, 'no second handler invocation started in the same wake');
+    assert.deepEqual([first.outcomes[0].status, first.outcomes[0].class, first.outcomes[0].reason, first.outcomes[0].decision], ['queued', hungPhase === 'developing' ? 'developer_failure' : 'test_failure', 'timeout', 'wait']);
+    const before = await readFile(stateFile(root, 'A'), 'utf8');
+    const s = JSON.parse(before);
+    assert.equal(s.status, 'queued');
+    assert.equal(s.attempts.developer, 1, 'the retry budget still counts');
+    assert.equal(s.checkpoint, null);
+    assert.equal(s.lease, null);
+    assert.deepEqual([s.recovery.interruptedPhase, s.recovery.resumePhase], [hungPhase, 'developing']);
+    assert.deepEqual([s.lastEvent.type, s.lastEvent.detail], [hungPhase === 'developing' ? 'developer_failure' : 'test_failure', 'timeout']);
+
+    release();
+    for (let i = 0; i < 100 && !late; i++) await sleep(10);
+    assert.ok(late, 'the abandoned handler did run its late calls');
+    for (const r of late) {
+      assert.equal(r.status, 'rejected');
+      assert.match(r.reason.message, /phase closed/);
+    }
+    assert.equal(await readFile(stateFile(root, 'A'), 'utf8'), before, 'late recordArtifacts / heartbeat wrote nothing');
+
+    const second = await runQueue({ workRoot: root, queue: ['A'], handler });
+    assert.equal(second.outcomes[0].status, 'done', 'the next wake resumes and finishes');
+  }));
+}
+
+test('timeout: the wake waits up to graceMs for the abandoned handler; its calls inside the grace period are refused too', withRoot(async (root) => {
+  await writeFile(join(root, 'late.txt'), 'x');
+  let late;
+  let settledAt = 0;
+  const handler = async (a) => {
+    if (a.phase !== 'developing') return okHandler(a);
+    await sleep(150); // phaseTimeoutMs is 50, graceMs 2000: this settles inside the grace period
+    late = await Promise.allSettled([a.recordArtifacts({ output: 'late.txt' }), a.heartbeat()]);
+    settledAt = Date.now();
+    return { exitCode: 0, output: 'late' };
+  };
+  const r = await runQueue({ workRoot: root, queue: ['A'], handler, phaseTimeoutMs: 50, graceMs: 2000 });
+  assert.ok(settledAt > 0, 'the handler settled before the wake ended');
+  assert.ok(late.every((x) => x.status === 'rejected' && /phase closed/.test(x.reason.message)));
+  assert.equal(r.outcomes[0].status, 'queued');
+  assert.deepEqual(JSON.parse(await readFile(stateFile(root, 'A'), 'utf8')).artifacts, {}, 'nothing was recorded');
+}));
+
+test('timeout: a timed-out developer phase spends the retry budget and stops at the limit; reviewer and finalizing end the wake too', withRoot(async (root) => {
+  const hang = (stage) => async (a) => (a.stage === stage ? new Promise(() => {}) : okHandler(a));
+  const opts = { phaseTimeoutMs: 40, graceMs: 10 };
+  const d = await runQueue({ workRoot: root, queue: ['d'], handler: hang('developer'), maxDeveloperAttempts: 2, maxWakesPerIssue: 9, ...opts });
+  assert.equal(d.outcomes[0].status, 'queued');
+  const d2 = await runQueue({ workRoot: root, queue: ['d'], handler: hang('developer'), maxDeveloperAttempts: 2, maxWakesPerIssue: 9, ...opts });
+  assert.deepEqual([d2.outcomes[0].status, d2.outcomes[0].reason], ['stop', 'developer_budget_exhausted']);
+  const r = await runQueue({ workRoot: root, queue: ['r'], handler: hang('reviewer'), ...opts });
+  assert.deepEqual([r.outcomes[0].status, r.outcomes[0].reason], ['waiting_external', 'timeout']);
+  const f = await runQueue({ workRoot: root, queue: ['f'], handler: hang('finalize'), ...opts });
+  assert.deepEqual([f.outcomes[0].status, f.outcomes[0].reason], ['interrupted', 'timeout']);
+  await assert.rejects(runQueue({ workRoot: root, queue: [], handler: okHandler, graceMs: -1 }), TypeError);
+}));
+
+const runChild = (args, env = {}) => new Promise((resolve) => {
+  const child = spawn(process.execPath, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { err += d; });
+  const killer = setTimeout(() => child.kill('SIGKILL'), 20000); // a hung child fails the test instead of the run
+  child.on('close', (code, signal) => { clearTimeout(killer); resolve({ code, signal, out, err }); });
+});
+
+for (const phase of ['developing', 'finalizing']) {
+  test(`timeout: the CLI exits on its own after a never-settling ${phase} handler, with the timeout recorded in state`, { timeout: 30000 }, withRoot(async (root) => {
+    await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '1' }]));
+    await writeFile(join(root, 'handler.mjs'), `export default ({ phase }) => (phase === ${JSON.stringify(phase)} ? new Promise(() => {}) : Promise.resolve({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' }));\n`);
+    const r = await runChild([RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--phase-timeout-ms', '200', '--grace-ms', '50']);
+    assert.equal(r.signal, null, 'the process ended by itself');
+    assert.notEqual(r.out.trim(), '', 'not a silent exit');
+    const result = JSON.parse(r.out);
+    assert.equal(r.code, 0, 'a recorded timeout is a normal pass result: ok maps to 0');
+    assert.equal(result.status, 'ok');
+    assert.equal(result.outcomes[0].reason, 'timeout');
+    const s = JSON.parse(await readFile(stateFile(root, '1'), 'utf8'));
+    assert.equal(s.lease, null);
+    if (phase === 'developing') {
+      assert.deepEqual([s.status, s.attempts.developer, s.lastEvent.type, s.lastEvent.detail], ['queued', 1, 'developer_failure', 'timeout']);
+    } else {
+      assert.deepEqual([s.status, s.recovery.resumePhase, s.lastEvent.type, s.lastEvent.detail], ['interrupted', 'finalizing', 'finalize_failure', 'finalizing']);
+    }
+  }));
+}
+
+test('timeout: the CLI rejects malformed timeout flags with exit 2', { timeout: 30000 }, withRoot(async (root) => {
+  for (const flag of [['--phase-timeout-ms', '0'], ['--phase-timeout-ms', 'abc'], ['--grace-ms', '-5'], ['--queue-timeout-ms', '1.5']]) {
+    const r = await runChild([RTD, '--work-root', root, '--queue', 'q.json', '--handler', 'h.mjs', ...flag]);
+    assert.equal(r.code, 2, flag.join(' '));
+  }
+}));
+
+test('timeout: a never-settling queue provider ends the process with RT_QUEUE_TIMEOUT instead of a silent exit', { timeout: 30000 }, withRoot(async (root) => {
+  const script = join(root, 'provider.mjs');
+  await writeFile(script, `import { runQueue } from ${JSON.stringify(new URL('../../runtime/rtd.mjs', import.meta.url).href)};
+runQueue({ workRoot: process.env.RT_TEST_ROOT, queue: () => new Promise(() => {}), handler: async () => ({ exitCode: 0, output: 'ok' }), queueTimeoutMs: 200 })
+  .then(() => { console.log('{"settled":"ok"}'); }, (e) => { console.log(JSON.stringify({ code: e.code })); process.exitCode = 3; });
+`);
+  const r = await runChild([script], { RT_TEST_ROOT: root });
+  assert.equal(r.signal, null);
+  assert.deepEqual([r.code, JSON.parse(r.out || '{}').code], [3, 'RT_QUEUE_TIMEOUT']);
+}));
