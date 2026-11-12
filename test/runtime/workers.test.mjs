@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createClaimCoordinator } from '../../runtime/lib/claim.mjs';
 import { runWorkers } from '../../runtime/lib/workers.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
-const scratch = join(process.cwd(), '.roundtable/scratch/rt51-fix2/tmp');
+const scratch = join(process.cwd(), '.roundtable/scratch/92-impl/tmp');
 const temp = async () => { await mkdir(scratch, { recursive: true }); return mkdtemp(join(scratch, 'workers-')); };
 
 test('claim ticks add one running label and one marker comment, then resume stale orphan without reclaiming', async () => {
@@ -103,5 +103,45 @@ test('issue locks are visible across processes and git worktrees are visible to 
     assert.deepEqual(scheduledResult.completed, ['14']);
     assert.equal(scheduled.existingWorktree, false);
     assert.equal(scheduled.worktree, await second.pathFor('14'));
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test('existing issue worktree is rejected when checked out on a different branch', async () => {
+  const base = await temp();
+  const repo = join(base, 'repo'), workRoot = join(base, 'work');
+  await mkdir(repo); await mkdir(workRoot);
+  try {
+    const init = spawnSync('git', ['-C', repo, 'init', '-b', 'main'], { encoding: 'utf8' });
+    assert.equal(init.status, 0, init.stderr);
+    await writeFile(join(repo, 'README.md'), 'fixture\n');
+    spawnSync('git', ['-C', repo, 'add', 'README.md']);
+    const commit = spawnSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture'], { encoding: 'utf8' });
+    assert.equal(commit.status, 0, commit.stderr);
+    const manager = await createWorktreeManager({ workRoot, repoRoot: repo });
+    const branch = spawnSync('git', ['-C', repo, 'branch', 'stale'], { encoding: 'utf8' });
+    assert.equal(branch.status, 0, branch.stderr);
+    const path = await manager.pathFor('92');
+    const stale = spawnSync('git', ['-C', repo, 'worktree', 'add', path, 'stale'], { encoding: 'utf8' });
+    assert.equal(stale.status, 0, stale.stderr);
+    await assert.rejects(manager.create('92'), /branch stale, expected rt\/92-pi/i);
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test('existing issue worktree is reused when checked out on the expected branch', async () => {
+  const base = await temp();
+  const repo = join(base, 'repo'), workRoot = join(base, 'work');
+  await mkdir(repo); await mkdir(workRoot);
+  try {
+    const init = spawnSync('git', ['-C', repo, 'init', '-b', 'main'], { encoding: 'utf8' });
+    assert.equal(init.status, 0, init.stderr);
+    await writeFile(join(repo, 'README.md'), 'fixture\n');
+    spawnSync('git', ['-C', repo, 'add', 'README.md']);
+    const commit = spawnSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture'], { encoding: 'utf8' });
+    assert.equal(commit.status, 0, commit.stderr);
+    const manager = await createWorktreeManager({ workRoot, repoRoot: repo });
+    const created = await manager.create('92');
+    assert.equal(created.branch, 'rt/92-pi');
+    assert.equal(created.existing, false);
+    assert.deepEqual(await manager.create('92'), { ...created, existing: true });
   } finally { await rm(base, { recursive: true, force: true }); }
 });
