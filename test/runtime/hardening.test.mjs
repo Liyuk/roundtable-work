@@ -94,15 +94,20 @@ test('renewal: phaseTimeoutMs aborts a never-settling handler', withRoot(async (
     a.signal.addEventListener('abort', () => { aborted = true; });
     return new Promise(() => {});
   };
-  const reviewer = await runQueue({ workRoot: root, queue: ['r'], handler: hang('reviewer'), phaseTimeoutMs: 80, graceMs: 20 });
+  // Each hung handler is abandoned (never settles), so its lock stays held until the TTL: one work root per run.
+  const reviewer = await runQueue({ workRoot: join(root, 'w1'), queue: ['r'], handler: hang('reviewer'), phaseTimeoutMs: 80, graceMs: 20 });
   assert.equal(aborted, true, 'the handler signal was aborted');
   assert.deepEqual([reviewer.outcomes[0].status, reviewer.outcomes[0].class, reviewer.outcomes[0].reason], ['waiting_external', 'reviewer_unavailable', 'timeout']);
   aborted = false;
-  const developer = await runQueue({ workRoot: root, queue: ['d'], handler: hang('developer'), phaseTimeoutMs: 80, graceMs: 20, maxDeveloperAttempts: 1 });
+  const developer = await runQueue({ workRoot: join(root, 'w2'), queue: ['d'], handler: hang('developer'), phaseTimeoutMs: 80, graceMs: 20, maxDeveloperAttempts: 1 });
   assert.deepEqual([developer.outcomes[0].status, developer.outcomes[0].class], ['stop', 'developer_failure']);
-  const finalizer = await runQueue({ workRoot: root, queue: ['f'], handler: hang('finalize'), phaseTimeoutMs: 80, graceMs: 20 });
+  const finalizer = await runQueue({ workRoot: join(root, 'w3'), queue: ['f'], handler: hang('finalize'), phaseTimeoutMs: 80, graceMs: 20 });
   assert.deepEqual([finalizer.outcomes[0].status, finalizer.outcomes[0].class, finalizer.outcomes[0].reason], ['interrupted', 'finalize_failure', 'timeout']);
-  // The lock was released: the next pass acquires it right away.
+  assert.deepEqual([reviewer.abandonedHandler, developer.abandonedHandler, finalizer.abandonedHandler], [true, true, true]);
+  // A handler that settles on abort (inside the grace period) releases the lock: the next pass acquires it right away.
+  const settling = async (a) => (a.stage === 'reviewer' ? new Promise((_, reject) => a.signal.addEventListener('abort', () => reject(new Error('aborted')))) : okHandler(a));
+  const settled = await runQueue({ workRoot: root, queue: ['s'], handler: settling, phaseTimeoutMs: 80, graceMs: 500 });
+  assert.equal(settled.abandonedHandler, undefined);
   const next = await runQueue({ workRoot: root, queue: ['n'], handler: okHandler });
   assert.equal(next.status, 'ok');
 }));
@@ -374,8 +379,12 @@ for (const hungPhase of ['developing', 'testing']) {
       late = await Promise.allSettled([a.recordArtifacts({ output: 'late.txt' }), a.heartbeat()]);
       return { exitCode: 0, output: 'late' };
     };
-    const first = await runQueue({ workRoot: root, queue: ['A'], handler, phaseTimeoutMs: 60, graceMs: 30, maxDeveloperAttempts: 3 });
+    // Injected clock: the abandoned handler keeps lock and lease until their TTL, which the test then lets pass.
+    let skew = 0;
+    const now = () => Date.now() + skew;
+    const first = await runQueue({ workRoot: root, queue: ['A'], handler, now, phaseTimeoutMs: 60, graceMs: 30, maxDeveloperAttempts: 3 });
     assert.equal(first.status, 'ok');
+    assert.equal(first.abandonedHandler, true);
     assert.equal(invocations, 1, 'no second handler invocation started in the same wake');
     assert.deepEqual([first.outcomes[0].status, first.outcomes[0].class, first.outcomes[0].reason, first.outcomes[0].decision], ['queued', hungPhase === 'developing' ? 'developer_failure' : 'test_failure', 'timeout', 'wait']);
     const before = await readFile(stateFile(root, 'A'), 'utf8');
@@ -383,7 +392,7 @@ for (const hungPhase of ['developing', 'testing']) {
     assert.equal(s.status, 'queued');
     assert.equal(s.attempts.developer, 1, 'the retry budget still counts');
     assert.equal(s.checkpoint, null);
-    assert.equal(s.lease, null);
+    assert.equal(s.lease?.owner.startsWith('rtd-'), true, 'the lease of an abandoned handler is kept until its TTL');
     assert.deepEqual([s.recovery.interruptedPhase, s.recovery.resumePhase], [hungPhase, 'developing']);
     assert.deepEqual([s.lastEvent.type, s.lastEvent.detail], [hungPhase === 'developing' ? 'developer_failure' : 'test_failure', 'timeout']);
 
@@ -396,8 +405,10 @@ for (const hungPhase of ['developing', 'testing']) {
     }
     assert.equal(await readFile(stateFile(root, 'A'), 'utf8'), before, 'late recordArtifacts / heartbeat wrote nothing');
 
-    const second = await runQueue({ workRoot: root, queue: ['A'], handler });
-    assert.equal(second.outcomes[0].status, 'done', 'the next wake resumes and finishes');
+    skew = 10 * 60_000; // lock (5 min) and lease (1 min) have expired
+    const second = await runQueue({ workRoot: root, queue: ['A'], handler, now });
+    assert.equal(second.outcomes[0].status, 'done', 'the next wake after expiry resumes and finishes');
+    assert.equal(second.abandonedHandler, undefined);
   }));
 }
 
@@ -421,13 +432,19 @@ test('timeout: the wake waits up to graceMs for the abandoned handler; its calls
 
 test('timeout: a timed-out developer phase spends the retry budget and stops at the limit; reviewer and finalizing end the wake too', withRoot(async (root) => {
   const hang = (stage) => async (a) => (a.stage === stage ? new Promise(() => {}) : okHandler(a));
-  const opts = { phaseTimeoutMs: 40, graceMs: 10 };
+  // A never-settling handler keeps lock and lease until the TTL: the clock is skewed past it between passes.
+  let skew = 0;
+  const now = () => Date.now() + skew;
+  const opts = { phaseTimeoutMs: 40, graceMs: 10, now };
   const d = await runQueue({ workRoot: root, queue: ['d'], handler: hang('developer'), maxDeveloperAttempts: 2, maxWakesPerIssue: 9, ...opts });
   assert.equal(d.outcomes[0].status, 'queued');
+  skew += 10 * 60_000;
   const d2 = await runQueue({ workRoot: root, queue: ['d'], handler: hang('developer'), maxDeveloperAttempts: 2, maxWakesPerIssue: 9, ...opts });
   assert.deepEqual([d2.outcomes[0].status, d2.outcomes[0].reason], ['stop', 'developer_budget_exhausted']);
+  skew += 10 * 60_000;
   const r = await runQueue({ workRoot: root, queue: ['r'], handler: hang('reviewer'), ...opts });
   assert.deepEqual([r.outcomes[0].status, r.outcomes[0].reason], ['waiting_external', 'timeout']);
+  skew += 10 * 60_000;
   const f = await runQueue({ workRoot: root, queue: ['f'], handler: hang('finalize'), ...opts });
   assert.deepEqual([f.outcomes[0].status, f.outcomes[0].reason], ['interrupted', 'timeout']);
   await assert.rejects(runQueue({ workRoot: root, queue: [], handler: okHandler, graceMs: -1 }), TypeError);
@@ -455,7 +472,8 @@ for (const phase of ['developing', 'finalizing']) {
     assert.equal(result.status, 'ok');
     assert.equal(result.outcomes[0].reason, 'timeout');
     const s = JSON.parse(await readFile(stateFile(root, '1'), 'utf8'));
-    assert.equal(s.lease, null);
+    assert.equal(result.abandonedHandler, true);
+    assert.equal(s.lease?.owner.startsWith('rtd-'), true, 'the lease of an abandoned handler is kept until its TTL');
     if (phase === 'developing') {
       assert.deepEqual([s.status, s.attempts.developer, s.lastEvent.type, s.lastEvent.detail], ['queued', 1, 'developer_failure', 'timeout']);
     } else {
@@ -463,6 +481,102 @@ for (const phase of ['developing', 'finalizing']) {
     }
   }));
 }
+
+// ---- single-flight: an abandoned handler (never settles after its timeout and grace) keeps lock and lease until their TTL ----
+test('timeout: an abandoned handler keeps the queue lock and the issue lease until their TTL, so no second handler starts', withRoot(async (root) => {
+  let started = 0;
+  const handler = async (a) => {
+    if (a.phase !== 'developing') return okHandler(a);
+    started++;
+    if (started === 1) return new Promise(() => {}); // ignores the abort signal and never settles
+    return okHandler(a);
+  };
+  let skew = 0;
+  const now = () => Date.now() + skew;
+  const opts = { workRoot: root, queue: ['A'], handler, now, phaseTimeoutMs: 60, graceMs: 30, lockTtlMs: 1000, lockRenewMinMs: 100, leaseTtlMs: 60_000 };
+  const first = await runQueue(opts);
+  assert.equal(first.status, 'ok');
+  assert.equal(first.abandonedHandler, true);
+  assert.deepEqual([first.outcomes[0].status, first.outcomes[0].reason], ['queued', 'timeout']);
+  assert.equal(started, 1);
+  const recorded = await readFile(stateFile(root, 'A'), 'utf8');
+  assert.equal(JSON.parse(recorded).lease?.owner.startsWith('rtd-'), true, 'the lease was not released');
+  assert.equal(JSON.parse(await readFile(join(root, 'rtd.lock.d', (await readdir(join(root, 'rtd.lock.d'))).filter((n) => /^epoch-/.test(n)).sort().pop()), 'utf8')).released, undefined, 'the lock was not released');
+
+  // Before the lock TTL ends: busy, no handler, state untouched.
+  const second = await runQueue(opts);
+  assert.equal(second.status, 'locked');
+  assert.equal(started, 1, 'no second handler started');
+  assert.equal(await readFile(stateFile(root, 'A'), 'utf8'), recorded, 'the recorded status was not overwritten');
+
+  // The lock has expired but the issue lease has not: still no second handler, state untouched.
+  skew = 5000;
+  const third = await runQueue(opts);
+  assert.equal(third.status, 'ok');
+  assert.equal(third.outcomes[0].status, 'held');
+  assert.equal(started, 1, 'the unexpired issue lease still fences the issue');
+  assert.deepEqual(JSON.parse(await readFile(stateFile(root, 'A'), 'utf8')).lease, JSON.parse(recorded).lease);
+  assert.equal(JSON.parse(await readFile(stateFile(root, 'A'), 'utf8')).status, 'queued');
+
+  // After the lease TTL a successor takes over and finishes the issue.
+  skew = 10 * 60_000;
+  const fourth = await runQueue(opts);
+  assert.equal(fourth.status, 'ok');
+  assert.equal(fourth.abandonedHandler, undefined);
+  assert.equal(fourth.outcomes[0].status, 'done');
+  assert.equal(started, 2);
+}));
+
+test('timeout: a handler that settles within graceMs releases the queue lock and the issue lease', withRoot(async (root) => {
+  const handler = async (a) => {
+    if (a.phase !== 'developing') return okHandler(a);
+    await sleep(120); // ignores the signal, but settles inside the grace period
+    return { exitCode: 0, output: 'late' };
+  };
+  const r = await runQueue({ workRoot: root, queue: ['A'], handler, phaseTimeoutMs: 50, graceMs: 2000 });
+  assert.equal(r.abandonedHandler, undefined);
+  assert.equal(r.outcomes[0].status, 'queued');
+  assert.equal(JSON.parse(await readFile(stateFile(root, 'A'), 'utf8')).lease, null);
+  const next = await runQueue({ workRoot: root, queue: ['A'], handler: okHandler });
+  assert.equal(next.status, 'ok', 'the lock was released');
+  assert.equal(next.outcomes[0].status, 'done');
+}));
+
+test('timeout: the CLI exits by itself after an abandoned handler (flag set), and the unexpired lease still fences a second CLI run', { timeout: 40000 }, withRoot(async (root) => {
+  await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '1' }]));
+  await writeFile(join(root, 'handler.mjs'), `import { appendFile } from 'node:fs/promises';
+await appendFile(${JSON.stringify(join(root, 'starts.txt'))}, 'import\\n');
+export default async ({ phase }) => {
+  await appendFile(${JSON.stringify(join(root, 'starts.txt'))}, phase + '\\n');
+  if (phase === 'developing') {
+    setInterval(() => {}, 1000); // a live handle that would keep the process alive forever without process.exit
+    return new Promise(() => {}); // ignores abort, never settles
+  }
+  return { exitCode: 0, output: 'ok' };
+};
+`);
+  const args = [RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--phase-timeout-ms', '200', '--grace-ms', '50'];
+  const startedAt = Date.now();
+  const r = await runChild(args);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(r.signal, null, 'the process ended by itself, it was not killed');
+  assert.ok(elapsed < 200 + 50 + 5000, `exited within timeout + grace + margin (took ${elapsed} ms)`);
+  const result = JSON.parse(r.out);
+  assert.equal(r.code, 0, 'exit code mapping is unchanged: ok maps to 0');
+  assert.equal(result.status, 'ok');
+  assert.equal(result.abandonedHandler, true);
+  assert.equal(result.outcomes[0].reason, 'timeout');
+  assert.equal(JSON.parse(await readFile(stateFile(root, '1'), 'utf8')).lease?.owner.startsWith('rtd-'), true);
+  // The process (and with it the handler) is gone, so a same-host successor may take the lock over; the issue lease
+  // is still unexpired and fences the issue: no handler starts.
+  const before = await readFile(join(root, 'starts.txt'), 'utf8');
+  const stateBefore = await readFile(stateFile(root, '1'), 'utf8');
+  const again = await runChild(args);
+  assert.equal(again.code, 0);
+  assert.equal(JSON.parse(again.out).outcomes[0].status, 'held');
+  assert.equal(await readFile(join(root, 'starts.txt'), 'utf8'), `${before}import\n`, 'only the module import ran, no handler started');
+  assert.equal(await readFile(stateFile(root, '1'), 'utf8'), stateBefore, 'the recorded status was not overwritten');
+}));
 
 test('timeout: the CLI rejects malformed timeout flags with exit 2', { timeout: 30000 }, withRoot(async (root) => {
   for (const flag of [['--phase-timeout-ms', '0'], ['--phase-timeout-ms', 'abc'], ['--grace-ms', '-5'], ['--queue-timeout-ms', '1.5']]) {

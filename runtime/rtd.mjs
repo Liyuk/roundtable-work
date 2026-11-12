@@ -15,7 +15,10 @@ const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer',
 export const EXIT_LOCKED = 75;
 export const EXIT_LOCK_LOST = 76;
 
-/** Process exit code for a `runQueue` result: 0 ok, 75 locked (another pass is running), 76 lock lost (pass aborted). */
+/**
+ * Process exit code for a `runQueue` result: 0 ok, 75 locked (another pass is running), 76 lock lost (pass aborted).
+ * `abandonedHandler` does not change the code; the CLI additionally ends the process (see `runQueue`).
+ */
 export function exitCodeFor(result) {
   if (result?.status === 'locked') return EXIT_LOCKED;
   if (result?.status === 'lock_lost') return EXIT_LOCK_LOST;
@@ -69,10 +72,18 @@ export function exitCodeFor(result) {
  * file ends that issue as `{status:'failed', reason:'corrupt_state', decision:'ask'}` and the file is left untouched; the pass
  * continues. The default `owner` is unique per call. One work root per queue: the lock is per work root.
  *
+ * Abandoned handler (single-flight): when a timed-out handler does not settle within `graceMs`, it may still be running.
+ * The issue stays recorded as recoverable (as above) and the pass returns promptly with `abandonedHandler: true`, but
+ * neither the queue lock nor the issue lease is released and no further issue is woken in this pass: renewal stops and both
+ * expire on their own TTL, so a successor can only start after expiry. A library caller that sees `abandonedHandler: true`
+ * (or an error with `abandonedHandler === true`) must treat it as a process that must not outlive the abandoned handler:
+ * end the process (the CLI does, via `process.exit`) or make sure the handler is dead before the TTL ends. A handler that does
+ * settle within `graceMs` releases lock and lease as usual and the flag is absent.
+ *
  * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N]`. `--handler` is trusted operator code,
  * deliberately outside work-root confinement (only paths under the work root are confined).
  *
- * @returns {Promise<{status:'locked', holder:object} | {status:'lock_lost', outcomes:object[], skipped:object[]} | {status:'ok', outcomes:object[], skipped:object[]}>}
+ * @returns {Promise<{status:'locked', holder:object} | {status:'lock_lost', outcomes:object[], skipped:object[], abandonedHandler?:true} | {status:'ok', outcomes:object[], skipped:object[], abandonedHandler?:true}>}
  */
 export async function runQueue({
   workRoot, queue, handler, now = Date.now, owner = `rtd-${process.pid}-${randomUUID()}`,
@@ -96,6 +107,8 @@ export async function runQueue({
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
 
+  // Set when a timed-out handler did not settle within graceMs: lock and issue lease are then left to expire (single-flight).
+  let abandonedHandler = false;
   // Lock-loss state is shared by the whole pass: queue reading, every wake and every handler.
   let lockLost = false;
   const abort = new AbortController();
@@ -140,13 +153,19 @@ export async function runQueue({
     for (const item of items) {
       const outcome = await wakeGuarded(item);
       outcomes.push(outcome);
-      if (outcome.status === 'lock_lost') return { status: 'lock_lost', outcomes, skipped };
+      // An abandoned handler may still be running: wake nothing else, and say so (the caller must not outlive it).
+      if (outcome.status === 'lock_lost') return { status: 'lock_lost', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
+      if (abandonedHandler) break;
     }
-    return { status: 'ok', outcomes, skipped };
+    return { status: 'ok', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
+  } catch (err) {
+    if (abandonedHandler && err !== null && typeof err === 'object') err.abandonedHandler = true;
+    throw err;
   } finally {
     // release() reports false (never throws on a lost lock) when the epoch file is no longer ours; the
-    // lease then simply expires. A failing release must not mask the pass result.
-    await lock.release().catch(() => false);
+    // lease then simply expires. A failing release must not mask the pass result. With an abandoned handler the
+    // lock is deliberately kept: it expires on its TTL (renewal has stopped), so no successor overlaps the handler.
+    if (!abandonedHandler) await lock.release().catch(() => false);
   }
 
   // One issue with a corrupt state file must not abort the pass (R5): its outcome is `failed` / `corrupt_state`
@@ -246,7 +265,8 @@ export async function runQueue({
           guard.clear();
           // The abandoned handler gets a bounded grace period to settle before anything else happens (the lease is
           // released after this, and no retry starts in this wake); the lock stays renewed meanwhile.
-          if (phaseTimedOut) await settleWithin(running, graceMs);
+          // If it still has not settled, the handler is abandoned: lock and lease are kept and left to expire.
+          if (phaseTimedOut && !(await settleWithin(running, graceMs))) abandonedHandler = true;
           await stopRenewal();
         }
         if (lockLost || !(await refreshLock())) return lost();
@@ -286,19 +306,20 @@ export async function runQueue({
         }
       }
     } finally {
-      // After a lost lock another process owns the state: write nothing. Our lease simply expires.
-      if (!lockLost) await store.releaseLease(id, owner).catch((err) => { if (err instanceof StaleEpochError) markLost(); });
+      // After a lost lock another process owns the state: write nothing. Our lease simply expires. The same goes
+      // for an abandoned handler: it may still be running, so the lease is not released and expires on its TTL.
+      if (!lockLost && !abandonedHandler) await store.releaseLease(id, owner).catch((err) => { if (err instanceof StaleEpochError) markLost(); });
     }
   }
 }
 
 const TIMED_OUT = Symbol('timed out');
 
-/** Wait until `promise` settles (either way) or `ms` passed, whichever comes first; the delay timer is always cleared. */
+/** Wait until `promise` settles (either way) or `ms` passed, whichever comes first; the delay timer is always cleared. Resolves true when it settled. */
 async function settleWithin(promise, ms) {
   let timer;
   try {
-    await Promise.race([promise.then(() => {}, () => {}), new Promise((resolve) => { timer = setTimeout(resolve, ms); })]);
+    return await Promise.race([promise.then(() => true, () => true), new Promise((resolve) => { timer = setTimeout(() => resolve(false), ms); })]);
   } finally { clearTimeout(timer); }
 }
 
@@ -337,11 +358,22 @@ async function main(argv) {
   }
   const { default: handler } = await import(pathToFileURL(resolve(args.handler)).href);
   const result = await runQueue({ workRoot: args['work-root'], queue: args.queue, handler, ...timeouts });
+  const code = exitCodeFor(result);
+  if (result.abandonedHandler) {
+    // A handler that never settled may still be running and would keep this process alive past the lock's
+    // expiry: end the process (after stdout is flushed) so it cannot outlive this run.
+    process.stdout.write(`${JSON.stringify(result)}\n`, () => process.exit(code));
+    return new Promise(() => {});
+  }
   console.log(JSON.stringify(result));
-  return exitCodeFor(result);
+  return code;
 }
 
 const invoked = (() => {
   try { return process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; }
 })();
-if (invoked) main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => { console.error(err); process.exitCode = 1; });
+if (invoked) main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => {
+  console.error(err);
+  if (err?.abandonedHandler) process.exit(1);
+  process.exitCode = 1;
+});
