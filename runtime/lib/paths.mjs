@@ -11,6 +11,7 @@ export class PathEscapeError extends Error {
 }
 
 const within = (root, path) => path === root || path.startsWith(root + sep);
+const FD_PATH = '/dev/fd';
 
 /**
  * Create a resolver that confines every path to `workRoot`.
@@ -66,8 +67,8 @@ export async function createConfinement(workRoot) {
     }
   }
 
-  // Pin every directory while it is used. /proc/self/fd gives Node's pathname-only APIs
-  // an fd-relative anchor; O_NOFOLLOW prevents a swapped component redirecting traversal.
+  // Pin every directory while it is used. /dev/fd gives Node's pathname-only APIs
+  // an fd-relative anchor on POSIX systems; O_NOFOLLOW prevents a swapped component redirecting traversal.
   async function withParent(path, fn, { create = false, fs = { mkdir } } = {}) {
     const lexical = await this.resolve(path);
     const components = relative(lexicalRoot, dirname(lexical)).split(sep).filter(Boolean);
@@ -78,7 +79,7 @@ export async function createConfinement(workRoot) {
       const stat = await rootHandle.stat();
       if (stat.dev !== rootStat.dev || stat.ino !== rootStat.ino) throw new PathEscapeError('Work root changed');
       for (const component of components) {
-        const next = `/proc/self/fd/${handles.at(-1).fd}/${component}`;
+        const next = `${FD_PATH}/${handles.at(-1).fd}/${component}`;
         if (create) await fs.mkdir(next, { recursive: true });
         try { handles.push(await open(next, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)); }
         catch (err) {
@@ -86,7 +87,7 @@ export async function createConfinement(workRoot) {
           throw err;
         }
       }
-      return await fn(`/proc/self/fd/${handles.at(-1).fd}`, basename(lexical));
+      return await fn(`${FD_PATH}/${handles.at(-1).fd}`, basename(lexical));
     } finally {
       for (const handle of handles.reverse()) await handle.close();
     }

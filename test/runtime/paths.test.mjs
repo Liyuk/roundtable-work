@@ -25,6 +25,21 @@ test('paths inside the root resolve, including ones that do not exist yet', asyn
   } finally { await cleanup(); }
 });
 
+test('withParent anchors paths through the portable file descriptor namespace', async () => {
+  const { root, cleanup } = await setup();
+  try {
+    const c = await createConfinement(root);
+    const contents = await c.withParent('state/nested.json', async (dir, name) => {
+      assert.match(dir, /^\/dev\/fd\//);
+      assert.doesNotMatch(dir, /\/proc(?:\/|$)/);
+      await mkdir(dir + '/state', { recursive: true });
+      await writeFile(`${dir}/${name}`, 'portable');
+      return fs.readFile(`${dir}/${name}`, 'utf8');
+    }, { create: true });
+    assert.equal(contents, 'portable');
+  } finally { await cleanup(); }
+});
+
 test('retries when an entry is created between realpath and lstat', async (t) => {
   const { root, cleanup } = await setup();
   try {
