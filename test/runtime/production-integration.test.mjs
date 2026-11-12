@@ -14,7 +14,7 @@ test('production adapter triggers recovery after red main and holds later work',
   const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
   const calls = [];
   const github = {
-    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? 'head' : 'reverthead' }; },
+    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? 'head' : 'reverthead', files: ['x'] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr, options) { calls.push(['merge', pr, options]); return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {}, async recordedEscalationApproval() {},
@@ -59,7 +59,7 @@ export default {
  gates: { async gate0() { await log('gate0'); return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head}; }, async crossCheck() { return true; } },
  git: { async createRevert() { await log('revert'); return {sha:'1234567'}; } },
  github: {
-  async getPullRequest(pr) { return {state:'open',draft:false,mergeable:true,head:pr === 90 ? 'head' : 'reverthead'}; },
+  async getPullRequest(pr) { return {state:'open',draft:false,mergeable:true,head:pr === 90 ? 'head' : 'reverthead',files:['x']}; },
   async requiredGreen(pr) { return pr === 90 || ${revertGreen}; },
   async squashMerge(pr,options) { await log('squash',pr,options); return {mergeCommit:pr === 90 ? 'abcdef0123456789' : '1111111111111111'}; },
   async addLabel() {}, async recordedEscalationApproval() {},
@@ -139,7 +139,7 @@ test('pending main and failed revert gate hold tracker claims across passes', as
   const calls = [];
   const pause = { value: null, async get() { return this.value; }, async put(value) { this.value = structuredClone(value); } };
   const github = {
-    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? 'head' : 'reverthead' }; },
+    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? 'head' : 'reverthead', files: ['x'] }; },
     async requiredGreen() { return true; }, async addLabel() {}, async recordedEscalationApproval() {},
     async squashMerge(pr) { calls.push(pr); return { mergeCommit: 'abcdef0123456789' }; },
     async mainStatus() { return { head: mainHead, status: main }; },

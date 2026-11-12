@@ -43,8 +43,10 @@ export function exitCodeFor(result) {
  * `recordArtifacts`, which persists them immediately so a crash cannot lose the record).
  * For auto-merge, `autoMerge.context({ item, state, result, signal })` supplies the PR number, head, tree,
  * boolean highRisk and changedFiles. `autoMerge.gates` and `autoMerge.github` provide injected gate and
- * GitHub operations. Gate records are persisted in the issue state; the merge entry point rechecks the PR
- * and CI. GitHub intake requires `--providers MODULE`, a trusted module exporting the production providers.
+ * GitHub operations; `autoMerge.github.getPullRequest` must return { state, draft, head, mergeable, files },
+ * where files is the pull request's changed paths (the merge entry point re-derives the safety-file set
+ * from it and fails closed when it is missing). Gate records are persisted in the issue state; the merge
+ * entry point rechecks the PR and CI. GitHub intake requires `--providers MODULE`, a trusted module exporting the production providers.
  *
  * A failed or timed-out `finalizing` step ends the wake as `interrupted` (decision `ask`, class
  * `finalize_failure`, `recovery.resumePhase = 'finalizing'`): it is not retried from development and

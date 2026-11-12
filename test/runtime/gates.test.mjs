@@ -25,6 +25,28 @@ function fixture(overrides = {}) {
   return { input: { ...input, ...overrides }, calls, records };
 }
 
+function gatedRecord(overrides = {}) {
+  return { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false, ...overrides };
+}
+
+function livePullRequest(files) {
+  return { state: 'open', draft: false, head: 'abc1234', mergeable: true, ...(files === undefined ? {} : { files }) };
+}
+
+function entryFixture({ persisted = gatedRecord(), live = livePullRequest([]) } = {}) {
+  const calls = [];
+  const entry = createMergeEntryPoint({
+    gateState: { async get() { return persisted; } },
+    github: {
+      async getPullRequest() { calls.push('pr'); return live; },
+      async requiredGreen() { calls.push('ci'); return true; },
+      async squashMerge(_pr, options) { calls.push(['merge', options]); return 'merged'; },
+    },
+  });
+  const evidence = { issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true, passed: ['gate0', 'gate1', 'gate2', 'ci'], ciGreen: true };
+  return { entry, calls, evidence };
+}
+
 test('runs deterministic gates, CI, then single squash entry point without a human actor', async () => {
   const f = fixture();
   const result = await runGates(f.input);
@@ -57,9 +79,9 @@ test('reviewer unavailable is retried once, then only ready-to-merge is labeled'
 test('single merge entry point rechecks persisted gates, live head, mergeability, and CI', async () => {
   const calls = [];
   const entry = createMergeEntryPoint({
-    gateState: { async get() { return { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'] }; } },
+    gateState: { async get() { return { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false }; } },
     github: {
-      async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, head: 'abc1234', mergeable: true }; },
+      async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
       async requiredGreen() { calls.push('ci'); return true; },
       async squashMerge(_pr, options) { calls.push(['merge', options]); return 'merged'; },
     },
@@ -79,6 +101,63 @@ test('single merge entry point refuses stale heads and red CI without invoking m
   });
   await assert.rejects(entry(90, { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'], ciGreen: true }), /stale/);
   assert.equal(merges, 0);
+});
+
+test('single merge entry point rejects a live safety file that was not in the gated set', async () => {
+  // Bypass regression: the provider returns no safetyFiles/safetyApprovalHead, yet the live diff shows
+  // a safety file the gate never approved.
+  const f = entryFixture({ live: livePullRequest(['.github/workflows/check.yml']) });
+  await assert.rejects(f.entry(90, f.evidence), /Safety-file set changed/);
+  assert.deepEqual(f.calls, ['pr']);
+  assert.equal(f.calls.some(Array.isArray), false);
+});
+
+test('single merge entry point rejects live safety files added or removed since gating', async () => {
+  const added = entryFixture({
+    persisted: gatedRecord({ safetyFiles: ['.github/workflows/check.yml'], safetyApproved: true }),
+    live: livePullRequest(['.github/workflows/check.yml', 'scripts/check.mjs']),
+  });
+  await assert.rejects(added.entry(90, added.evidence), /Safety-file set changed/);
+  assert.deepEqual(added.calls, ['pr']);
+  const removed = entryFixture({
+    persisted: gatedRecord({ safetyFiles: ['.github/workflows/check.yml', 'scripts/check.mjs'], safetyApproved: true }),
+    live: livePullRequest(['.github/workflows/check.yml']),
+  });
+  await assert.rejects(removed.entry(90, removed.evidence), /Safety-file set changed/);
+  assert.deepEqual(removed.calls, ['pr']);
+});
+
+test('single merge entry point fails closed when live changed files are missing', async () => {
+  const missing = entryFixture({ live: livePullRequest(undefined) });
+  await assert.rejects(missing.entry(90, missing.evidence), /Live pull request changed files are required/);
+  assert.deepEqual(missing.calls, ['pr']);
+  const malformed = entryFixture({ live: livePullRequest([42]) });
+  await assert.rejects(malformed.entry(90, malformed.evidence), /Live pull request changed files are required/);
+  assert.deepEqual(malformed.calls, ['pr']);
+});
+
+test('single merge entry point fails closed without a gated safety-file list', async () => {
+  const withoutList = entryFixture({ persisted: { ...gatedRecord(), safetyFiles: undefined } });
+  await assert.rejects(withoutList.entry(90, withoutList.evidence), /Gated safety-file list is missing/);
+  assert.deepEqual(withoutList.calls, ['pr']);
+});
+
+test('single merge entry point requires recorded approval for a non-empty live safety set', async () => {
+  const stale = entryFixture({
+    persisted: gatedRecord({ safetyFiles: ['.github/workflows/check.yml'], safetyApproved: false }),
+    live: livePullRequest(['.github/workflows/check.yml']),
+  });
+  await assert.rejects(stale.entry(90, stale.evidence), /Safety-file approval is missing or stale/);
+  assert.deepEqual(stale.calls, ['pr']);
+});
+
+test('approved safety-file set merges without provider safety fields', async () => {
+  const f = entryFixture({
+    persisted: gatedRecord({ safetyFiles: ['.github/workflows/check.yml'], safetyApproved: true }),
+    live: livePullRequest(['.github/workflows/check.yml', 'runtime/lib/gates.mjs']),
+  });
+  assert.equal(await f.entry(90, f.evidence), 'merged');
+  assert.deepEqual(f.calls, ['pr', 'ci', ['merge', { method: 'squash' }]]);
 });
 
 test('persisted gates resume for same head/tree and stale head invalidates every gate', async () => {
@@ -105,6 +184,31 @@ test('safety-file diff requires recorded escalation-model approval for current h
   assert.equal(result.gate, 'safety-approval');
   assert.ok(f.calls.includes('label:rt:ready-to-merge'));
   assert.equal(f.calls.includes('merge'), false);
+});
+
+test('approved safety-file change records approval at gate time and merges through the entry point', async () => {
+  const files = ['.github/workflows/check.yml', 'runtime/lib/gates.mjs'];
+  const f = fixture({
+    changedFiles: files,
+    github: {
+      async recordedEscalationApproval() { f.calls.push('approval'); return { approved: true, model: 'gpt-6.1-terra', head: 'abc1234' }; },
+      async addLabel(_pr, label) { f.calls.push(`label:${label}`); },
+    },
+  });
+  assert.equal((await runGates(f.input)).status, 'merged');
+  const persisted = f.records.get('53');
+  assert.deepEqual(persisted.safetyFiles, ['.github/workflows/check.yml']);
+  assert.equal(persisted.safetyApproved, true);
+  // The provider supplies only live changed files, no safetyFiles/safetyApprovalHead hint fields.
+  const entry = createMergeEntryPoint({
+    gateState: { async get() { return persisted; } },
+    github: {
+      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files }; },
+      async requiredGreen() { return true; },
+      async squashMerge(_pr, options) { return { merged: options }; },
+    },
+  });
+  assert.deepEqual(await entry(90, { issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true, passed: ['gate0', 'gate1', 'gate2', 'ci'], ciGreen: true }), { merged: { method: 'squash' } });
 });
 
 test('red-main recovery pauses claims and merges, opens revert PR, and files bug issue', async () => {
