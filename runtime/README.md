@@ -22,7 +22,8 @@ under `$RT_HOME`, the `--network-isolated` assertion, and PR metadata (`--metada
 it may run the submitted tests with network access and without a denylist, PR metadata is optional, and the JSON output
 carries `"mode": "local", "authoritative": false`. Never use a local result as a gate result.
 
-Exit code 0 = pass, 1 = reject, 2 = block. Output is JSON with rule IDs, paths and line numbers only;
+Exit code 0 = pass, 1 = reject, 2 = block. Any crash, unparsable input or internal error is a block (exit 2,
+rule ID `G0-INTERNAL` or `G0-INPUT`), never a reject and never a raw error text. Output is JSON with rule IDs, paths and line numbers only;
 matched text is never printed (a length and a hash prefix are reported instead).
 
 `issue.json`: `{ "allowedPaths": [...globs], "allowChanges": { "gate0": false, "verdict": false, "allowlists": false, "packageJson": false, "lockfiles": false, "ci": false, "tests": false, "symlinks": false, "submodules": false, "binaries": false }, "allowSkip": false }`.
@@ -74,6 +75,17 @@ Letters-only IPv6 candidates (such as a short mixed-case pair joined by two colo
 - Paths in findings are printed as is only when they are Gate 0's own fixed `<tests>` marker or were vetted by the
   hygiene scan; every other path, including one written in angle brackets, goes through the denylist scan first.
 
+## Four-part version numbers (narrow exemption, H-53)
+
+A four-part number is a version, not an address, only in two exact whole-line shapes. (1) A `version` key in a
+manifest or lockfile (package.json, package-lock.json, npm-shrinkwrap.json, composer.json, composer.lock, any `*.lock`,
+pyproject.toml, Cargo.toml, pubspec.yaml, Chart.yaml): JSON, TOML, YAML or lockfile form. (2) A `#` release heading in a
+`.md`, `.markdown`, `.txt` or `.rst` file, such as a changelog entry with an optional `v`, brackets and a date.
+A `v` or `@` prefix alone never exempts: prose, code, shell, YAML other than the named manifests, commit messages, PR
+text, branch names and paths are still scanned. A number in a private, CGNAT or link-local range is never exempt, and
+only that one number on that one line is skipped. Trade-off: a plausible public address written in an exact `version`
+key passes, because that key overwhelmingly holds a version. A five-or-more-part number is not an address.
+
 ## Static counting limitations
 
 - Test-case counting is static: comments and the contents of string, template and regex literals are stripped, then
@@ -87,3 +99,35 @@ Letters-only IPv6 candidates (such as a short mixed-case pair joined by two colo
   prose that contains them can be a false reject. Chinese tokens are counted only when not adjacent to another Han
   character. The registry is conservative and is not a proof that every machine field is covered.
 
+
+## Threat-model decisions (issue #28)
+
+- **Trusted copy.** Gate 0 must be run from a trusted copy of `runtime/` that lives outside the reviewed tree. A host
+  run whose own file is inside `--root` is a block (`G0-SELF`). When the Gate 0 files themselves are in the diff the
+  scope check rejects it unless `allowChanges.gate0` is set (the self-run of this change sets it).
+- **No import from the reviewed tree.** The module imports node built-ins and `./hygiene.mjs` only. Verdict tokens and
+  patterns are derived from the BASE text of `lib/verdict.mjs`, parsed as text and never executed. A base text that
+  lacks a required form blocks (`G0-REGISTRY`).
+- **Verdict first line.** The pattern is anchored at line start and end, fenced code is ignored, and every anchored
+  line of a file on the base must still exist as its own line in the head file (a decoy elsewhere does not count).
+- **New Markdown** gets the same direction, token, skip-marker (dotted call forms only; plain words stay allowed) and
+  hygiene rules as any other added text. Zero-width, bidi and other format-control characters are rejected
+  (`G0-INVISIBLE`) and stripped before every scan; escaped, entity, percent and base64 forms are decoded and scanned.
+- **Git hardening.** Refs are validated and resolved once to SHAs; `--end-of-options`, `--` and `-z` are used; the
+  config pins disable textconv, external diff, fsmonitor, hooks, attribute files and pagers; content is read from
+  objects (`cat-file`), so `-diff` attributes cannot hide it. Binary files are scanned as extracted strings and
+  symlink targets as text. Every commit in the range is scanned, so a value added and deleted in a middle commit is
+  still found.
+- **Dirty state.** A dirty worktree or any untracked file is a block (`G0-DIRTY`).
+- **Test evidence.** The test runner reports the TAP counters. A passing exit code with no executed test, with skipped,
+  todo or cancelled tests, or with a touched test file whose cases no longer execute is not a pass.
+- **Exit codes.** 0 pass, 1 reject, 2 block (including every crash). All emitted strings are redacted: findings carry a
+  rule ID, a path (hashed when it matches the denylist), a line, a length and a keyed hash only.
+- **Deferred (host-side or contract-changing):** T-19, T-23, T-24, T-28, T-30, T-31, T-32, T-42, T-44, T-45 are tracked
+  in the ledger and will become follow-up issues.
+- **Deferred, critical (T-24):** submitted tests run as the same OS user as Gate 0, with filesystem access that pure Node
+  cannot restrict. A host run therefore REQUIRES isolation provided by the host: a separate user, a container, or a
+  read-only mount, in addition to the network assertion.
+- **Deferred, high (T-30):** the installed dependency tree is trusted only through the lockfile copy check against the
+  base lockfile; the code in it is not verified, and the `node_modules` link to the supplied directory is writable
+  by the tests. Supply it from a read-only mount.

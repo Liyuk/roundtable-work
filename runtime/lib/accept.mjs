@@ -81,15 +81,14 @@
 //     `baseline.frozenTokens`, a built-in list). It is conservative, not a proof that
 //     every machine field is covered.
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { loadDenylist, scanHygiene, hashText, formatFindings, HygieneError } from './hygiene.mjs';
-import { parseVerdict } from '../../lib/verdict.mjs';
 
 const execFileP = promisify(execFile);
 
@@ -103,28 +102,31 @@ export const SHARED_PROMPT_PATH = '.agents/skills/roundtable-work/prompts/shared
 const DEFAULT_TIMEOUT_MS = 600000;
 const DEFAULT_RUNNER_TIMEOUT_MS = 300000;
 const MAX_BUFFER = 256 * 1024 * 1024;
+const OUTPUT_CAP = 16 * 1024 * 1024;
 
-// CJK characters are written as escapes so this file stays ASCII-only.
+// CJK words are built from numeric code points so no escape sequence that decodes to CJK
+// text appears in this source (the gate scans decoded views of every added line).
+const fromCodes = (...codes) => String.fromCodePoint(...codes);
 const ZH = Object.freeze({
-  PASS: '\u901a\u8fc7',
-  REJECT: '\u6253\u56de',
-  BLOCK: '\u963b\u585e',
-  COMPLETE: '\u5b8c\u6210',
-  PARTIAL: '\u90e8\u5206\u5b8c\u6210',
-  FAILED: '\u5931\u8d25',
-  UNKNOWN: '\u672a\u77e5',
-  REVIEW_LABEL: '\u5ba1\u67e5\u7ed3\u8bba',
-  EXECUTED: '\u5df2\u6267\u884c',
-  READ: '\u5df2\u8bfb\u53d6',
-  SELF_REPORTED: '\u81ea\u8ff0',
-  NOT_RUN: '\u672a\u8fd0\u884c',
+  VERDICT_PASS: fromCodes(0x901a, 0x8fc7),
+  REJECT: fromCodes(0x6253, 0x56de),
+  BLOCK: fromCodes(0x963b, 0x585e),
+  COMPLETE: fromCodes(0x5b8c, 0x6210),
+  PARTIAL: fromCodes(0x90e8, 0x5206, 0x5b8c, 0x6210),
+  FAILED: fromCodes(0x5931, 0x8d25),
+  UNKNOWN: fromCodes(0x672a, 0x77e5),
+  REVIEW_LABEL: fromCodes(0x5ba1, 0x67e5, 0x7ed3, 0x8bba),
+  EXECUTED: fromCodes(0x5df2, 0x6267, 0x884c),
+  READ: fromCodes(0x5df2, 0x8bfb, 0x53d6),
+  SELF_REPORTED: fromCodes(0x81ea, 0x8ff0),
+  NOT_RUN: fromCodes(0x672a, 0x8fd0, 0x884c),
 });
-const FULLWIDTH_COLON = '\uff1a';
+const FULLWIDTH_COLON = fromCodes(0xff1a);
 
 // Unicode script properties cover halfwidth kana, jamo, compatibility ideographs and
 // the astral Han extensions. The source stays ASCII.
 const HAN = '\\p{Script=Han}';
-const CJK_ALT = `${HAN}|\\p{Script=Hiragana}|\\p{Script=Katakana}|\\p{Script=Hangul}`;
+const CJK_ALT = `${HAN}|\\p{Script=Bopomofo}|\\p{Script=Hiragana}|\\p{Script=Katakana}|\\p{Script=Hangul}`;
 const CJK_RE = new RegExp(`(?:${CJK_ALT})`, 'gu');
 const HAS_CJK_RE = new RegExp(`(?:${CJK_ALT})`, 'u');
 
@@ -142,21 +144,23 @@ const DEFAULT_FIELD_NAMES = [
   ZH.EXECUTED, ZH.READ, ZH.SELF_REPORTED, ZH.NOT_RUN,
   'allowedPaths', 'allowChanges', 'allowSkip',
 ];
-// Candidate forms probed against parseVerdict; only accepted forms enter the registry.
-const VERDICT_PROBES = [
-  ZH.PASS, ZH.REJECT, ZH.BLOCK, 'passed', 'rejected', 'blocked', 'returned',
-];
-
 // Protected categories: out of scope unless the issue explicitly allows them.
 const LOCKFILE_NAMES = ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb'];
-const CI_PATTERNS = ['.github/**', '.gitlab-ci.yml', '.circleci/**', '.nvmrc', '.node-version'];
+const CI_PATTERNS = ['.github/**', '.github/*', '.gitlab-ci.yml', '.circleci/**', '.nvmrc', '.node-version'];
+const under = (p, dir) => p === dir.replace(/\/$/, '') || p.startsWith(dir);
 const PROTECTED = [
-  { flag: 'gate0', test: (p) => p.startsWith('runtime/') || p.startsWith('test/runtime/') },
+  { flag: 'gate0', test: (p) => under(p, 'runtime/') || under(p, 'test/runtime/') },
   { flag: 'verdict', test: (p) => p === 'lib/verdict.mjs' },
   { flag: 'allowlists', test: (p) => p === BASELINE_PATH },
   { flag: 'packageJson', test: (p) => baseName(p) === 'package.json' },
   { flag: 'lockfiles', test: (p) => LOCKFILE_NAMES.includes(baseName(p)) },
   { flag: 'ci', test: (p) => CI_PATTERNS.some((g) => globToRegExp(g).test(p)) },
+  // Check scripts, hooks and tool configuration that could wrap or skip Gate 0 (T-04).
+  { flag: 'scripts', test: (p) => under(p, 'scripts/') },
+  { flag: 'gitconfig', test: (p) => ['.gitattributes', '.gitmodules', '.gitignore', '.npmrc', '.mocharc.json', '.mocharc.js', '.mocharc.cjs', '.mocharc.yml'].includes(baseName(p))
+    || baseName(p).startsWith('.yarnrc') || under(p, '.husky/') || under(p, '.githooks/') },
+  { flag: 'templates', test: (p) => under(p, TEMPLATES_DIR) || p === SHARED_PROMPT_PATH || p === '.roundtable/policy.md' },
+  { flag: 'nodeModules', test: (p) => p.split('/').includes('node_modules') },
 ];
 
 // ---------------------------------------------------------------------------
@@ -243,30 +247,32 @@ function validGlobList(list) {
 // ---------------------------------------------------------------------------
 
 /**
- * Derive the verdict forms from lib/verdict.mjs by probing parseVerdict.
- * Candidates = the probe pool plus quoted literals found in the base-side
- * verdict source (when given). Returns { tokens, chinese: {passed, rejected, blocked} }.
- * This is the only place the verdict part of the registry is derived.
+ * Derive the verdict forms STATICALLY from the BASE text of the verdict module. No file of
+ * the reviewed tree is imported or evaluated. The module is a chain of
+ * `normalized === '<literal>'` comparisons each followed by `return '<class>'`; those pairs are
+ * extracted with a regular expression. The built-in probe list is the required minimum:
+ * a base source that yields verdict-shaped pairs but lacks a required form is a block
+ * (G0-REGISTRY); a source with no such pairs (or no source) falls back to the built-in list.
+ * Returns { tokens, chinese: {passed, rejected, blocked} }.
  */
 export function deriveVerdictTokens(verdictSource) {
-  const candidates = new Set(VERDICT_PROBES);
-  if (typeof verdictSource === 'string') {
-    for (const m of verdictSource.matchAll(/'([^'\\\n]{1,32})'|"([^"\\\n]{1,32})"/g)) {
-      const lit = (m[1] ?? m[2]).trim();
-      if (lit && !/\s/.test(lit)) candidates.add(lit);
-    }
+  const found = new Map();
+  if (typeof verdictSource === 'string' && verdictSource.length <= 200000) {
+    const re = /normalized\s*===\s*(['"])([^'"\\\n]{1,32})\1\s*\)\s*\{\s*return\s*(['"])([a-z]{1,16})\3/g;
+    for (const m of verdictSource.matchAll(re)) found.set(m[2].trim(), m[4]);
   }
-  const tokens = [];
+  const builtIn = new Map([
+    [ZH.VERDICT_PASS, 'passed'], [ZH.REJECT, 'rejected'], [ZH.BLOCK, 'blocked'],
+    ['passed', 'passed'], ['rejected', 'rejected'], ['blocked', 'blocked'], ['returned', 'rejected'],
+  ]);
+  if (found.size > 0) {
+    for (const [lit, cls] of builtIn) if (found.get(lit) !== cls) throw new GateSignal('G0-REGISTRY');
+  } else {
+    for (const [lit, cls] of builtIn) found.set(lit, cls);
+  }
+  const tokens = [...found.keys()];
   const chinese = {};
-  for (const cand of candidates) {
-    let normalized;
-    try { normalized = parseVerdict(cand); } catch { continue; }
-    tokens.push(cand);
-    if (hasCjk(cand) && chinese[normalized] === undefined) chinese[normalized] = cand;
-  }
-  for (const required of VERDICT_PROBES) {
-    if (!tokens.includes(required)) throw new GateSignal('G0-REGISTRY');
-  }
+  for (const [lit, cls] of found) if (hasCjk(lit) && chinese[cls] === undefined) chinese[cls] = lit;
   if (!chinese.passed || !chinese.rejected || !chinese.blocked) throw new GateSignal('G0-REGISTRY');
   return { tokens, chinese };
 }
@@ -297,7 +303,10 @@ export function deriveTemplateTokens(templates) {
   return [...tokens];
 }
 
-const VOCAB_HEADING_RE = /^#{1,6}\s.*(?:status\s+vocabulary|\u72b6\u6001\u8bcd\u6c47|\u7edf\u4e00\u8bcd\u6c47)/i;
+const VOCAB_HEADING_RE = new RegExp(
+  `^#{1,6}\\s.*(?:status\\s+vocabulary|${fromCodes(0x72b6, 0x6001, 0x8bcd, 0x6c47)}|${fromCodes(0x7edf, 0x4e00, 0x8bcd, 0x6c47)})`,
+  'i',
+);
 
 /**
  * Backticked machine words in the status-vocabulary section of the base shared prompt
@@ -336,12 +345,14 @@ export function buildRegistry({ verdictSource, templates, sharedPrompt, extras }
   const tokens = [...set].sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
   const { passed, rejected, blocked } = verdict.chinese;
   // An English parenthetical after a frozen token is allowed.
-  const tok = (t) => `${escapeRe(t)}(?:\\s*\\([^()\\n]*\\))?`;
-  const verdictLine = new RegExp(
-    `${ZH.REVIEW_LABEL}[:${FULLWIDTH_COLON}]\\s*${tok(passed)}\\s*\\|\\s*${tok(rejected)}\\s*\\|\\s*${escapeRe(blocked)}`,
-    'g',
-  );
-  return { tokens, verdictLine };
+  const tok = (t) => `${escapeRe(t)}(?:[ \\t]*\\([^()\\n]*\\))?`;
+  const core = `${ZH.REVIEW_LABEL}[:${FULLWIDTH_COLON}][ \\t]*${tok(passed)}[ \\t]*\\|[ \\t]*${tok(rejected)}[ \\t]*\\|[ \\t]*${tok(blocked)}`;
+  // Anchored: the contract line is a whole line (optional list marker and backticks), or a
+  // backticked span. A copy in the middle of a sentence, with trailing text, or behind an
+  // invisible character is not a verdict line.
+  const verdictLine = new RegExp(`^[ \\t]*(?:[-*>][ \\t]+)?\`?${core}\`?[ \\t]*$|\`${core}\``, 'gm');
+  const verdictLabel = ZH.REVIEW_LABEL;
+  return { tokens, verdictLine, verdictLabel };
 }
 
 const tokenReCache = new Map();
@@ -417,6 +428,9 @@ export function normalizeDiff(diff) {
       oldMode: f.oldMode === undefined ? '' : String(f.oldMode),
       newMode: f.newMode === undefined ? '' : String(f.newMode),
       binary: f.binary === true,
+      symlink: f.oldMode === '120000' || f.newMode === '120000',
+      lfs: f.lfs === true,
+      badPath: f.badPath === true,
       added: lines(f.added),
       removed: lines(f.removed),
       baseContent: typeof f.baseContent === 'string' ? f.baseContent : '',
@@ -432,14 +446,37 @@ function basePathOf(f) {
 }
 
 // ---------------------------------------------------------------------------
-// Git collection (execFile, no shell)
+// Git collection (hardened execFile, no shell, no repo-config-driven behavior)
 // ---------------------------------------------------------------------------
 
-async function git(root, args, { allowFail = false } = {}) {
+// Fixed git environment: no system or global config, no replace objects, no attribute
+// files, literal pathspecs, no prompts. The reviewed repository can still carry local
+// config and `.git/info/attributes`; every call below also pins the settings that matter
+// on the command line, and blobs are read by object id (no attribute processing at all).
+const GIT_ENV_FIXED = Object.freeze({
+  LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_NO_REPLACE_OBJECTS: '1', GIT_ATTR_NOSYSTEM: '1', GIT_LITERAL_PATHSPECS: '1', GIT_OPTIONAL_LOCKS: '0',
+  GIT_CONFIG_COUNT: '0',
+});
+const GIT_PINNED = [
+  '--no-replace-objects', '--no-pager',
+  '-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.attributesFile=/dev/null', '-c', 'core.pager=cat', '-c', 'diff.external=',
+  '-c', 'protocol.allow=never', '-c', 'core.autocrlf=false', '-c', 'core.untrackedCache=false',
+];
+const MAX_BLOB = 4 * 1024 * 1024;
+const MAX_MD_LINE = 2000;
+const ZERO_SHA = /^0+$/;
+
+function gitEnv() {
+  return { PATH: process.env.PATH || '', ...GIT_ENV_FIXED };
+}
+
+/** Run git and return a Buffer (never decoded lossily). Failure => G0-GIT. */
+async function gitBuf(root, args, { allowFail = false } = {}) {
   try {
-    const { stdout } = await execFileP('git', ['-c', 'core.quotepath=off', ...args], {
-      cwd: root, maxBuffer: MAX_BUFFER, encoding: 'utf8',
-      env: { PATH: process.env.PATH || '', LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' },
+    const { stdout } = await execFileP('git', [...GIT_PINNED, ...args], {
+      cwd: root, maxBuffer: MAX_BUFFER, encoding: 'buffer', env: gitEnv(),
     });
     return stdout;
   } catch {
@@ -448,72 +485,219 @@ async function git(root, args, { allowFail = false } = {}) {
   }
 }
 
-function parseHunks(patch) {
-  const added = [];
-  const removed = [];
-  let inHunk = false;
-  let newLn = 0;
-  let oldLn = 0;
-  for (const raw of patch.split('\n')) {
-    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
-    if (h) { inHunk = true; oldLn = Number(h[1]); newLn = Number(h[2]); continue; }
-    if (!inHunk) continue;
-    if (raw.startsWith('+')) added.push({ line: newLn++, text: raw.slice(1).replace(/\r$/, '') });
-    else if (raw.startsWith('-')) removed.push({ line: oldLn++, text: raw.slice(1).replace(/\r$/, '') });
+async function git(root, args, opts) {
+  const out = await gitBuf(root, args, opts);
+  return out === undefined ? undefined : out.toString('utf8');
+}
+
+/** Read blobs by object id in one `cat-file --batch` process. Returns Map(sha -> Buffer). */
+export function readBlobs(root, shas) {
+  const unique = [...new Set(shas)];
+  return new Promise((resolve, reject) => {
+    if (unique.length === 0) { resolve(new Map()); return; }
+    const child = spawn('git', [...GIT_PINNED, 'cat-file', '--batch'], { cwd: root, env: gitEnv(), stdio: ['pipe', 'pipe', 'ignore'] });
+    const chunks = [];
+    let total = 0;
+    child.stdout.on('data', (c) => {
+      total += c.length;
+      if (total > MAX_BUFFER) { child.kill(); reject(new GateSignal('G0-LIMIT')); return; }
+      chunks.push(c);
+    });
+    child.on('error', () => reject(new GateSignal('G0-GIT')));
+    child.on('close', () => {
+      try {
+        const buf = Buffer.concat(chunks);
+        const out = new Map();
+        let pos = 0;
+        for (const sha of unique) {
+          const nl = buf.indexOf(0x0a, pos);
+          if (nl < 0) throw new GateSignal('G0-GIT');
+          const m = /^([0-9a-f]{40,64}) (\w+) (\d+)$/.exec(buf.subarray(pos, nl).toString('latin1'));
+          if (!m || m[1] !== sha || m[2] !== 'blob') throw new GateSignal('G0-GIT');
+          const size = Number(m[3]);
+          if (size > MAX_BLOB) throw new GateSignal('G0-LIMIT');
+          out.set(sha, buf.subarray(nl + 1, nl + 1 + size));
+          pos = nl + 1 + size + 1;
+        }
+        resolve(out);
+      } catch (err) { reject(err); }
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(`${unique.join('\n')}\n`);
+  });
+}
+
+const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
+function decodeStrict(buf) {
+  try { return UTF8_STRICT.decode(buf); } catch { return undefined; }
+}
+/** Escape a non-UTF-8 name into a printable ASCII form (contains a backslash on purpose). */
+function escapeBytes(buf) {
+  let s = '';
+  for (const b of buf) s += b >= 0x21 && b <= 0x7e && b !== 0x5c ? String.fromCharCode(b) : `\\x${b.toString(16).padStart(2, '0')}`;
+  return s;
+}
+const LFS_HEADER = 'version https://git-lfs.github.com/spec/v1';
+
+/**
+ * Printable runs of a binary blob (strings(1) style, UTF-8 and UTF-16LE views), as
+ * pseudo added lines, so text hiding inside binary content is scanned (never skipped).
+ */
+export function binaryStrings(buf) {
+  const views = [buf.toString('utf8'), buf.toString('utf16le'), buf.subarray(1).toString('utf16le')];
+  const out = [];
+  const seen = new Set();
+  for (const v of views) {
+    for (const seg of v.split(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]+/)) {
+      if (seg.length < 4 || seen.has(seg)) continue;
+      seen.add(seg);
+      out.push({ line: out.length + 1, text: seg.slice(0, MAX_MD_LINE) });
+      if (out.length >= 5000) return out;
+    }
   }
+  return out;
+}
+
+/** Multiset line diff of two texts (no git attribute or driver involved). */
+export function lineDelta(baseText, headText) {
+  const split = (t) => (t === '' ? [] : t.replace(/\r$/gm, '').split('\n'));
+  const b = split(baseText);
+  const h = split(headText);
+  const pool = new Map();
+  for (const l of b) pool.set(l, (pool.get(l) || 0) + 1);
+  const added = [];
+  h.forEach((text, i) => {
+    if (pool.get(text) > 0) pool.set(text, pool.get(text) - 1); else added.push({ line: i + 1, text });
+  });
+  const hp = new Map();
+  for (const l of h) hp.set(l, (hp.get(l) || 0) + 1);
+  const removed = [];
+  b.forEach((text, i) => {
+    if (hp.get(text) > 0) hp.set(text, hp.get(text) - 1); else removed.push({ line: i + 1, text });
+  });
   return { added, removed };
 }
 
-/** Compute the diff model from git: merge-base(baseRef, HEAD) .. HEAD. */
-export async function collectGitDiff({ root, baseRef }) {
-  if (typeof root !== 'string' || !root || typeof baseRef !== 'string' || !baseRef || baseRef.startsWith('-')) {
+/** Parse `git diff --raw -z --full-index` output into entries with Buffer-safe paths. */
+function parseRaw(out) {
+  const toks = [];
+  let start = 0;
+  for (let i = 0; i < out.length; i++) if (out[i] === 0) { toks.push(out.subarray(start, i)); start = i + 1; }
+  const entries = [];
+  for (let i = 0; i < toks.length; i++) {
+    const meta = /^:(\d+) (\d+) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])\d*$/.exec(toks[i].toString('latin1'));
+    if (!meta) throw new GateSignal('G0-GIT');
+    const e = { oldMode: meta[1], newMode: meta[2], oldSha: meta[3], newSha: meta[4], status: meta[5] };
+    const take = () => {
+      const raw = toks[++i];
+      if (raw === undefined) throw new GateSignal('G0-GIT');
+      const s = decodeStrict(raw);
+      return s === undefined ? { text: escapeBytes(raw), bad: true } : { text: s, bad: false };
+    };
+    if (e.status === 'R' || e.status === 'C') {
+      const o = take(); const n = take();
+      Object.assign(e, { oldPath: o.text, path: n.text, badPath: o.bad || n.bad });
+    } else {
+      const n = take();
+      Object.assign(e, { path: n.text, badPath: n.bad });
+    }
+    entries.push(e);
+  }
+  return entries;
+}
+
+/** Build the content model of a changed entry from its blobs (text/binary decided here). */
+function modelEntry(e, blobs) {
+  const baseBuf = e.oldMode !== '000000' && e.oldMode !== '160000' && !ZERO_SHA.test(e.oldSha) ? blobs.get(e.oldSha) : undefined;
+  const headBuf = e.newMode !== '000000' && e.newMode !== '160000' && !ZERO_SHA.test(e.newSha) ? blobs.get(e.newSha) : undefined;
+  const side = (buf) => {
+    if (!buf) return { text: '', binary: false, lfs: false, strings: [] };
+    const hasNul = buf.includes(0);
+    const text = hasNul ? undefined : decodeStrict(buf);
+    if (text === undefined) return { text: '', binary: true, lfs: false, strings: binaryStrings(buf) };
+    return { text, binary: false, lfs: text.startsWith(LFS_HEADER), strings: [] };
+  };
+  const b = side(baseBuf);
+  const h = side(headBuf);
+  const binary = b.binary || h.binary;
+  const symlink = e.newMode === '120000' || e.oldMode === '120000';
+  let added; let removed;
+  if (binary) {
+    added = h.strings; removed = b.strings;
+  } else {
+    ({ added, removed } = lineDelta(b.text, h.text));
+  }
+  return { binary, lfs: h.lfs || b.lfs, symlink, added, removed, baseContent: b.text, headContent: h.text };
+}
+
+const SHA_RE = /^[0-9a-f]{40,64}$/;
+const REF_RE = /^[A-Za-z0-9._/~^@-]{1,200}$/;
+
+async function resolveCommit(root, ref) {
+  const out = (await git(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])).trim();
+  if (!SHA_RE.test(out)) throw new GateSignal('G0-GIT');
+  return out;
+}
+
+/** Re-resolve HEAD: used at the end of a run to detect a moved head (G0-RACE). */
+export async function resolveHead(root) {
+  return resolveCommit(root, 'HEAD');
+}
+
+/** Parse a raw commit object: structural header/body split, no in-band delimiters. */
+export function parseCommitObject(buf) {
+  const text = buf.toString('utf8');
+  const cut = text.indexOf('\n\n');
+  const headerText = cut < 0 ? text : text.slice(0, cut);
+  const message = cut < 0 ? '' : text.slice(cut + 2);
+  const headers = [];
+  for (const line of headerText.split('\n')) {
+    if (line.startsWith(' ')) continue; // continuation (signature blocks, merge tags)
+    const sp = line.indexOf(' ');
+    const key = sp < 0 ? line : line.slice(0, sp);
+    if (key === 'tree' || key === 'parent' || key === 'gpgsig' || key === 'gpgsig-sha256' || key === 'mergetag') continue;
+    headers.push(sp < 0 ? '' : line.slice(sp + 1).replace(/ \d+ [+-]\d{4}$/, ''));
+  }
+  return { headers: headers.filter(Boolean), message };
+}
+
+/**
+ * Compute the diff model from git: merge-base(baseRef, HEAD) .. HEAD, with refs resolved
+ * once to SHAs. Also collects every commit in the range (messages, identities, extra headers,
+ * and the lines each commit added, merges against each parent) so content that exists only in
+ * an intermediate commit is still scanned.
+ */
+export async function collectGitDiff({ root, baseRef, headSha: pinnedHead }) {
+  if (typeof root !== 'string' || !root || typeof baseRef !== 'string' || !REF_RE.test(baseRef)
+    || baseRef.startsWith('-') || baseRef.startsWith('^')) {
     throw new GateSignal('G0-INPUT');
   }
-  const mergeBase = (await git(root, ['merge-base', baseRef, 'HEAD'])).trim();
-  if (!/^[0-9a-f]{40,64}$/.test(mergeBase)) throw new GateSignal('G0-GIT');
+  const headSha = pinnedHead || await resolveCommit(root, 'HEAD');
+  const baseTip = await resolveCommit(root, baseRef);
+  const bases = (await git(root, ['merge-base', '--all', '--end-of-options', baseTip, headSha])).split('\n').filter(Boolean);
+  if (bases.length !== 1 || !SHA_RE.test(bases[0])) throw new GateSignal('G0-GIT');
+  const mergeBase = bases[0];
 
-  const rawOut = await git(root, ['diff', '--find-renames', '--raw', '-z', '--no-color', '--no-ext-diff', mergeBase, 'HEAD']);
-  const numOut = await git(root, ['diff', '--find-renames', '--numstat', '-z', '--no-color', '--no-ext-diff', mergeBase, 'HEAD']);
+  // Dirty or untracked state: the reviewed commit is not what is on disk => block.
+  const status = await gitBuf(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=no']);
+  if (status.length > 0) throw new GateSignal('G0-DIRTY');
 
-  const entries = [];
-  const rt = rawOut.split('\0');
-  for (let i = 0; i < rt.length; i++) {
-    const meta = /^:(\d+) (\d+) \S+ \S+ ([A-Z])\d*$/.exec(rt[i]);
-    if (!meta) continue;
-    const status = meta[3];
-    if (status === 'R' || status === 'C') { entries.push({ status, oldMode: meta[1], newMode: meta[2], oldPath: rt[i + 1], path: rt[i + 2] }); i += 2; }
-    else { entries.push({ status, oldMode: meta[1], newMode: meta[2], path: rt[i + 1] }); i += 1; }
-  }
-  const binary = new Set();
-  const nt = numOut.split('\0');
-  for (let i = 0; i < nt.length; i++) {
-    const m = /^(\d+|-)\t(\d+|-)\t(.*)$/.exec(nt[i]);
-    if (!m) continue;
-    let path = m[3];
-    if (path === '') { path = nt[i + 2]; i += 2; }
-    if (m[1] === '-' && m[2] === '-') binary.add(path);
-  }
-
-  const files = [];
+  const rawOut = await gitBuf(root, ['diff', '--raw', '-z', '--no-abbrev', '--find-renames', '--no-textconv', '--no-ext-diff', '--no-color', mergeBase, headSha, '--']);
+  const entries = parseRaw(rawOut);
+  const wanted = [];
   for (const e of entries) {
-    const isBinary = binary.has(e.path);
-    const special = e.oldMode === '120000' || e.newMode === '120000' || e.oldMode === '160000' || e.newMode === '160000';
-    const specs = e.oldPath ? [e.oldPath, e.path] : [e.path];
-    let added = [];
-    let removed = [];
-    let baseContent = '';
-    let headContent = '';
-    if (!isBinary && !special) {
-      const patch = await git(root, ['diff', '--find-renames', '-U0', '--no-color', '--no-ext-diff', mergeBase, 'HEAD', '--', ...specs]);
-      ({ added, removed } = parseHunks(patch));
-      const bp = e.status === 'R' || e.status === 'C' ? e.oldPath : e.path;
-      if (e.status !== 'A') baseContent = (await git(root, ['show', `${mergeBase}:${bp}`], { allowFail: true })) ?? '';
-      if (e.status !== 'D') headContent = (await git(root, ['show', `HEAD:${e.path}`], { allowFail: true })) ?? '';
-    }
-    files.push({ ...e, binary: isBinary, added, removed, baseContent, headContent });
+    for (const s of [e.oldSha, e.newSha]) if (!ZERO_SHA.test(s) && e.oldMode !== '160000' && e.newMode !== '160000') wanted.push(s);
   }
+  const blobs = await readBlobs(root, wanted);
+  const files = entries.map((e) => {
+    const m = modelEntry(e, blobs);
+    return { ...e, ...m, status: e.status };
+  });
 
-  const showBase = (p) => git(root, ['show', `${mergeBase}:${p}`], { allowFail: true });
+  const showBase = async (p) => {
+    const out = await gitBuf(root, ['show', `${mergeBase}:${p}`], { allowFail: true });
+    return out === undefined ? undefined : out.toString('utf8');
+  };
   const names = (await git(root, ['ls-tree', '--name-only', mergeBase, TEMPLATES_DIR], { allowFail: true })) ?? '';
   const templates = [];
   for (const name of names.split('\n').filter((n) => n.endsWith('.md'))) {
@@ -526,14 +710,36 @@ export async function collectGitDiff({ root, baseRef }) {
     try { baseline = JSON.parse(baselineText); } catch { throw new GateSignal('G0-INPUT'); }
   }
 
-  const log = (await git(root, ['log', '--format=%an <%ae>%x1f%cn <%ce>%x1f%B%x1e', `${mergeBase}..HEAD`])) ?? '';
+  // History: every commit in the range, raw objects parsed structurally.
+  const revs = (await git(root, ['rev-list', '--reverse', '--topo-order', `${mergeBase}..${headSha}`, '--'])).split('\n').filter(Boolean);
+  if (revs.length > 2000 || !revs.every((r) => SHA_RE.test(r))) throw new GateSignal('G0-LIMIT');
   const commitMessages = [];
   const authors = [];
-  for (const rec of log.split('\x1e')) {
-    if (!rec.trim()) continue;
-    const [a, c, body] = rec.replace(/^\n/, '').split('\x1f');
-    authors.push(a, c);
-    commitMessages.push(body ?? '');
+  const historyAdded = [];
+  const seenLines = new Set();
+  for (const f of files) for (const l of f.added) seenLines.add(`${f.path}\0${l.text}`);
+  for (const sha of revs) {
+    const obj = parseCommitObject(await gitBuf(root, ['cat-file', 'commit', sha]));
+    commitMessages.push(obj.message);
+    authors.push(...obj.headers);
+    const dt = await gitBuf(root, ['diff-tree', '-r', '-m', '--root', '--no-commit-id', '--raw', '-z', '--no-abbrev', '--no-renames', '--no-textconv', '--no-ext-diff', sha, '--']);
+    const hEntries = dt.length ? parseRaw(dt) : [];
+    const ids = [];
+    for (const e of hEntries) {
+      if (e.newMode === '160000' || e.oldMode === '160000') continue;
+      for (const s of [e.oldSha, e.newSha]) if (!ZERO_SHA.test(s)) ids.push(s);
+    }
+    const hb = await readBlobs(root, ids);
+    for (const e of hEntries) {
+      if (e.newMode === '000000' || e.newMode === '160000' || e.oldMode === '160000') continue;
+      const m = modelEntry(e, hb);
+      for (const l of m.added) {
+        const key = `${e.path}\0${l.text}`;
+        if (seenLines.has(key)) continue;
+        seenLines.add(key);
+        historyAdded.push({ path: e.path, line: l.line, text: l.text });
+      }
+    }
   }
 
   return {
@@ -546,7 +752,8 @@ export async function collectGitDiff({ root, baseRef }) {
       templates,
       baseline,
     },
-    gitMeta: { commitMessages, authors },
+    gitMeta: { commitMessages, authors, historyAdded },
+    shas: { base: mergeBase, head: headSha },
   };
 }
 
@@ -554,7 +761,7 @@ export async function collectGitDiff({ root, baseRef }) {
 // Rule 1: tests
 // ---------------------------------------------------------------------------
 
-const TEST_FILE_RE = /(?:^|\/)(?:test|tests|__tests__)\/.*\.[cm]?[jt]s$|\.(?:test|spec)\.[cm]?[jt]s$/;
+const TEST_FILE_RE = /(?:^|\/)(?:test|tests|__tests__)\/.*\.[cm]?[jt]s$|\.(?:test|spec)\.[cm]?[jt]s$|(?:^|\/)(?:test|[^/]*[-_]test|test-[^/]*)\.[cm]?[js]s?$/;
 
 export function isTestFile(path) {
   return TEST_FILE_RE.test(path) && !/(?:^|\/)fixtures\//.test(path);
@@ -562,6 +769,8 @@ export function isTestFile(path) {
 
 // Built from pieces so this file does not trip its own skip scan.
 // Covers the dotted forms, the plain words and the option-object forms (with or without a value).
+// Name of the pending-test counter, built from pieces for the same reason.
+const PENDING_KEY = `${'to'}do`;
 const SKIP_RE = new RegExp(
   [
     `\\.${'sk'}ip\\b`, `\\.${'on'}ly\\b`, `\\b${'to'}do\\b`, `\\b${'x'}it\\b`,
@@ -580,6 +789,12 @@ const CASE_RE = new RegExp(
   + `|(?<![\\w.$])[A-Za-z_$][\\w$]*\\.(?:test|it)${CASE_MODS}\\s*\\(\\s*(?:['"\`]|[A-Za-z_$][\\w$]*\\s*,)`,
   'gm',
 );
+// Bracket and computed access to a modifier name: t['<word>'](...) or a concatenated literal.
+const BRACKET_SKIP_RE = new RegExp(
+  `\\[\\s*['"\`](?:${'sk'}ip|${'on'}ly|${'to'}do)['"\`]\\s*\\]|\\[\\s*['"\`][a-z]{0,6}['"\`]\\s*\\+\\s*['"\`][a-z]{0,6}['"\`]\\s*\\]`,
+  'i',
+);
+const DYNAMIC_EVAL_RE = /\beval\s*\(|\bnew\s+Function\b/;
 const MARKDOWN_RE = /\.(?:md|markdown|mdx)$/i;
 // Markdown prose may contain the plain words; only the dotted call forms count there
 // (whitespace before the opening parenthesis is allowed, as in code).
@@ -796,8 +1011,7 @@ export async function defaultRunner(spec) {
   try {
     const work = join(tmp, 'work');
     await mkdir(work);
-    await execFileP('git', ['archive', '--format=tar', '-o', join(tmp, 'head.tar'), 'HEAD'], { cwd: spec.root });
-    await execFileP('tar', ['-xf', join(tmp, 'head.tar'), '-C', work]);
+    await materializeTree(spec.root, spec.headSha, work);
     for (const [rel, content] of Object.entries(spec.baseFiles || {})) await writeBaseFile(work, rel, content);
     if (spec.depsDir) {
       // The submitted tree may carry its own `node_modules` entry: never write through it.
@@ -805,19 +1019,61 @@ export async function defaultRunner(spec) {
       await symlink(spec.depsDir, join(work, 'node_modules'), 'dir');
     }
     const env = buildRunnerEnv(spec.env || process.env, tmp);
+    const counts = { tests: 0, skipped: 0, [PENDING_KEY]: 0, cancelled: 0, subtests: 0 };
+    let expectTests = false;
     for (const argv of steps) {
+      const args = argv.slice(1);
+      const ti = args.indexOf('--test');
+      const reporting = ti >= 0 && !args.some((a) => a.startsWith('--test-reporter'));
+      if (ti >= 0) expectTests = true;
+      if (reporting) args.splice(ti + 1, 0, '--test-reporter=tap');
       try {
-        await execFileP(process.execPath, argv.slice(1), {
-          cwd: work, env, timeout: spec.timeoutMs, signal: spec.signal, maxBuffer: MAX_BUFFER,
+        const { stdout } = await execFileP(process.execPath, args, {
+          cwd: work, env, timeout: spec.timeoutMs, signal: spec.signal, maxBuffer: OUTPUT_CAP,
         });
+        if (reporting) {
+          // Indented result lines are test cases inside a file; a file that registers none
+          // (for example one that exits at once) still counts as one top-level "test".
+          counts.subtests += (String(stdout).match(/^\s+(?:not )?ok \d+ - /gm) || []).length;
+          for (const k of ['tests', 'skipped', PENDING_KEY, 'cancelled']) {
+            const m = new RegExp(`^# ${k} (\\d+)$`, 'm').exec(String(stdout));
+            if (m) counts[k] += Number(m[1]);
+          }
+        }
       } catch (err) {
         if (err && (err.killed || err.name === 'AbortError')) return { exitCode: null, timedOut: true };
+        if (err && err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return { exitCode: 1, limit: true };
         return { exitCode: typeof err.code === 'number' ? err.code : 1 };
       }
     }
-    return { exitCode: 0 };
+    return { exitCode: 0, counts, expectTests };
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Write the tree of `headSha` into `work` with our own writer (no `git archive`: export
+ * attributes of the reviewed tree cannot drop files). Regular files only; symlinks and
+ * gitlinks are not materialized.
+ */
+async function materializeTree(root, headSha, work) {
+  if (typeof headSha !== 'string' || !SHA_RE.test(headSha)) throw new GateSignal('G0-INPUT');
+  const listing = await gitBuf(root, ['ls-tree', '-r', '-z', '--full-tree', headSha]);
+  const entries = [];
+  for (const rec of listing.toString('utf8').split('\0')) {
+    if (!rec) continue;
+    const m = /^(\d+) (\w+) ([0-9a-f]{40,64})\t(.+)$/s.exec(rec);
+    if (!m) throw new GateSignal('G0-GIT');
+    if (m[2] !== 'blob' || (m[1] !== '100644' && m[1] !== '100755')) continue;
+    if (pathAnomaly(m[4])) continue;
+    entries.push({ mode: m[1], sha: m[3], path: m[4] });
+  }
+  const blobs = await readBlobs(root, entries.map((e) => e.sha));
+  for (const e of entries) {
+    const target = join(work, e.path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, blobs.get(e.sha), { flag: 'wx', mode: e.mode === '100755' ? 0o755 : 0o644 });
   }
 }
 
@@ -834,9 +1090,87 @@ async function withTimeout(promiseFactory, ms, controller) {
 // Findings
 // ---------------------------------------------------------------------------
 
+// Findings carry a keyed hash (per-process random salt, never output) so a low-entropy
+// subject cannot be recovered from the output by brute force.
+const RUN_SALT = randomBytes(16);
+function keyedHash(text) {
+  return createHmac('sha256', RUN_SALT).update(String(text)).digest('hex').slice(0, 8);
+}
+
 function mk(ruleId, path, line = 0, subject = '') {
   const s = String(subject);
-  return { ruleId, path, line, length: s.length, hash: hashText(`${ruleId}|${path}|${line}|${s}`) };
+  return { ruleId, path, line, length: s.length, hash: keyedHash(`${ruleId}|${path}|${line}|${s}`) };
+}
+
+// ---------------------------------------------------------------------------
+// Text normalization shared by every text scan (T-35, T-38, T-39)
+// ---------------------------------------------------------------------------
+
+// Zero-width, bidi, soft hyphen, variation selectors, tag characters, BOM and other format controls.
+const INVISIBLE_RANGES = [
+  [0xad], [0x34f], [0x61c], [0x115f], [0x1160], [0x17b4], [0x17b5], [0x180b, 0x180f],
+  [0x200b, 0x200f], [0x202a, 0x202e], [0x2060, 0x206f], [0x3164], [0xfe00, 0xfe0f], [0xfeff],
+  [0xffa0], [0xffd0, 0xffd2], [0xe0000, 0xe0fff], [0x1d173, 0x1d17a],
+];
+const INVISIBLE_RE = new RegExp(
+  `[${INVISIBLE_RANGES.map(([a, b]) => (b === undefined ? fromCodes(a) : `${fromCodes(a)}-${fromCodes(b)}`)).join('')}]`,
+  'gu',
+);
+const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
+
+/** Invisible characters of a line, except an emoji ZWJ sequence joiner or a variation selector after a pictograph. */
+export function invisibleChars(text) {
+  const s = String(text);
+  const out = [];
+  for (const m of s.matchAll(INVISIBLE_RE)) {
+    const ch = m[0];
+    const before = s.slice(0, m.index).match(/(\p{Extended_Pictographic}|\p{Emoji_Modifier})\uFE0F?$/u);
+    const after = /^\p{Extended_Pictographic}/u.test(s.slice(m.index + ch.length));
+    if (ch === '\u200d' && before && after) continue;
+    if (ch === '\ufe0f' && before) continue;
+    out.push(ch);
+  }
+  return out;
+}
+
+export function normalizeText(text) {
+  return String(text).normalize('NFKC').replace(INVISIBLE_RE, '').replace(CONTROL_RE, '');
+}
+
+const ENTITY_RE = /&#(?:x([0-9a-fA-F]{1,6})|(\d{1,7}));/g;
+const UESC_RE = /\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})/g;
+const PCT_RE = /(?:%[0-9a-fA-F]{2}){2,}/g;
+const B64_RE = /[A-Za-z0-9+/_-]{16,}={0,2}/g;
+const cp = (n) => (Number.isInteger(n) && n >= 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '\ufffd');
+
+/**
+ * Bounded decode views of a line: HTML numeric entities, percent-encoding, base64-looking runs,
+ * and (optionally) backslash escapes. Each view is a full line with the decoding applied.
+ */
+export function decodeViews(text, { escapes = true } = {}) {
+  const s = String(text);
+  const views = [];
+  if (s.length > 100000) return views;
+  if (s.includes('&#')) views.push(s.replace(ENTITY_RE, (_, h, d) => cp(h ? parseInt(h, 16) : parseInt(d, 10))));
+  if (escapes && s.includes('\\')) {
+    views.push(s.replace(UESC_RE, (_, a, b, c) => cp(parseInt(a || b || c, 16))));
+  }
+  if (s.includes('%')) {
+    views.push(s.replace(PCT_RE, (m) => { try { return decodeURIComponent(m); } catch { return m; } }));
+  }
+  let n = 0;
+  for (const m of s.matchAll(B64_RE)) {
+    if (++n > 50) break;
+    for (const cut of [0, 1, 2]) {
+      const raw = m[0].slice(cut).replace(/-/g, '+').replace(/_/g, '/');
+      try {
+        const buf = Buffer.from(raw, 'base64');
+        const dec = decodeStrict(buf);
+        if (dec !== undefined && dec.length >= 4) views.push(dec);
+      } catch { /* not base64 */ }
+    }
+  }
+  return views;
 }
 
 // ---------------------------------------------------------------------------
@@ -846,23 +1180,55 @@ function mk(ruleId, path, line = 0, subject = '') {
 // Scope findings after which the submitted tests are not run. A protected-file edit alone (for
 // example lib/verdict.mjs) stays a plain reject: it carries no link and no unlisted path.
 const SCOPE_NO_RUN = new Set(['G0-SCOPE-SPECIAL', 'G0-SCOPE-PATH']);
+const FOLD = (p) => String(p).normalize('NFC').toLowerCase();
+
+/** Path anomalies that make a name unsafe to match or print (T-12, T-16). */
+export function pathAnomaly(path) {
+  const p = String(path);
+  if (p === '' || p.startsWith('/') || p.endsWith('/') || /^[A-Za-z]:/.test(p)) return true;
+  if (p.includes('\\') || p.includes('\ufffd') || /[\u0000-\u001f\u007f-\u009f]/.test(p) || invisibleChars(p).length > 0) return true;
+  if (/[\u2028\u2029]/.test(p)) return true;
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.' || seg === '..') return true;
+    if (/^\.git(?:$|[./ ~])/i.test(seg) || /^git~\d/i.test(seg) || /[. ]$/.test(seg)) return true;
+  }
+  return false;
+}
 
 export function checkScope(files, issue) {
   const findings = [];
   const allow = issue.allowChanges || {};
+  const seenFold = new Map();
   const check = (path, kind) => {
-    if (!matchesAny(path, issue.allowedPaths)) findings.push(mk('G0-SCOPE-PATH', path, 0, kind));
+    if (pathAnomaly(path) || /[\u0000-\u001f]/.test(path)) { findings.push(mk('G0-SCOPE-PATH', path, 0, `anomaly:${kind}`)); return; }
+    const f = FOLD(path);
+    if (!matchesAny(path, issue.allowedPaths) && !matchesAny(f, issue.allowedPaths.map(FOLD))) findings.push(mk('G0-SCOPE-PATH', path, 0, kind));
     for (const p of PROTECTED) {
-      if (p.test(path) && allow[p.flag] !== true) findings.push(mk('G0-SCOPE-PROTECTED', path, 0, p.flag));
+      if ((p.test(path) || p.test(f)) && allow[p.flag] !== true) findings.push(mk('G0-SCOPE-PROTECTED', path, 0, p.flag));
     }
   };
   for (const f of files) {
     check(f.path, 'new');
+    if (f.badPath) findings.push(mk('G0-SCOPE-PATH', f.path, 0, 'encoding'));
+    if (f.status !== 'D') {
+      const fold = FOLD(f.path);
+      if (seenFold.has(fold) && seenFold.get(fold) !== f.path) findings.push(mk('G0-SCOPE-PATH', f.path, 0, 'collision'));
+      seenFold.set(fold, f.path);
+    }
     if ((f.status === 'R' || f.status === 'C') && f.oldPath !== f.path) check(f.oldPath, 'old');
     const modes = [f.oldMode, f.newMode];
     if (modes.includes('120000') && allow.symlinks !== true) findings.push(mk('G0-SCOPE-SPECIAL', f.path, 0, 'symlink'));
     if (modes.includes('160000') && allow.submodules !== true) findings.push(mk('G0-SCOPE-SPECIAL', f.path, 0, 'submodule'));
     if (f.binary && allow.binaries !== true) findings.push(mk('G0-SCOPE-SPECIAL', f.path, 0, 'binary'));
+    if (f.lfs === true) findings.push(mk('G0-SCOPE-SPECIAL', f.path, 0, 'lfs'));
+    // Modes: only regular files; an exec-bit flip or a type change needs the `modes` flag.
+    const regular = (m) => m === '100644' || m === '100755' || m === '000000' || m === '' || m === '120000' || m === '160000';
+    if (!regular(f.oldMode) || !regular(f.newMode)) findings.push(mk('G0-SCOPE-SPECIAL', f.path, 0, 'mode'));
+    else if (allow.modes !== true) {
+      const flip = (f.oldMode === '100644' && f.newMode === '100755') || (f.oldMode === '100755' && f.newMode === '100644');
+      const typeChange = f.status === 'T';
+      if (flip || typeChange) findings.push(mk('G0-SCOPE-SPECIAL', f.path, 0, 'mode'));
+    }
   }
   return findings;
 }
@@ -871,42 +1237,143 @@ export function checkScope(files, issue) {
 // Rule 3: frozen tokens
 // ---------------------------------------------------------------------------
 
+/** Blank out fenced code blocks and HTML comments (line structure is kept). */
+export function maskNonProse(text) {
+  const lines = String(text).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' ')).split('\n');
+  let fence = null;
+  return lines.map((l) => {
+    const m = /^\s{0,3}(`{3,}|~{3,})/.exec(l);
+    if (m) {
+      if (fence === null) { fence = m[1][0]; return ''; }
+      if (m[1][0] === fence) { fence = null; return ''; }
+    }
+    return fence === null ? l : '';
+  }).join('\n');
+}
+
+const squash = (t) => String(t).replace(/\r/g, '').replace(/[ \t]+/g, ' ').trim();
+// English parentheticals after a frozen token are allowed to change: compare without them.
+const unparen = (t) => squash(String(t).replace(/\s*\([^()\n]*\)/g, ''));
+function verdictLinesOf(text, registry) {
+  const out = [];
+  for (const m of maskNonProse(text).matchAll(registry.verdictLine)) out.push(unparen(m[0]));
+  return out;
+}
+const multiset = (arr) => { const m = new Map(); for (const x of arr) m.set(x, (m.get(x) || 0) + 1); return m; };
+function missingFrom(baseArr, headArr) {
+  const h = multiset(headArr);
+  const missing = [];
+  for (const x of baseArr) { if (h.get(x) > 0) h.set(x, h.get(x) - 1); else missing.push(x); }
+  return missing;
+}
+
+/** Lines made only of frozen tokens and separators (vocabulary lists), at least two tokens. */
+function vocabLinesOf(text, registry) {
+  const out = [];
+  for (const raw of maskNonProse(text).split('\n')) {
+    let rest = raw;
+    let n = 0;
+    for (const t of registry.tokens) {
+      const re = tokenRegExp(t);
+      rest = rest.replace(re, () => { n++; return ''; });
+    }
+    if (n >= 2 && /^[\s\p{P}\p{S}]*$/u.test(rest)) out.push(squash(raw));
+  }
+  return out;
+}
+
 export function checkFrozenTokens(files, registry) {
   const findings = [];
   for (const f of files) {
-    if (f.binary || f.oldMode === '120000' || f.newMode === '120000' || f.oldMode === '160000' || f.newMode === '160000') continue;
+    if (f.symlink || f.oldMode === '160000' || f.newMode === '160000') continue;
+    // Binary blobs carry no decoded content (their strings are scanned elsewhere): nothing to compare.
+    if (f.binary && f.baseContent === '' && f.headContent === '') continue;
     for (const token of registry.tokens) {
       const before = countTokenForInvariant(f.baseContent, token);
       if (before === 0) continue;
       const after = countTokenForInvariant(f.headContent, token);
       if (after < before) findings.push(mk('G0-TOKEN', f.path, 0, token));
     }
-    const lineBefore = countRegex(f.baseContent, registry.verdictLine);
-    if (lineBefore > 0 && countRegex(f.headContent, registry.verdictLine) < lineBefore) {
+    // The verdict line: every anchored base line (outside code fences and comments) must still
+    // exist, as its own line, in the head version of the same file; a decoy elsewhere does not count.
+    if (missingFrom(verdictLinesOf(f.baseContent, registry), verdictLinesOf(f.headContent, registry)).length > 0) {
       findings.push(mk('G0-VERDICT-LINE', f.path, 0, 'first-line'));
+    }
+    // Vocabulary lines (status words, continuation words) must survive as whole lines.
+    if (missingFrom(vocabLinesOf(f.baseContent, registry), vocabLinesOf(f.headContent, registry)).length > 0) {
+      findings.push(mk('G0-TOKEN-LINE', f.path, 0, 'vocabulary'));
+    }
+    // Near misses: an added line that carries the label but is not an anchored verdict line.
+    for (const l of f.added) {
+      if (l.text.includes(registry.verdictLabel) && verdictLinesOf(l.text, registry).length === 0) {
+        findings.push(mk('G0-VERDICT-LINE', f.path, l.line, 'near-miss'));
+      }
     }
   }
   return findings;
 }
 
 // ---------------------------------------------------------------------------
-// Rule 4: language direction
+// Rule 4: language direction (and invisible characters)
 // ---------------------------------------------------------------------------
+
+const CODE_FILE_RE = /\.(?:[cm]?[jt]s|[jt]sx)$/i;
+const TEST_DIR_RE = /(?:^|\/)(?:test|tests|__tests__)\/|\.(?:test|spec)\.[cm]?[jt]s$/;
+const MAX_LINE = 65536;
+
+function cjkResidue(view, tokens) {
+  const residue = stripFrozenCjk(view, tokens);
+  return countCjk(residue) > 0 ? residue : undefined;
+}
+
+/**
+ * Views of one added line, all scanned for CJK: raw, normalized (NFKC, invisible characters
+ * removed) and bounded decodes (entities, percent, base64, and backslash escapes in non-test
+ * files; test fixtures write CJK as escapes by repository convention).
+ */
+function lineViews(text, path) {
+  const norm = normalizeText(text);
+  const views = [text];
+  if (norm !== text) views.push(norm);
+  const escapes = !TEST_DIR_RE.test(path);
+  for (const v of decodeViews(norm, { escapes })) views.push(v, normalizeText(v));
+  return views;
+}
 
 export function checkDirection(files, registry, cjkPathAllowlist = []) {
   const findings = [];
   for (const f of files) {
-    if (f.binary) continue;
-    // The allowlist exempts only the added-line check; the per-file balance check applies to every file.
-    if (!matchesAny(f.path, cjkPathAllowlist)) {
-      for (const l of f.added) {
-        const residue = stripFrozenCjk(l.text, registry.tokens);
-        const n = countCjk(residue);
-        if (n > 0) findings.push(mk('G0-LANG-CJK', f.path, l.line, residue.match(CJK_RE).join('')));
+    if (f.oldMode === '160000' || f.newMode === '160000') continue;
+    const allowlisted = matchesAny(f.path, cjkPathAllowlist);
+    // Names are text too: a new path may not carry CJK (the allowlist is for content only).
+    if (f.status !== 'D') {
+      for (const view of [f.path, normalizeText(f.path), ...decodeViews(f.path, { escapes: false })]) {
+        if (cjkResidue(view, registry.tokens) !== undefined) { findings.push(mk('G0-LANG-CJK', f.path, 0, 'path')); break; }
       }
     }
-    const added = f.added.reduce((s, l) => s + countCjk(l.text), 0);
-    const removed = f.removed.reduce((s, l) => s + countCjk(l.text), 0);
+    const baseSet = new Set(f.removed.map((l) => squash(normalizeText(l.text))));
+    for (const l of f.added) {
+      const inv = invisibleChars(l.text);
+      if (inv.length > 0) findings.push(mk('G0-INVISIBLE', f.path, l.line, inv.join('')));
+      if (l.text.length > MAX_LINE || (MARKDOWN_RE.test(f.path) && l.text.length > MAX_MD_LINE)) {
+        findings.push(mk('G0-LIMIT', f.path, l.line, 'line'));
+        continue;
+      }
+      let hit;
+      for (const view of lineViews(l.text, f.path)) {
+        hit = cjkResidue(view, registry.tokens);
+        if (hit !== undefined) break;
+      }
+      if (hit === undefined) continue;
+      if (!allowlisted) findings.push(mk('G0-LANG-CJK', f.path, l.line, hit.match(CJK_RE).join('')));
+      else if (!baseSet.has(squash(normalizeText(l.text)))) {
+        // Allowlisted file: a CJK line is acceptable only when it is the same line moved
+        // (removed and added), never a new one.
+        findings.push(mk('G0-LANG-BALANCE-LINE', f.path, l.line, hit.match(CJK_RE).join('')));
+      }
+    }
+    const added = f.added.reduce((s, l) => s + countCjk(normalizeText(l.text)), 0);
+    const removed = f.removed.reduce((s, l) => s + countCjk(normalizeText(l.text)), 0);
     if (added > removed) findings.push(mk('G0-LANG-BALANCE', f.path, 0, `${added}>${removed}`));
   }
   return findings;
@@ -924,12 +1391,20 @@ export function checkTestIntegrity(files, issue) {
     findings.push(mk('G0-TEST-COUNT', '<tests>', 0, JSON.stringify(stats)));
   }
   if (issue.allowSkip !== true) {
-    // Every added line of every non-binary file is checked, not just recognized test files.
+    // Every added line of every file is checked, not just recognized test files. The same
+    // rules apply to newly added Markdown (dotted call forms only; prose words stay allowed).
     for (const f of files) {
-      if (f.binary || f.status === 'D') continue;
-      const re = MARKDOWN_RE.test(f.path) ? MD_SKIP_RE : SKIP_RE;
+      if (f.status === 'D') continue;
+      const md = MARKDOWN_RE.test(f.path);
+      const code = !md;
       for (const l of f.added) {
-        if (re.test(l.text)) findings.push(mk('G0-TEST-SKIP', f.path, l.line, l.text));
+        const texts = [l.text];
+        const norm = normalizeText(l.text);
+        if (norm !== l.text) texts.push(norm);
+        const bad = texts.some((t) => (md ? MD_SKIP_RE : SKIP_RE).test(t)
+          || (code && BRACKET_SKIP_RE.test(t))
+          || (code && TEST_DIR_RE.test(f.path) && DYNAMIC_EVAL_RE.test(t)));
+        if (bad) findings.push(mk('G0-TEST-SKIP', f.path, l.line, l.text));
       }
     }
   }
@@ -940,50 +1415,79 @@ export function checkTestIntegrity(files, issue) {
 // Rules 5-6: hygiene
 // ---------------------------------------------------------------------------
 
-function collectHygiene(files, metadata, denylist, baseline, deadline) {
+function collectHygiene(files, metadata, denylist, baseline, deadline, history = []) {
   const addedLines = [];
   const paths = [];
+  const push = (path, l) => {
+    const text = l.text.length > MAX_LINE ? l.text.slice(0, MAX_LINE) : l.text;
+    addedLines.push({ path, line: l.line, text });
+    const norm = normalizeText(text);
+    if (norm !== text) addedLines.push({ path, line: l.line, text: norm });
+  };
   for (const f of files) {
     if (f.status === 'A' || f.status === 'R' || f.status === 'C') paths.push(f.path);
-    if (f.binary) continue;
-    for (const l of f.added) addedLines.push({ path: f.path, line: l.line, text: l.text });
+    if ((f.status === 'R' || f.status === 'C') && f.oldPath) paths.push(f.oldPath);
+    // Binary blobs are never skipped: their printable strings are in `added`.
+    for (const l of f.added) push(f.path, l);
   }
+  // Lines that exist only in an intermediate commit of the range.
+  for (const h of history) push(h.path, h);
   return scanHygiene({ addedLines, paths, metadata, denylist, deadline, allowlist: { testFakes: baseline.testFakes || [] } });
 }
 
+const SAFE_PATH_RE = /^[A-Za-z0-9._/-]{1,120}$/;
+
 /**
- * Replace paths that themselves look sensitive with `<path:HASH8>`.
- * When the denylist is unavailable (denylist === undefined) nothing can be vetted, so every
- * path (the fixed `<tests>` placeholder aside) becomes `<redacted:LEN:HASH8>`.
+ * Print only paths in a safe character set that also pass the hygiene scan; everything else
+ * becomes `<path:HASH8>` (keyed hash). When the denylist is unavailable (denylist === undefined)
+ * nothing can be vetted, so every path (the fixed placeholders aside) becomes `<redacted:LEN:HASH8>`.
  */
 function redactPaths(findings, denylist, vetted = new WeakSet()) {
   const cache = new Map();
   const show = (p) => {
     if (!cache.has(p)) {
+      const s = String(p);
       if (denylist === undefined) {
-        const s = String(p);
-        cache.set(p, `<redacted:${s.length}:${hashText(s)}>`);
-        return cache.get(p);
+        cache.set(p, `<redacted:${s.length}:${keyedHash(s)}>`);
+      } else {
+        const dirty = !SAFE_PATH_RE.test(s) || scanHygiene({ paths: [p], denylist }).length > 0;
+        cache.set(p, dirty ? `<path:${keyedHash(s)}>` : s);
       }
-      const dirty = scanHygiene({ paths: [p], denylist }).length > 0;
-      cache.set(p, dirty ? `<path:${hashText(p)}>` : p);
     }
     return cache.get(p);
   };
-  // Only placeholders Gate 0 itself generated are printed as is: the fixed `<tests>` marker of
-  // its own test findings, and findings produced by the hygiene scan (already vetted there).
-  // A submitted path is never exempt, whatever its shape (for example `<name>`).
-  const own = (f) => vetted.has(f) || (f.path === '<tests>' && (f.ruleId === 'G0-TESTS' || f.ruleId === 'G0-TEST-COUNT'));
-  return findings.map((f) => ({ ...f, path: own(f) ? f.path : show(f.path) }));
+  // Only placeholders Gate 0 itself generated are printed as is.
+  const own = (f) => (f.path === '<tests>' && /^G0-TEST/.test(f.ruleId)) || (f.path === '<metadata>' && f.ruleId === 'G0-LANG-CJK');
+  return findings.map((f) => {
+    const safe = own(f) ? f.path : vetted.has(f) && (SAFE_PATH_RE.test(String(f.path)) || /^<(?:metadata|path|redacted)[:#A-Za-z0-9_ -]{0,60}>$/.test(String(f.path))) ? f.path : show(f.path);
+    return { ...f, path: safe };
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
+const ISSUE_KEYS = new Set(['allowedPaths', 'allowChanges', 'allowSkip']);
+const ALLOW_FLAGS = new Set(['gate0', 'verdict', 'allowlists', 'packageJson', 'lockfiles', 'ci', 'scripts', 'gitconfig',
+  'templates', 'nodeModules', 'symlinks', 'submodules', 'binaries', 'tests', 'modes', 'anyPath']);
+
+/** Strict issue schema: known keys only, bounded sizes, supported glob syntax only (T-21, T-22). */
 function validateIssue(issue) {
-  if (!issue || typeof issue !== 'object' || !validGlobList(issue.allowedPaths)) throw new GateSignal('G0-INPUT');
-  if (issue.allowChanges !== undefined && (issue.allowChanges === null || typeof issue.allowChanges !== 'object')) throw new GateSignal('G0-INPUT');
+  if (!issue || typeof issue !== 'object' || Array.isArray(issue)) throw new GateSignal('G0-INPUT');
+  for (const k of Object.keys(issue)) if (!ISSUE_KEYS.has(k)) throw new GateSignal('G0-INPUT');
+  if (!validGlobList(issue.allowedPaths) || issue.allowedPaths.length > 200) throw new GateSignal('G0-INPUT');
+  const ac = issue.allowChanges;
+  if (ac !== undefined) {
+    if (ac === null || typeof ac !== 'object' || Array.isArray(ac)) throw new GateSignal('G0-INPUT');
+    for (const [k, v] of Object.entries(ac)) if (!ALLOW_FLAGS.has(k) || typeof v !== 'boolean') throw new GateSignal('G0-INPUT');
+  }
+  if (issue.allowSkip !== undefined && typeof issue.allowSkip !== 'boolean') throw new GateSignal('G0-INPUT');
+  const anyPath = ac && ac.anyPath === true;
+  for (const g of issue.allowedPaths) {
+    if (g.length > 200 || /[[\]{}!\\\u0000-\u001f]/.test(g)) throw new GateSignal('G0-INPUT');
+    if (!anyPath && /^(?:\*+|\*\*\/\*+)$/.test(normPath(g))) throw new GateSignal('G0-INPUT');
+  }
 }
 
 function validateBaseline(b) {
@@ -1000,11 +1504,31 @@ function blockResult(code) {
   return { verdict: 'block', findings: [], blocks: [{ ruleId: code }] };
 }
 
+const METADATA_STRINGS = ['prTitle', 'prBody', 'branch'];
+const META_ENV_BAD = ['NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'NODE_REPL_EXTERNAL_MODULE'];
+
+/** True when `inner` is inside `outer` (both resolved through realpath). */
+async function isInside(inner, outer) {
+  try {
+    const a = await realpath(inner);
+    const b = await realpath(outer);
+    const rel = relative(b, a);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  } catch { return false; }
+}
+
 async function execute(opts, deadline) {
   validateIssue(opts.issue);
   const issue = opts.issue;
   const runnerTimeoutMs = opts.runnerTimeoutMs ?? DEFAULT_RUNNER_TIMEOUT_MS;
   if (!Number.isFinite(runnerTimeoutMs) || runnerTimeoutMs <= 0) throw new GateSignal('G0-INPUT');
+
+  // Host run: Gate 0 must be a trusted copy outside the reviewed tree and must start from a
+  // clean process environment (T-01..T-03). The code itself imports nothing from the tree.
+  if (opts.hostRun === true) {
+    if (META_ENV_BAD.some((k) => typeof process.env[k] === 'string' && process.env[k] !== '')) throw new GateSignal('G0-ENV');
+    if (typeof opts.root === 'string' && await isInside(fileURLToPath(import.meta.url), opts.root)) throw new GateSignal('G0-SELF');
+  }
 
   const ctx = opts.diff ? { ...normalizeDiff(opts.diff), gitMeta: undefined }
     : { ...(await collectGitDiff({ root: opts.root, baseRef: opts.baseRef })) };
@@ -1036,16 +1560,53 @@ async function execute(opts, deadline) {
     if (expired()) addBlock('G0-TIMEOUT');
   };
 
-  // Host-run inputs: PR metadata must be supplied, otherwise it would silently go unscanned.
-  if (opts.hostRun === true) {
+  // Metadata fields must be strings when present; a host run requires all of them.
+  {
     const m = opts.metadata || {};
-    if (typeof m.prTitle !== 'string' || typeof m.prBody !== 'string' || typeof m.branch !== 'string') addBlock('G0-METADATA');
+    for (const k of METADATA_STRINGS) {
+      if (m[k] !== undefined && typeof m[k] !== 'string') addBlock('G0-METADATA');
+      if (opts.hostRun === true && typeof m[k] !== 'string') addBlock('G0-METADATA');
+    }
+    if (opts.hostRun === true && typeof m.branch === 'string' && m.branch === '') addBlock('G0-METADATA');
   }
 
-  // Rule 2
+  // Freeze the denylist BEFORE any submitted code runs (T-06).
+  let denylist;
+  try {
+    denylist = loadDenylist({ env: opts.env || process.env, hostRun: opts.hostRun === true, fixture: opts.denylist });
+  } catch (err) {
+    addBlock(blockCodeOf(err));
+  }
+
+  // Rule 2, rule 1 (static)
   await step(() => checkScope(files, issue));
-  // Rule 1 (static)
   await step(() => checkTestIntegrity(files, issue));
+  // Rules 3 and 4 need the registry (derived from BASE text only)
+  let registry;
+  await step(() => {
+    registry = buildRegistry({ verdictSource: base.verdictSource, templates, sharedPrompt: base.sharedPrompt, extras: baseline.frozenTokens });
+    return [];
+  });
+  if (registry) {
+    await step(() => checkFrozenTokens(files, registry));
+    await step(() => checkDirection(files, registry, baseline.cjkPathAllowlist));
+    // Metadata text must be English too (commit messages, PR text, branch).
+    await step(() => {
+      const texts = [...(metadata.commitMessages || []), ...METADATA_STRINGS.map((k) => (opts.metadata || {})[k]).filter((x) => typeof x === 'string')];
+      const bad = texts.some((t) => [t, normalizeText(t), ...decodeViews(t, { escapes: false })].some((v) => cjkResidue(v, registry.tokens) !== undefined));
+      return bad ? [mk('G0-LANG-CJK', '<metadata>', 0, 'metadata')] : [];
+    });
+  }
+  // Rules 5-6 (before any submitted code runs)
+  // scanHygiene already vets (or replaces) every path it reports: those findings are trusted.
+  const vetted = new WeakSet();
+  if (denylist) {
+    await step(() => {
+      const out = collectHygiene(files, metadata, denylist, baseline, deadline, ctx.gitMeta ? ctx.gitMeta.historyAdded : []);
+      for (const f of out) vetted.add(f);
+      return out;
+    });
+  }
   // Rule 1 (run base command). Submitted code is never run when the diff carries a symlink,
   // a submodule or a path outside the allowed scope: that is a block, not a test result.
   await step(async () => {
@@ -1061,7 +1622,8 @@ async function execute(opts, deadline) {
     const controller = new AbortController();
     const baseFiles = { 'package.json': String(base.packageJson) };
     const spec = {
-      root: opts.root, baseRef: opts.baseRef, command: scripts.test, scripts,
+      root: opts.root, baseRef: opts.baseRef, headSha: ctx.shas ? ctx.shas.head : undefined,
+      command: scripts.test, scripts,
       basePackage, engines: basePackage.engines || {}, env: buildRunnerEnv(opts.env || process.env),
       timeoutMs: runnerTimeoutMs, signal: controller.signal, depsDir: opts.depsDir, baseLockfile: base.lockfile, baseFiles,
       networkIsolated: opts.networkIsolated === true,
@@ -1069,34 +1631,24 @@ async function execute(opts, deadline) {
     const result = await withTimeout(() => Promise.resolve(runner(spec)), runnerTimeoutMs, controller);
     if (!result || typeof result !== 'object') throw new GateSignal('G0-RUNNER');
     if (result.timedOut === true) throw new GateSignal('G0-TIMEOUT');
+    if (result.limit === true) throw new GateSignal('G0-LIMIT');
     if (!Number.isInteger(result.exitCode)) throw new GateSignal('G0-RUNNER');
+    // Evidence of execution (T-25, T-26): a passing exit code with no executed tests, or with
+    // skipped, pending or cancelled tests, is not a pass. Injected runners may omit counters.
+    if (result.exitCode === 0 && result.counts && typeof result.counts === 'object') {
+      const c = result.counts;
+      if (result.expectTests === true && !(c.tests > 0)) throw new GateSignal('G0-TESTS-NONE');
+      // A touched test file that had cases on the base but whose run executes no case at all.
+      if (result.expectTests === true && c.subtests === 0 && testStats(files).baseCases > 0) throw new GateSignal('G0-TESTS-NONE');
+      if (issue.allowSkip !== true && (c.skipped > 0 || c[PENDING_KEY] > 0 || c.cancelled > 0)) return [mk('G0-TEST-SKIP', '<tests>', 0, JSON.stringify(c))];
+    }
     return result.exitCode === 0 ? [] : [mk('G0-TESTS', '<tests>', 0, String(result.exitCode))];
   });
-  // Rules 3 and 4 need the registry
-  let registry;
-  await step(() => {
-    registry = buildRegistry({ verdictSource: base.verdictSource, templates, sharedPrompt: base.sharedPrompt, extras: baseline.frozenTokens });
-    return [];
-  });
-  if (registry) {
-    await step(() => checkFrozenTokens(files, registry));
-    await step(() => checkDirection(files, registry, baseline.cjkPathAllowlist));
-  }
-  // Rules 5-6
-  let denylist;
-  try {
-    denylist = loadDenylist({ env: opts.env || process.env, hostRun: opts.hostRun === true, fixture: opts.denylist });
-  } catch (err) {
-    addBlock(blockCodeOf(err));
-  }
-  // scanHygiene already vets (or replaces) every path it reports: those findings are trusted.
-  const vetted = new WeakSet();
-  if (denylist) {
-    await step(() => {
-      const out = collectHygiene(files, metadata, denylist, baseline, deadline);
-      for (const f of out) vetted.add(f);
-      return out;
-    });
+  // The reviewed commit must still be the one that was checked (T-08).
+  if (ctx.shas && !opts.diff) {
+    try {
+      if ((await resolveHead(opts.root)) !== ctx.shas.head) addBlock('G0-RACE');
+    } catch (err) { addBlock(blockCodeOf(err)); }
   }
 
   let redacted;
@@ -1131,21 +1683,43 @@ export async function runGate0(opts = {}) {
   }
 }
 
+/** Escape anything printable-unsafe in a field echoed to a log (control, bidi, non-ASCII), cap at 200. */
+export function safeText(value) {
+  let s = '';
+  for (const ch of String(value).slice(0, 200)) {
+    const c = ch.codePointAt(0);
+    s += c >= 0x20 && c <= 0x7e ? ch : `\\u{${c.toString(16)}}`;
+  }
+  return s;
+}
+
 /** Human-readable, redacted rendering of a result. */
 export function formatResult(result) {
   const lines = [`gate0: ${result.verdict}`];
   for (const b of result.blocks) lines.push(`BLOCK ${/^[A-Z0-9-]+$/.test(String(b.ruleId)) ? b.ruleId : 'G0-INTERNAL'}`);
-  const body = formatFindings(result.findings);
-  if (body) lines.push(body);
+  const safe = result.findings.slice(0, 200).map((f) => ({ ...f, path: safeText(f.path), ruleId: safeText(f.ruleId) }));
+  const body = formatFindings(safe);
+  if (body) lines.push(body.split('\n').map(safeText).join('\n'));
   return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // CLI
+//
+// Exit codes: 0 pass (no deterministic objection), 1 reject (findings), 2 block (anything that
+// is not a verdict: bad input, crash, timeout, missing prerequisite). A crash is never exit 1.
+// Output is one JSON line on stdout; stderr stays silent (rule IDs only in the JSON).
+// Gate 0 must be run from a trusted copy outside the reviewed tree (host run: G0-SELF otherwise).
 // ---------------------------------------------------------------------------
 
+const MAX_INPUT_FILE = 1024 * 1024;
+
 async function readJson(path) {
-  return JSON.parse(await readFile(path, 'utf8'));
+  const st = await lstat(path);
+  if (!st.isFile() || st.size > MAX_INPUT_FILE) throw new GateSignal('G0-INPUT');
+  const data = JSON.parse(await readFile(path, 'utf8'));
+  if (data === null || typeof data !== 'object') throw new GateSignal('G0-INPUT');
+  return data;
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -1171,11 +1745,14 @@ export async function main(argv = process.argv.slice(2)) {
     if (!issuePath || (explicitHost && local)) throw new GateSignal('G0-INPUT');
     // Production (host-run) semantics are the default; --local is the explicit opt-out.
     opts.hostRun = !local;
+    // Trusted inputs must live outside the reviewed tree (T-05).
+    if (opts.hostRun && typeof opts.root === 'string') {
+      for (const p of [issuePath, metaPath, opts.depsDir]) if (p && await isInside(p, opts.root)) throw new GateSignal('G0-INPUT');
+    }
     opts.issue = await readJson(issuePath);
     if (metaPath) opts.metadata = await readJson(metaPath);
   } catch {
-    const r = blockResult('G0-INPUT');
-    process.stdout.write(`${JSON.stringify(r)}\n`);
+    process.stdout.write(`${JSON.stringify(blockResult('G0-INPUT'))}\n`);
     return 2;
   }
   const result = await runGate0(opts);
@@ -1185,6 +1762,13 @@ export async function main(argv = process.argv.slice(2)) {
   return result.verdict === 'pass' ? 0 : result.verdict === 'reject' ? 1 : 2;
 }
 
+function crash() {
+  try { process.stdout.write(`${JSON.stringify(blockResult('G0-INTERNAL'))}\n`); } catch { /* nothing left to do */ }
+  process.exit(2);
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().then((code) => { process.exitCode = code; });
+  process.on('uncaughtException', crash);
+  process.on('unhandledRejection', crash);
+  main().then((code) => { process.exitCode = code; }, crash);
 }

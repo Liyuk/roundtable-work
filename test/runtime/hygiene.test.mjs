@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  loadDenylist, scanHygiene, formatFindings, hashText, HygieneError,
+  loadDenylist, scanHygiene, formatFindings, hashText, fakeHash, HygieneError, RULES, isTestFixturePath, normalizeText,
 } from '../../runtime/lib/hygiene.mjs';
 
 // A common OS image name is listed as a common-word host name; built from pieces on purpose.
@@ -19,6 +19,8 @@ const denylist = loadDenylist({ fixture: FIXTURE });
 
 // Sensitive-looking inputs are built at runtime so the literals never appear in source.
 const ip = (...parts) => parts.join('.');
+// Joins fixture pieces with a call (not a plus sign) so the source holds no spelled-out literal.
+const cat = (...parts) => parts.join('');
 // Member-access fixtures are built at runtime so no dotted private-suffix name appears in this source.
 const dot = (...parts) => parts.join('.');
 const PROC_HOME = dot('process', 'env', 'HOME');
@@ -30,9 +32,9 @@ const CFG_INTERNAL = dot('config', 'internal');
 const PRIVATE_IP = ip('10', '0', '0', '5');
 const PRIVATE_IP2 = ip('192', '168', '1', '20');
 const PUBLIC_IP = ip('8', '8', '4', '4');
-const HOME_PATH = '/ho' + 'me/' + 'someone';
-const MAC_PATH = '/Us' + 'ers/' + 'someone';
-const WIN_PATH = 'C:\\Us' + 'ers\\' + 'someone';
+const HOME_PATH = cat('/ho', 'me/', 'someone');
+const MAC_PATH = cat('/Us', 'ers/', 'someone');
+const WIN_PATH = cat('C:\\Us', 'ers\\', 'someone');
 const HOME_ROOT = '/ho' + 'me';
 const MAC_ROOT = '/Us' + 'ers';
 const WIN_ROOT = 'C:\\Us' + 'ers';
@@ -58,6 +60,13 @@ function scanCode(...texts) {
   });
 }
 const rules = (findings) => findings.map((f) => f.ruleId);
+const HASH_RE = /^[0-9a-f]{8}$/;
+// Findings carry a per-run keyed hash (never the plain digest of the matched text).
+const TEST_RUN_ID = 'fixed-test-salt-0123456789';
+// Order-insensitive view of findings: [ruleId, path, line] sorted.
+const keyOf = (findings) => findings.map((x) => [x.ruleId, x.path, x.line].join('|')).sort();
+// A denylist file written by the test: owner-only mode, as a trusted deployment has it.
+const writeDeny = (file, content) => { writeFileSync(file, content); chmodSync(file, 0o600); };
 
 test('private and public IPv4 addresses fail', () => {
   for (const addr of [PRIVATE_IP, PRIVATE_IP2, ip('172', '16', '4', '9'), PUBLIC_IP, ip('169', '254', '1', '1')]) {
@@ -65,15 +74,17 @@ test('private and public IPv4 addresses fail', () => {
     assert.deepEqual(rules(f), ['HYG-IP'], addr);
     assert.equal(f[0].path, 'docs/a.md');
     assert.equal(f[0].line, 1);
-    assert.equal(f[0].length, addr.length);
-    assert.equal(f[0].hash, hashText(addr));
+    // Low-entropy matches carry no length and a keyed hash (H-83): not the plain digest.
+    assert.equal(f[0].length, 0);
+    assert.match(f[0].hash, HASH_RE);
+    assert.notEqual(f[0].hash, hashText(addr));
   }
 });
 
 test('IPv6 non-doc addresses fail, doc range and loopback pass', () => {
   const priv = ['fd00', '0', '0', '0', '0', '0', '0', '1'].join(':');
   const pub = ['2606', '4700', '', '1111'].join(':');
-  const linkLocal = 'fe80' + '::1';
+  const linkLocal = cat('fe80', '::1');
   assert.deepEqual(rules(scanLines(`addr ${priv}`)), ['HYG-IP']);
   assert.deepEqual(rules(scanLines(`addr ${pub}`)), ['HYG-IP']);
   assert.deepEqual(rules(scanLines(`addr [${linkLocal}]:22`)), ['HYG-IP']);
@@ -90,33 +101,124 @@ test('documentation ranges, loopback and netmasks pass', () => {
   ), []);
 });
 
-test('four-part semver and version-like strings pass', () => {
-  assert.deepEqual(scanLines(
-    `release v${SEMVER4} is out`,
-    `install pkg@${SEMVER4} now`,
-    `build ${FIVE_PART} is odd`,
-    `tag V${SEMVER4C}`,
-  ), []);
+test('five-part version-like strings pass; H-53: a v prefix or package words never exempt a four-part quad', () => {
+  // Superseded expectation: four-part versions with a v prefix or in package context used to pass.
+  // They are now addresses (H-53); only a five-part string is version-like.
+  assert.deepEqual(scanLines(`build ${FIVE_PART} is odd`, `see ${FIVE_PART}.6 too`), []);
+  assert.deepEqual(rules(scanLines(`release v${SEMVER4} is out`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`tag V${SEMVER4C}`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`install pkg@${SEMVER4} now`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`root@${PRIVATE_IP} install notes version`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`yarn add left-pad@${SEMVER4B}`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanLines(`v${PRIVATE_IP}`)), ['HYG-IP']);
 });
 
-test('a pre-release suffix on a v-prefixed or package-context four-part version passes; a bare one does not', () => {
-  assert.deepEqual(scanLines(
+// ---- Narrow version exemption (28-F9): exact version key / release heading in the right file kind ----
+const ruleSet = (findings) => [...new Set(rules(findings))];
+function scanVer(path, ...texts) {
+  return scanHygiene({
+    addedLines: texts.map((text, i) => ({ path, line: i + 1, text })),
+    paths: [], metadata: {}, denylist,
+  });
+}
+const CGNAT_IP = ip('100', '64', '1', '2');
+const LINKLOCAL_IP = ip('169', '254', '1', '2');
+const PRIVATE_172 = ip('172', '16', '0', '9');
+const PADDED_QUAD = ip('010', '0', '0', '5');
+const HEX_QUAD = ip('0x0a', '0', '0', '5');
+const DATE = ['2026', '01', '02'].join('-');
+
+test('a four-part semver in a manifest "version" key passes (package.json, lockfiles, toml, yaml)', () => {
+  assert.deepEqual(scanVer('package.json', `  "version": "${SEMVER4}",`, `"version":"${SEMVER4B}"`), []);
+  assert.deepEqual(scanVer('pkg/sub/package-lock.json', `    "version": "${SEMVER4C}"`), []);
+  assert.deepEqual(scanVer('composer.lock', `            "version": "${SEMVER4}",`), []);
+  assert.deepEqual(scanVer('deps/yarn.lock', `  version "${SEMVER4}"`), []);
+  assert.deepEqual(scanVer('Cargo.toml', `version = "${SEMVER4}"`), []);
+  assert.deepEqual(scanVer('pubspec.yaml', `version: ${SEMVER4}`), []);
+  // The H-53 trade-off: a plausible public address in the exact version key passes.
+  assert.deepEqual(scanVer('package.json', `  "version": "${PUBLIC_IP}",`), []);
+  // A line after a trailing comma joins with the next line; the version line keeps its exemption.
+  assert.deepEqual(scanVer('package.json', `  "version": "${SEMVER4}",`, '  "private": true'), []);
+});
+
+test('a release heading in a markdown or text file passes', () => {
+  assert.deepEqual(scanVer('CHANGELOG.md', `## ${SEMVER4}`, `## v${SEMVER4B} - ${DATE}`, `## [${SEMVER4C}]`,
+    `# [v${SEMVER4}] (${DATE})`, `### ${SEMVER4B} - ${DATE}`), []);
+  assert.deepEqual(scanVer('docs/HISTORY.txt', `## ${SEMVER4}`), []);
+  assert.deepEqual(scanVer('docs/NEWS.rst', `## v${SEMVER4}`), []);
+});
+
+test('H-53: the same version strings fail outside a recognized version context', () => {
+  const cases = [
+    ['src/a.mjs', `"version": "${SEMVER4}"`],
+    ['src/a.mjs', `version = "${SEMVER4}"`],
+    ['src/a.mjs', `## ${SEMVER4}`],
+    ['docs/a.md', `"version": "${SEMVER4}"`],            // a version key is not a heading
+    ['docs/a.md', `release v${SEMVER4} is out`],         // prose, not a heading
+    ['docs/a.md', `## release ${SEMVER4} is out`],        // heading with extra words
+    ['docs/a.md', `## ${SEMVER4} and ${PUBLIC_IP}`],
+    ['docs/a.md', `    ## ${SEMVER4}`],                  // indented: code block, not a heading
+    ['docs/a.md', `- ## ${SEMVER4}`],
+    ['config/settings.json', `"version": "${SEMVER4}"`],  // not a named manifest
+    ['package.json', `"name": "${SEMVER4}"`],             // key is not exactly version
+    ['package.json', `"appversion": "${SEMVER4}"`],
+    ['package.json', `  "version": "${SEMVER4}", "host": "${PUBLIC_IP}"`],
+    ['package.json', `  "version": "v${SEMVER4}"`],       // a v prefix alone never exempts
+    ['package.json', `  "version": "pkg@${SEMVER4}"`],
+    ['package.json', `  "scripts": "install pkg@${SEMVER4}"`],
+    ['package.json', `  "version": "${SEMVER4}-rc1"`],
+    ['package.json', `  "version": "${SEMVER4}" // ${PUBLIC_IP}`],
+    ['.github/workflows/ci.yml', `version: ${SEMVER4}`],
+    ['scripts/run.sh', `version=${SEMVER4}`],
+  ];
+  for (const [path, text] of cases) assert.deepEqual(ruleSet(scanVer(path, text)), ['HYG-IP'], `${path}: ${text}`);
+});
+
+test('H-53: a version-looking number that is a private, CGNAT or link-local address is never exempt', () => {
+  for (const q of [PRIVATE_IP, PRIVATE_IP2, PRIVATE_172, CGNAT_IP, LINKLOCAL_IP]) {
+    assert.deepEqual(ruleSet(scanVer('package.json', `  "version": "${q}",`)), ['HYG-IP'], q);
+    assert.deepEqual(ruleSet(scanVer('Cargo.toml', `version = "${q}"`)), ['HYG-IP'], q);
+    assert.deepEqual(ruleSet(scanVer('CHANGELOG.md', `## ${q}`)), ['HYG-IP'], q);
+    assert.deepEqual(ruleSet(scanVer('CHANGELOG.md', `## v${q} - ${DATE}`)), ['HYG-IP'], q);
+  }
+  // A padded or hex segment is not a plain decimal version and stays scanned.
+  assert.deepEqual(ruleSet(scanVer('package.json', `  "version": "${PADDED_QUAD}"`)), ['HYG-IP']);
+  assert.deepEqual(ruleSet(scanVer('package.json', `  "version": "${HEX_QUAD}"`)), ['HYG-IP']);
+});
+
+test('H-53: the exemption skips one number only; an address elsewhere in the diff is still found', () => {
+  assert.deepEqual(ruleSet(scanVer('package.json', `  "version": "${SEMVER4}",`, `  "host": "${PUBLIC_IP}"`)), ['HYG-IP']);
+  assert.deepEqual(ruleSet(scanVer('CHANGELOG.md', `## ${SEMVER4}`, `root@${PRIVATE_IP} install`)), ['HYG-IP']);
+  // The exempt string is not exempt on a different line of the same file.
+  assert.deepEqual(ruleSet(scanVer('CHANGELOG.md', `## ${SEMVER4}`, `see ${SEMVER4} for details`)), ['HYG-IP']);
+});
+
+test('H-53: version strings in commit messages, PR text, branch names and paths stay flagged', () => {
+  const meta = (m) => scanHygiene({ addedLines: [], paths: [], metadata: m, denylist });
+  assert.deepEqual(ruleSet(meta({ commitMessages: [`## ${SEMVER4}`] })), ['HYG-IP']);
+  assert.deepEqual(ruleSet(meta({ commitMessages: [`release v${SEMVER4}`] })), ['HYG-IP']);
+  assert.deepEqual(ruleSet(meta({ prBody: `## ${SEMVER4}` })), ['HYG-IP']);
+  assert.deepEqual(ruleSet(meta({ prTitle: `bump to v${SEMVER4}` })), ['HYG-IP']);
+  assert.deepEqual(ruleSet(meta({ branch: `release/${SEMVER4}` })), ['HYG-IP']);
+  assert.deepEqual(ruleSet(scanHygiene({ addedLines: [], paths: [`docs/CHANGELOG-${SEMVER4}/notes.md`], metadata: {}, denylist })), ['HYG-IP']);
+});
+
+test('H-53: a pre-release suffix never makes a four-part quad a version', () => {
+  for (const text of [
     `release v${SEMVER4}-rc1 is out`,
-    `release v${SEMVER4}-beta.2 is out`,
     `npm install pkg@${SEMVER4}-rc1`,
     `requires @scope/pkg@${SEMVER4}-beta`,
-  ), []);
-  // Without a version-like context the suffix does not make it a version.
-  assert.deepEqual(rules(scanLines(`connect to ${SEMVER4}-rc1 now`)), ['HYG-IP']);
-  assert.deepEqual(rules(scanLines(`deploy@${PUBLIC_IP}-rc1`)), ['HYG-IP']);
-  assert.deepEqual(rules(scanLines(`git clone git@${SEMVER4}-rc1:o/r.git`)), ['HYG-IP']);
+    `connect to ${SEMVER4}-rc1 now`,
+    `deploy@${PUBLIC_IP}-rc1`,
+    `git clone git@${SEMVER4}-rc1:o/r.git`,
+  ]) assert.deepEqual(rules(scanLines(text)), ['HYG-IP'], text);
 });
 
 test('an @ prefix does not hide an address in an ssh command', () => {
   assert.deepEqual(rules(scanLines(`ssh deploy@${PUBLIC_IP}`)), ['HYG-IP']);
 });
 
-test('an address behind an @ prefix fails without an ssh word; package versions still pass', () => {
+test('an address behind an @ prefix fails without an ssh word; package-looking forms fail too (H-53)', () => {
   for (const text of [
     `git clone git@${PUBLIC_IP}:org/repo.git`,
     `git@${PUBLIC_IP}:org/repo.git`,
@@ -127,16 +229,12 @@ test('an address behind an @ prefix fails without an ssh word; package versions 
     `deploy@${PUBLIC_IP}:2222`,
     `install pkg@${PUBLIC_IP}/x`,
     `remote add origin git@${SEMVER4}:o/r.git`,
+    `npm install pkg@${SEMVER4}`,
+    `requires @scope/pkg@${SEMVER4} or later`,
   ]) {
     assert.deepEqual(rules(scanLines(text)), ['HYG-IP'], text);
   }
-  assert.deepEqual(scanLines(
-    `npm install pkg@${SEMVER4}`,
-    `requires @scope/pkg@${SEMVER4} or later`,
-    `yarn add left-pad@${SEMVER4B}`,
-    `release v${SEMVER4} is out`,
-    `build ${FIVE_PART} is odd`,
-  ), []);
+  assert.deepEqual(scanLines(`build ${FIVE_PART} is odd`), []);
 });
 
 test('JS member access with a private-looking suffix is not a host; real hosts still fail', () => {
@@ -192,14 +290,11 @@ test('the member-access exemption applies only to added lines in code files', ()
     addedLines: [], paths: [host], denylist,
     metadata: { commitMessages: [prose], authors: [host], prTitle: prose, prBody: 'ok\n' + prose, branch: host },
   });
-  assert.deepEqual(f.map((x) => [x.ruleId, x.path, x.line]), [
-    ['HYG-FQDN', `<path:${hashText(host)}>`, 0],
-    ['HYG-FQDN', '<metadata:commit#1>', 1],
-    ['HYG-FQDN', '<metadata:author#1>', 0],
-    ['HYG-FQDN', '<metadata:prTitle>', 0],
-    ['HYG-FQDN', '<metadata:prBody>', 2],
-    ['HYG-FQDN', '<metadata:branch>', 0],
+  assert.deepEqual(f.map((x) => x.ruleId), new Array(6).fill('HYG-FQDN'));
+  assert.deepEqual(f.map((x) => `${x.path}|${x.line}`).filter((k) => !k.startsWith('<path:')).sort(), [
+    '<metadata:author#1>|0', '<metadata:branch>|0', '<metadata:commit#1>|1', '<metadata:prBody>|2', '<metadata:prTitle>|0',
   ]);
+  assert.equal(f.filter((x) => /^<path:[0-9a-f]{8}>$/.test(x.path)).length, 1);
   // JS property access in code files still passes.
   for (const path of ['src/a.mjs', 'a.cjs', 'b.js', 'c.ts', 'd.tsx', 'e.jsx', 'f.json', 'lib/G.MJS']) {
     assert.deepEqual(scanAt(path, `const a = ${CFG_LOCAL}; x = ${PROC_HOME}; ${THIS_LOCAL} = 1; ${USER_HOME} = 2;`), [], path);
@@ -209,7 +304,7 @@ test('the member-access exemption applies only to added lines in code files', ()
     assert.deepEqual(rules(scanAt('src/a.mjs', text)), ['HYG-FQDN'], text);
   }
   // A real host name in a code file also still fails.
-  assert.deepEqual(rules(scanAt('src/a.mjs', 'const h = "db1.' + 'local";')), ['HYG-FQDN']);
+  assert.deepEqual(rules(scanAt('src/a.mjs', cat('const h = "db1.', 'local";'))), ['HYG-FQDN']);
 });
 
 test('private-suffix FQDNs fail; example, test, invalid, localhost and public hosts pass', () => {
@@ -227,8 +322,10 @@ test('distinctive hostnames and usernames fail anywhere, case-insensitively', ()
   const f = scanLines('plain prose mentions FixtureHost-Example here', 'and fixtureuser-example too');
   assert.deepEqual(rules(f), ['HYG-HOST', 'HYG-USER']);
   assert.deepEqual(f.map((x) => x.line), [1, 2]);
-  // Word boundary: embedded in a longer word does not count.
-  assert.deepEqual(scanLines('xfixturehost-examplex'), []);
+  // Changed expectation (H-60): a distinctive name glued to other letters is still a hit, because
+  // glued and separator-padded forms are how an author hides it. Unrelated text stays clean.
+  assert.deepEqual(rules(scanLines('xfixturehost-examplex')), ['HYG-HOST']);
+  assert.deepEqual(scanLines('fixture host and example user, nothing else'), []);
 });
 
 test('common-word names fail only in host context', () => {
@@ -243,7 +340,7 @@ test('common-word names fail only in host context', () => {
   assert.deepEqual(rules(scanLines('scp file.txt toolbox:/tmp')).includes('HYG-HOST'), true);
   assert.deepEqual(rules(scanLines('open https://toolbox/status')).includes('HYG-HOST'), true);
   assert.deepEqual(rules(scanLines('open https://builder@somewhere/status')).includes('HYG-USER'), true);
-  assert.equal(rules(scanLines('ping toolbox.' + 'lan')).includes('HYG-HOST'), true);
+  assert.equal(rules(scanLines(cat('ping toolbox.', 'lan'))).includes('HYG-HOST'), true);
   assert.equal(rules(scanLines('builder@somewhere')).includes('HYG-USER'), true);
   // An example mail domain is not a host.
   assert.deepEqual(scanLines('mail builder@example.com'), []);
@@ -259,10 +356,10 @@ test('OS image names in CI config pass even when they collide with a common name
 });
 
 test('absolute home paths fail in diff lines', () => {
-  for (const p of [HOME_PATH + '/notes', MAC_PATH + '/x', WIN_PATH + '\\x', '/ro' + 'ot/.ssh', '~' + 'someone/bin']) {
+  for (const p of [HOME_PATH + '/notes', MAC_PATH + '/x', WIN_PATH + '\\x', cat('/ro', 'ot/.ssh'), cat('~', 'someone/bin')]) {
     assert.deepEqual(rules(scanLines(`cd ${p}`)), ['HYG-HOMEPATH'], p);
   }
-  assert.deepEqual(rules(scanLines('{"p": "C:\\\\Us' + 'ers\\\\someone\\\\x"}')), ['HYG-HOMEPATH']);
+  assert.deepEqual(rules(scanLines(cat('{"p": "C:\\\\Us', 'ers\\\\someone\\\\x"}'))), ['HYG-HOMEPATH']);
 });
 
 test('absolute home paths fail in commit message, PR body, PR title, branch and author', () => {
@@ -276,11 +373,9 @@ test('absolute home paths fail in commit message, PR body, PR title, branch and 
       branch: 'rt' + HOME_PATH,
     },
   });
-  assert.deepEqual(f.map((x) => [x.ruleId, x.path, x.line]), [
-    ['HYG-HOMEPATH', '<metadata:commit#1>', 3],
-    ['HYG-HOMEPATH', '<metadata:prTitle>', 0],
-    ['HYG-HOMEPATH', '<metadata:prBody>', 2],
-    ['HYG-HOMEPATH', '<metadata:branch>', 0],
+  assert.deepEqual(keyOf(f), [
+    'HYG-HOMEPATH|<metadata:branch>|0', 'HYG-HOMEPATH|<metadata:commit#1>|3',
+    'HYG-HOMEPATH|<metadata:prBody>|2', 'HYG-HOMEPATH|<metadata:prTitle>|0',
   ]);
 });
 
@@ -297,22 +392,21 @@ test('a clean branch name passes; hosts and users in commit, author, PR text fai
       prBody: 'host fixturehost-example',
     },
   });
-  assert.deepEqual(f.map((x) => [x.ruleId, x.path]), [
-    ['HYG-IP', '<metadata:commit#1>'],
-    ['HYG-USER', '<metadata:author#1>'],
-    ['HYG-HOST', '<metadata:prBody>'],
+  assert.deepEqual(f.map((x) => `${x.ruleId}|${x.path}`).sort(), [
+    'HYG-HOST|<metadata:prBody>', 'HYG-IP|<metadata:commit#1>', 'HYG-USER|<metadata:author#1>',
   ]);
 });
 
 test('added and renamed paths are scanned and reported without echoing the path', () => {
   const bad = 'docs/fixturehost-example/notes.md';
-  const f = scanHygiene({ addedLines: [], paths: ['docs/ok.md', bad], metadata: {}, denylist });
+  const f = scanHygiene({ addedLines: [], paths: ['docs/ok.md', bad], metadata: {}, denylist, salt: TEST_RUN_ID });
   assert.deepEqual(rules(f), ['HYG-HOST']);
-  assert.equal(f[0].path, `<path:${hashText(bad)}>`);
+  assert.match(f[0].path, /^<path:[0-9a-f]{8}>$/);
+  assert.notEqual(f[0].path, `<path:${hashText(bad)}>`); // keyed, not the plain digest
   assert.ok(!JSON.stringify(f).includes('fixturehost-example'));
-  // Added lines in a dirty file are reported under the redacted path too.
-  const g = scanHygiene({ addedLines: [{ path: bad, line: 4, text: 'x ' + PRIVATE_IP }], paths: [], metadata: {}, denylist });
-  assert.equal(g[0].path, `<path:${hashText(bad)}>`);
+  // Added lines in a dirty file are reported under the same redacted path (same salt).
+  const g = scanHygiene({ addedLines: [{ path: bad, line: 4, text: 'x ' + PRIVATE_IP }], paths: [], metadata: {}, denylist, salt: TEST_RUN_ID });
+  assert.equal(g[0].path, f[0].path);
 });
 
 test('placeholders pass', () => {
@@ -391,8 +485,18 @@ test('a letter-only high-entropy credential value fails, with or without a marke
   assert.deepEqual(rules(scanHygiene({ addedLines: [], paths: [], denylist, metadata: { prBody: assigns[0] } })), ['HYG-CRED']);
   // In a test path an unmarked value still fails; a FAKE / EXAMPLE marked one passes.
   assert.deepEqual(rules(scanAt('test/a.test.mjs', assigns[1])), ['HYG-CRED']);
-  assert.deepEqual(scanAt('test/a.test.mjs', assigns[0]), []);
-  assert.deepEqual(scanAt('test/a.test.mjs', piece('api', '_key = "', 'EXAMPLE', LETTERS_ONLY, '"')), []);
+  // Changed expectation (H-74): a marker glued to a random value no longer exempts it, even in a
+  // test path; only a value that is wholly a fake (marker plus harmless filler) is exempt.
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', assigns[0])), ['HYG-CRED']);
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', piece('api', '_key = "', 'EXAMPLE', LETTERS_ONLY, '"'))), ['HYG-CRED']);
+  assert.deepEqual(scanAt('test/a.test.mjs', piece('api', '_key = "', 'EXAMPLE', '1234567890', '"')), []);
+});
+
+test('H-69: a camelCase dollar value is not in the closed placeholder set and fails', () => {
+  // Changed expectation: only $NAME / ${NAME} / lowercase-letter names are placeholders; a mixed-case
+  // value that starts with a dollar sign can be a real secret, so it is reported.
+  assert.deepEqual(rules(scanAt('src/a.mjs', piece('pass', 'word = $passwordFromTheEnvironment'))), ['HYG-CRED']);
+  assert.deepEqual(rules(scanAt('src/a.mjs', piece('pass', 'word = ${Zk3pQ9vL2xR7tW5yB8nM4}'))), ['HYG-CRED']);
 });
 
 test('references, identifiers, low-entropy and ordinary prose values do not trigger the letter-only rule', () => {
@@ -402,7 +506,7 @@ test('references, identifiers, low-entropy and ordinary prose values do not trig
     piece('to', 'ken = process.env.someLongMixedCaseName'),
     piece('to', 'ken = config.getSecretValueStore'),
     piece('pass', 'word = ${PASSWORD_VALUE_FROM_ENV}'),
-    piece('pass', 'word = $passwordFromTheEnvironment'),
+    piece('pass', 'word = $PASSWORD_FROM_ENV'),
     // camelCase / PascalCase identifiers
     piece('to', 'ken = someLongCamelCaseIdentifierName'),
     piece('to', 'ken: ThisIsAVeryLongDescriptiveTypeName'),
@@ -424,8 +528,8 @@ test('references, identifiers, low-entropy and ordinary prose values do not trig
 const FAKE_VALUES = [
   piece('gh', 'p_', 'EXAMPLEEXAMPLEEXAMPLE1234567890'),
   piece('AK', 'IA', 'IOSFODNN7EXAMPLE'),
-  'password = "FAKE-Zk3pQ9vL2xR7tW5yB8nM4"',
-  'api_key = Zk3pQ9vL2xR7tW5yEXAMPLE88',
+  'password = "FAKEFAKEFAKE1234567890"',
+  'api_key = EXAMPLEEXAMPLE1234567890',
   'https://deploy:FAKEpassword9@git.example.com/o/r',
 ];
 
@@ -444,7 +548,9 @@ test('EXAMPLE / FAKE markers exempt credential-looking values in test-fixture pa
 test('EXAMPLE / FAKE markers do not exempt credentials outside test-fixture paths', () => {
   for (const path of ['docs/a.md', 'runtime/lib/x.mjs', 'src/contest/a.mjs', 'README.md', 'test/notes.md', 'latest/x.mjs', 'a/../b.mjs', 'testing.mjs', '.test.mjs']) {
     const f = scanAt(path, ...FAKE_VALUES);
-    assert.deepEqual(rules(f), new Array(FAKE_VALUES.length).fill('HYG-CRED'), path);
+    // Every line is flagged (a line may carry more than one finding).
+    assert.deepEqual([...new Set(f.map((x) => x.line))].sort(), FAKE_VALUES.map((_, i) => i + 1), path);
+    assert.ok(rules(f).every((r) => r === 'HYG-CRED'), path);
   }
 });
 
@@ -456,12 +562,9 @@ test('EXAMPLE / FAKE markers never exempt commit messages, PR text, branch or au
       commitMessages: [marked], authors: [marked], prTitle: marked, prBody: 'ok\n' + FAKE_VALUES[0], branch: 'rt/' + FAKE_VALUES[3].replace(/\s/g, ''),
     },
   });
-  assert.deepEqual(f.map((x) => [x.ruleId, x.path, x.line]), [
-    ['HYG-CRED', '<metadata:commit#1>', 1],
-    ['HYG-CRED', '<metadata:author#1>', 0],
-    ['HYG-CRED', '<metadata:prTitle>', 0],
-    ['HYG-CRED', '<metadata:prBody>', 2],
-    ['HYG-CRED', '<metadata:branch>', 0],
+  assert.deepEqual(keyOf(f), [
+    'HYG-CRED|<metadata:author#1>|0', 'HYG-CRED|<metadata:branch>|0', 'HYG-CRED|<metadata:commit#1>|1',
+    'HYG-CRED|<metadata:prBody>|2', 'HYG-CRED|<metadata:prTitle>|0',
   ]);
 });
 
@@ -483,7 +586,7 @@ test('inline suppression comments do not suppress anything', () => {
 
 test('base-side allowlist.testFakes (path + hash) exempts only the exact location', () => {
   const secret = REAL_SHAPED.openai;
-  const allowlist = { testFakes: [{ path: 'test/fake.test.mjs', hash: hashText(secret) }] };
+  const allowlist = { testFakes: [{ path: 'test/fake.test.mjs', hash: fakeHash(secret) }] };
   const mk = (path) => scanHygiene({
     addedLines: [{ path, line: 1, text: 'k = ' + secret }], paths: [], metadata: {}, denylist, allowlist,
   });
@@ -493,10 +596,12 @@ test('base-side allowlist.testFakes (path + hash) exempts only the exact locatio
   const meta = scanHygiene({
     addedLines: [], paths: [], denylist,
     metadata: { prBody: secret },
-    allowlist: { testFakes: [{ path: '<metadata:prBody>', hash: hashText(secret) }] },
+    allowlist: { testFakes: [{ path: '<metadata:prBody>', hash: fakeHash(secret) }] },
   });
   assert.deepEqual(rules(meta), ['HYG-CRED']);
   assert.throws(() => scanHygiene({ addedLines: [], denylist, allowlist: { testFakes: 'x' } }), HygieneError);
+  // The 32-bit digest form is rejected: entries need the full sha256 (H-75).
+  assert.throws(() => scanHygiene({ addedLines: [], denylist, allowlist: { testFakes: [{ path: 'a', hash: hashText(secret) }] } }), HygieneError);
 });
 
 test('findings and formatted output never contain matched text', () => {
@@ -547,18 +652,18 @@ test('hostRun with an invalid or empty denylist file throws without echoing cont
   try {
     mkdirSync(join(dir, 'gate0'));
     const file = join(dir, 'gate0', 'denylist.json');
-    writeFileSync(file, '{ "hostnames": not-json fixturehost-example');
+    writeDeny(file, '{ "hostnames": not-json fixturehost-example');
     assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true }), (err) => {
       assert.ok(!err.message.includes('fixturehost-example'));
       assert.ok(!err.message.includes(dir));
       return true;
     });
-    writeFileSync(file, JSON.stringify({ hostnames: { distinctive: ['bad name!'] } }));
+    writeDeny(file, JSON.stringify({ hostnames: { distinctive: ['bad name!'] } }));
     assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true }), (err) => !err.message.includes('bad name'));
-    writeFileSync(file, JSON.stringify({}));
-    assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true }), /empty/);
+    writeDeny(file, JSON.stringify({}));
+    assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true }), (err) => err instanceof HygieneError && err.code === 'DENYLIST_EMPTY' && /empty/.test(err.message));
     // A valid file loads and is normalized.
-    writeFileSync(file, JSON.stringify({ hostnames: { distinctive: ['Fixturehost-Example'] }, usernames: { common: ['builder'] } }));
+    writeDeny(file, JSON.stringify({ hostnames: { distinctive: ['Fixturehost-Example'] }, usernames: { common: ['builder'] } }));
     const d = loadDenylist({ env: { RT_HOME: dir }, hostRun: true });
     assert.deepEqual(d.hostnames.distinctive, ['fixturehost-example']);
     assert.deepEqual(d.usernames.common, ['builder']);
@@ -581,16 +686,16 @@ test('a host run ignores an injected fixture: the production file must exist and
     // Fixture + invalid file: throws as well.
     mkdirSync(join(dir, 'gate0'));
     const file = join(dir, 'gate0', 'denylist.json');
-    writeFileSync(file, '{ not json');
+    writeDeny(file, '{ not json');
     assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true, fixture: FIXTURE }), HygieneError);
     // Fixture + valid file: the file contents are used, not the fixture.
-    writeFileSync(file, JSON.stringify({ hostnames: { distinctive: ['filehost-example'] }, usernames: {} }));
+    writeDeny(file, JSON.stringify({ hostnames: { distinctive: ['filehost-example'] }, usernames: {} }));
     const d = loadDenylist({ env: { RT_HOME: dir }, hostRun: true, fixture: FIXTURE });
     assert.deepEqual(d.hostnames.distinctive, ['filehost-example']);
     assert.deepEqual(d.usernames.common, []);
     const hits = scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text: 'see filehost-example and fixturehost-example' }], paths: [], metadata: {}, denylist: d });
     assert.deepEqual(rules(hits), ['HYG-HOST']);
-    assert.equal(hits[0].hash, hashText('filehost-example'));
+    assert.match(hits[0].hash, HASH_RE);
     // A non-host run still honors the injected fixture.
     assert.deepEqual(loadDenylist({ env: { RT_HOME: dir }, fixture: FIXTURE }).hostnames.distinctive, ['fixturehost-example']);
     assert.deepEqual(loadDenylist({ fixture: FIXTURE }).usernames.distinctive, ['fixtureuser-example']);
@@ -686,10 +791,10 @@ test('the member-access exemption does not apply inside string or template liter
 
 test('letters-only IPv6 addresses fail; loopback, documentation and code-like tokens pass', () => {
   const eight = ['fade', 'bead', 'cafe', 'dead', 'beef', 'face', 'feed', 'deaf'].join(':');
-  for (const addr of ['abcd' + '::' + 'cafe', 'dead:beef' + '::' + '1', 'ABCD' + '::' + 'CAFE', 'fade' + '::', eight]) {
+  for (const addr of [cat('abcd', '::', 'cafe'), cat('dead:beef', '::', '1'), cat('ABCD', '::', 'CAFE'), cat('fade', '::'), eight]) {
     const f = scanLines(`peer ${addr} up`);
     assert.deepEqual(rules(f), ['HYG-IP'], addr);
-    assert.equal(f[0].hash, hashText(addr));
+    assert.match(f[0].hash, HASH_RE);
   }
   assert.deepEqual(scanLines(
     'addr ::1 and 2001:db8:: and 2001:db8::1 and ::', 'std::vector', 'a:b:c:d:e:f',
@@ -705,10 +810,10 @@ test('letters-only IPv6 is flagged in prose, metadata and paths; code gets only 
   const mixed = 'Cafe' + '::' + 'dead';
   const addFee = 'Add' + '::' + 'fee';
   // Non-code file: flagged always, whatever the case or length.
-  for (const tok of [a, mixed, addFee, 'abcd' + '::' + 'cafe']) {
+  for (const tok of [a, mixed, addFee, cat('abcd', '::', 'cafe')]) {
     const f = scanLines(`value ${tok} here`);
     assert.deepEqual(rules(f), ['HYG-IP'], tok);
-    assert.equal(f[0].hash, hashText(tok));
+    assert.match(f[0].hash, HASH_RE);
     assert.deepEqual(rules(scanAt('notes.txt', `x ${tok}`)), ['HYG-IP'], tok);
     assert.deepEqual(rules(scanAt('config.yaml', `x: ${tok}`)), ['HYG-IP'], tok);
     assert.deepEqual(rules(scanAt('Makefile', `x ${tok}`)), ['HYG-IP'], tok);
@@ -729,8 +834,8 @@ test('letters-only IPv6 is flagged in prose, metadata and paths; code gets only 
     `let x = ${addFee};`, `let y = ${a};`, `let z = ${mixed};`, 'let v = std::vector::new();', 'let e = Foo::bar();', 'let r = Result::Err(1);',
   ), []);
   assert.deepEqual(scanAt('src/lib.rs', `let x = ${addFee};`, 'let y = Result::Err(1);'), []);
-  assert.deepEqual(rules(scanCode(`let peer = ${'abcd' + '::' + 'cafe'};`)), ['HYG-IP']);
-  assert.deepEqual(rules(scanAt('src/lib.rs', `let peer = ${'abcd' + '::' + 'cafe'};`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanCode(`let peer = ${cat('abcd', '::', 'cafe')};`)), ['HYG-IP']);
+  assert.deepEqual(rules(scanAt('src/lib.rs', `let peer = ${cat('abcd', '::', 'cafe')};`)), ['HYG-IP']);
   // Host context in code: the exemption is lost.
   for (const line of [
     `exec("ssh ${a}")`, `scp file ${mixed} /tmp`, `const url = "http://[${a}]:80/";`, `connect("user@${a}")`,
@@ -757,7 +862,11 @@ test('a bare quad shaped like a netmask is an address; netmask context exempts i
   ), []);
   // `addr mask` pair form: only the address is reported.
   const pair = scanLines(`inet ${PRIVATE_IP} ${m24}`);
-  assert.deepEqual(pair.map((f) => f.hash), [hashText(PRIVATE_IP)]);
+  assert.equal(pair.length, 1);
+  assert.deepEqual(rules(pair), ['HYG-IP']);
+  assert.deepEqual(pair, scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text: `inet ${PRIVATE_IP} ${m24}` }], paths: [], metadata: {}, denylist, salt: 'x'.repeat(8) }).map((f) => ({ ...f, hash: pair[0].hash })));
+  assert.deepEqual(scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text: `inet ${PRIVATE_IP}` }], paths: [], metadata: {}, denylist, salt: TEST_RUN_ID })[0].hash,
+    scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text: `inet ${PRIVATE_IP} ${m24}` }], paths: [], metadata: {}, denylist, salt: TEST_RUN_ID })[0].hash);
 });
 
 test('an all-lowercase high-entropy credential value fails; ordinary lowercase values pass', () => {
@@ -773,7 +882,8 @@ test('an all-lowercase high-entropy credential value fails; ordinary lowercase v
     assert.deepEqual(rules(scanAt('docs/a.md', a.replace(RANDOM_LOWER, 'FAKE' + RANDOM_LOWER))), ['HYG-CRED'], a);
   }
   // In a test path the fake marker exempts; an unmarked value still fails.
-  assert.deepEqual(scanAt('test/a.test.mjs', piece('pass', 'word = "', 'FAKE', RANDOM_LOWER, '"')), []);
+  // Changed expectation (H-74): a marker glued to a random value no longer exempts it.
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', piece('pass', 'word = "', 'FAKE', RANDOM_LOWER, '"'))), ['HYG-CRED']);
   assert.deepEqual(rules(scanAt('test/a.test.mjs', piece('pass', 'word = "', RANDOM_LOWER, '"'))), ['HYG-CRED']);
   // Normal words, repeats, short values, and snake_case / kebab-case names stay clean.
   assert.deepEqual(scanAt('src/a.mjs',
@@ -804,7 +914,9 @@ test('an all-uppercase high-entropy credential value fails; reference-like and l
   }
   assert.equal(new Set(RANDOM_UPPER.slice(0, 24)).size >= 16, true);
   // In a test path the fake marker still exempts; an unmarked value fails.
-  assert.deepEqual(scanAt('test/a.test.mjs', piece('pass', 'word = "FAKE', RANDOM_UPPER, '"')), []);
+  // Changed expectation (H-74): the marker must be the whole value, so a glued marker no longer exempts.
+  assert.deepEqual(rules(scanAt('test/a.test.mjs', piece('pass', 'word = "FAKE', RANDOM_UPPER, '"'))), ['HYG-CRED']);
+  assert.deepEqual(scanAt('test/a.test.mjs', piece('pass', 'word = "FAKEFAKE', '123456', '"')), []);
   assert.deepEqual(rules(scanAt('test/a.test.mjs', piece('pass', 'word = "', RANDOM_UPPER, '"'))), ['HYG-CRED']);
   assert.deepEqual(scanAt('src/a.mjs',
     piece('pass', 'word: REQUIRED'),
@@ -818,4 +930,229 @@ test('an all-uppercase high-entropy credential value fails; reference-like and l
     piece('pass', 'word = ', 'PROCESS', '.env.X'),
     piece('pass', 'word = $', 'SOME_VARIABLE_NAME'),
   ), []);
+});
+
+// ---------------------------------------------------------------------------
+// Threat-model regressions (28-D2b / 28-D2c). Fixtures are assembled from pieces at runtime.
+// ---------------------------------------------------------------------------
+
+const scanWith = (texts, opts = {}) => scanHygiene({
+  addedLines: texts.map((text, i) => ({ path: opts.path || 'docs/a.md', line: i + 1, text })),
+  paths: [], metadata: {}, denylist, salt: TEST_RUN_ID,
+});
+const hits = (text, path) => rules(scanWith([text], { path }));
+const intOf = (a, b, c, d) => ((a * 256 + b) * 256 + c) * 256 + d;
+const hex8 = (a, b, c, d) => [a, b, c, d].map((x) => x.toString(16).padStart(2, '0')).join('');
+
+test('H-52: decimal, hex, octal, padded and three-part spellings of an address fail', () => {
+  assert.deepEqual(hits(`ping ${intOf(8, 8, 4, 4)}`), ['HYG-IP']);
+  assert.deepEqual(hits(`ping 0x${hex8(8, 8, 4, 4)}`), ['HYG-IP']);
+  assert.deepEqual(hits(`host ${ip('010', '0', '0', '5')}`), ['HYG-IP']);
+  assert.deepEqual(hits(`host ${ip('0x0a', '0', '0', '5')}`), ['HYG-IP']);
+  assert.deepEqual(hits(`ssh ${ip('10', '0', '5')}`), ['HYG-IP']);
+  assert.deepEqual(hits(`x ${ip('008', '008', '004', '004')}`), ['HYG-IP']);
+  // A plain number with no address context is not an address.
+  assert.deepEqual(hits('total 134743044 bytes'), []);
+});
+
+test('H-54: leading dot, defanged separators and HTML entities do not hide an address', () => {
+  const quad = ip('8', '8', '4', '4');
+  assert.deepEqual(hits(`x ${ip('.8', '8', '4', '4')}`), ['HYG-IP']);
+  assert.deepEqual(hits(`x ${quad.replace(/\./g, '[.]')}`), ['HYG-IP']);
+  assert.deepEqual(hits(`x ${quad.replace(/\./g, ' (dot) ')}`), ['HYG-IP']);
+  assert.deepEqual(hits(`x ${quad.replace(/\./g, '&#46;')}`), ['HYG-IP']);
+  assert.deepEqual(hits(`x ${quad.replace(/\./g, '%2e')}`), ['HYG-ENC']);
+});
+
+test('H-56 / H-57: glued IPv6 prefixes, mapped IPv4 and zone ids fail', () => {
+  const v6 = cat('fd00', '::1');
+  assert.deepEqual(hits('ip:' + v6), ['HYG-IP']);
+  assert.deepEqual(hits('addr_' + v6), ['HYG-IP']);
+  assert.deepEqual(hits('::ffff:' + ip('8', '8', '4', '4')), ['HYG-IP']);
+  assert.deepEqual(hits(cat('[::ffff:', '0808:', '0404]')), ['HYG-IP']);
+  assert.deepEqual(hits(cat('fe80', '::1%eth0')), ['HYG-IP']);
+  // Documentation range with a plain low word stays clean.
+  assert.deepEqual(hits('2001:db8::1'), []);
+});
+
+test('H-58: encoded address blobs (percent, base64, double base64, hex) fail as HYG-ENC', () => {
+  const quad = ip('8', '8', '4', '4');
+  const b64 = Buffer.from(quad).toString('base64');
+  assert.deepEqual(hits(`x ${b64}`), ['HYG-ENC']);
+  assert.deepEqual(hits(`x ${Buffer.from(b64).toString('base64')}`), ['HYG-ENC']);
+  assert.deepEqual(hits(`x ${Buffer.from(quad).toString('hex')}`), ['HYG-ENC']);
+  assert.deepEqual(hits(`x ${quad.replace(/\./g, '%2E')}`), ['HYG-ENC']);
+});
+
+test('H-60: zero-width, soft hyphen, full-width, Cyrillic and separator forms of a denylisted name fail', () => {
+  const name = 'fixtureuser-example';
+  for (const variant of [
+    'fixtureu\u200bser-example',
+    '\uff46ixtureuser-example',
+    'f\u0456xtureuser-example',
+    'fixtureuser\u00adexample',
+    'FIXTURE USER EXAMPLE',
+    'fixtureuser_example',
+    name.toUpperCase(),
+  ]) assert.deepEqual(hits(`see ${variant}`), ['HYG-USER'], JSON.stringify(variant));
+  assert.equal(normalizeText('a\u200bb\uff21'), 'abA');
+});
+
+test('H-61: home paths in every OS form fail (WSL mount, case variants, file URL, drive letters, tilde user)', () => {
+  const U = cat('Us', 'ers');
+  for (const p of [
+    `/mnt/c/${U}/bob/x`, cat('/HO', 'ME/bob'), `file:///${U}/bob`, `C:/${U}/bob`, `\\\\?\\C:\\${U}\\bob`,
+    cat('/ho', 'me/bob'), cat('~', 'bob/x'), cat('/mnt/c/', U.toLowerCase(), '/bob'), cat('/ro', 'ot/'),
+  ]) assert.ok(hits(`cd ${p}`).includes('HYG-HOMEPATH'), p);
+  assert.deepEqual(hits('cd /var/lib/app'), []);
+});
+
+test('H-67..H-73: credential shapes: underscore tokens, flags, camelCase names, XML, JSON, dollar and brace values', () => {
+  const val = 'Zk3pQ9vL2xR7tW5y';
+  const cases = [
+    piece('sk_li', 've_', val, 'B8nM4cD6'),
+    piece('--pass', 'word ', val),
+    piece('db', 'Password = "', val, '"'),
+    piece('<pass', 'word>', val, '</pass', 'word>'),
+    piece('{"pass', 'word":"', val, '"}'),
+    piece('pass', 'word = $', val),
+    piece('pass', 'word = {', val, '}'),
+    piece('Authorization: Bea', 'rer ', val, 'B8nM4cD6'),
+    piece('xgh', 'p_', val, 'B8nM4cD6fH1jK0aS'),
+  ];
+  for (const c of cases) assert.deepEqual(hits(c), ['HYG-CRED'], c);
+  // Closed placeholder set still passes.
+  assert.deepEqual(hits(piece('pass', 'word = ${PASSWORD_FROM_ENV}')), []);
+  assert.deepEqual(hits(piece('pass', 'word = <your-password>')), []);
+});
+
+test('H-49: a credential split across consecutive added lines with a continuation is joined', () => {
+  assert.deepEqual(rules(scanWith([piece('x = "gh', 'p_" +'), '"Zk3pQ9vL2xR7tW5yB8nM4cD6fH1jK0aS"'])), ['HYG-CRED']);
+});
+
+test('H-74: a fake marker exempts only a wholly fake value and only in a test path', () => {
+  const glued = piece('pass', 'word = "FAKE', 'Zk3pQ9vL2xR7tW5yB8nM4', '"');
+  assert.deepEqual(hits(glued, 'test/a.test.mjs'), ['HYG-CRED']);
+  assert.deepEqual(hits(piece('pass', 'word = "FAKEFAKE1234567890"'), 'test/a.test.mjs'), []);
+  assert.deepEqual(hits(piece('pass', 'word = "FAKEFAKE1234567890"'), 'docs/a.md'), ['HYG-CRED']);
+  assert.equal(isTestFixturePath('test/a.test.mjs'), true);
+  assert.equal(isTestFixturePath('docs/a.md'), false);
+  assert.equal(isTestFixturePath('test/notes.md'), false);
+});
+
+test('H-75: allowlist entries need the full sha256 and match path and value exactly', () => {
+  const secret = piece('s', 'k-', 'Zk3pQ9vL2xR7tW5yB8nM4cD6');
+  assert.match(fakeHash(secret), /^[0-9a-f]{64}$/);
+  const allowlist = { testFakes: [{ path: 'test/x.test.mjs', hash: fakeHash(secret) }] };
+  const run = (path, text) => scanHygiene({ addedLines: [{ path, line: 1, text }], paths: [], metadata: {}, denylist, allowlist });
+  assert.deepEqual(run('test/x.test.mjs', 'k = ' + secret), []);
+  assert.deepEqual(rules(run('test/x.test.mjs', 'k = ' + secret + 'Q')), ['HYG-CRED']);
+  assert.deepEqual(rules(run('test/y.test.mjs', 'k = ' + secret)), ['HYG-CRED']);
+});
+
+test('H-83: findings carry a per-run keyed hash; low-entropy matches carry no length', () => {
+  const text = `connect to ${PRIVATE_IP}`;
+  const run = (salt) => scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text }], paths: [], metadata: {}, denylist, salt });
+  const a = run('salt-one-0123456789');
+  const b = run('salt-one-0123456789');
+  const c = run('salt-two-0123456789');
+  assert.deepEqual(a, b);
+  assert.notEqual(a[0].hash, c[0].hash);
+  assert.notEqual(a[0].hash, hashText(PRIVATE_IP));
+  assert.equal(a[0].length, 0);
+  // Without a salt every run draws a fresh key.
+  const d = scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text }], paths: [], metadata: {}, denylist });
+  const e = scanHygiene({ addedLines: [{ path: 'docs/a.md', line: 1, text }], paths: [], metadata: {}, denylist });
+  assert.notEqual(d[0].hash, e[0].hash);
+  // A credential keeps a bucketed length (multiple of 16).
+  const cred = scanWith([piece('api', '_key = "', 'Zk3pQ9vL2xR7tW5yB8nM4cD6', '"')]);
+  assert.equal(cred[0].length % 16, 0);
+  assert.throws(() => scanHygiene({ addedLines: [], denylist, salt: 'x' }), HygieneError);
+});
+
+test('H-84: finding output escapes control characters, escapes and newlines in the path', () => {
+  const evil = 'docs/a\u001b[31m\nb.md';
+  const f = scanHygiene({ addedLines: [{ path: evil, line: 2, text: `ping ${PUBLIC_IP}` }], paths: [], metadata: {}, denylist });
+  const out = formatFindings(f);
+  assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(out));
+  assert.equal(out.split('\n').length, 1);
+  // Bidi controls, line separators and backslashes are escaped too.
+  const g = formatFindings([{ ruleId: 'HYG-IP', path: 'a\u202eb\u2028c\\d', line: 1, length: 0, hash: 'abcdef01' }]);
+  assert.ok(!/[\u202e\u2028\\]{1}[^\\]/.test(g.replace(/\\\\|\\u\{[0-9a-f]+\}/g, '')));
+  // A forged rule id or hash is not echoed.
+  assert.equal(formatFindings([{ ruleId: 'x\ny', path: 'p', line: 1, length: 0, hash: 'zz\n' }]), 'HYG-UNKNOWN p:1 len=0 hash=?');
+  assert.equal(formatFindings('nope'), '');
+});
+
+test('H-85: a path with a denylisted name or a control character is reported under a keyed hash', () => {
+  const bad = 'docs/fixtureuser-example\u001b/x.md';
+  const f = scanHygiene({ addedLines: [{ path: bad, line: 1, text: `ping ${PUBLIC_IP}` }], paths: [], metadata: {}, denylist, salt: TEST_RUN_ID });
+  assert.match(f[0].path, /^<path:[0-9a-f]{8}>$/);
+  assert.ok(!JSON.stringify(f).includes('fixtureuser'));
+});
+
+test('H-86: decoder caps fail closed with a block-type HygieneError, never a silent skip', () => {
+  const manyPercent = 'a '.repeat(300) + '%41%42%43 '.repeat(300);
+  assert.throws(() => scanLines(manyPercent), (err) => err instanceof HygieneError && err.code === 'LIMIT' && /^gate0: [a-z ]+$/.test(err.message));
+  const manyBlobs = Array.from({ length: 300 }, (_, i) => Buffer.from(`plain words number ${i} here`).toString('base64')).join(' ');
+  assert.throws(() => scanLines(manyBlobs), (err) => err instanceof HygieneError && err.code === 'LIMIT');
+  // Nesting deeper than the cap is not decoded further but stays bounded and fast.
+  let blob = `x ${PUBLIC_IP}`;
+  for (let i = 0; i < 12; i++) blob = Buffer.from(blob).toString('base64');
+  const t0 = Date.now();
+  scanLines('y ' + blob);
+  assert.ok(Date.now() - t0 < 5000);
+});
+
+test('H-87: an expired deadline stops the scan with a HygieneError', () => {
+  assert.throws(() => scanWith(['ping 1'], { path: 'docs/a.md' }) && scanHygiene({
+    addedLines: [{ path: 'docs/a.md', line: 1, text: 'x' }], paths: [], metadata: {}, denylist, deadline: Date.now() - 1,
+  }), (err) => err instanceof HygieneError);
+});
+
+test('H-77: a host-run denylist file must be trusted: owner-only, regular, not relative, not a symlink', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hyg-'));
+  try {
+    mkdirSync(join(dir, 'gate0'));
+    const file = join(dir, 'gate0', 'denylist.json');
+    writeDeny(file, JSON.stringify({ hostnames: { distinctive: ['somehost-example'] } }));
+    assert.deepEqual(loadDenylist({ env: { RT_HOME: dir }, hostRun: true }).hostnames.distinctive, ['somehost-example']);
+    chmodSync(file, 0o666);
+    assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true }), (err) => err.code === 'DENYLIST_UNTRUSTED' && !err.message.includes(dir));
+    chmodSync(file, 0o600);
+    assert.throws(() => loadDenylist({ env: { RT_HOME: 'relative/dir' }, hostRun: true }), (err) => err instanceof HygieneError);
+    // A denylist inside the reviewed repository is refused.
+    assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true, repoRoot: dir }), (err) => err.code === 'DENYLIST_UNTRUSTED');
+    // Oversized file.
+    writeDeny(file, JSON.stringify({ hostnames: { distinctive: ['x'.repeat(300 * 1024)] } }));
+    assert.throws(() => loadDenylist({ env: { RT_HOME: dir }, hostRun: true }), (err) => err instanceof HygieneError);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('H-79: regex denial of service: long single lines of many shapes scan fast', () => {
+  const shapes = ['1234567890', '.', 'a@', '%41', 'deadbeef', ':', 'password=', '\u200b', '\uff21', 'abcDefGhi_', 'a', '1.2.',
+    ' ', '\n', '<a ', 'user ', 'ssh ', 'eyJhbGciOi', '://a@', '&#46;', '[.]', '0x', 'sk_live_', 'ab:cd:'];
+  for (const shape of shapes) {
+    const line = shape.repeat(Math.ceil(50000 / shape.length)).slice(0, 50000);
+    for (const path of ['docs/a.md', 'src/a.mjs']) {
+      const t0 = Date.now();
+      try { scanHygiene({ addedLines: [{ path, line: 1, text: line }], paths: [], metadata: {}, denylist }); } catch (err) { assert.ok(err instanceof HygieneError); }
+      assert.ok(Date.now() - t0 < 3000, `shape ${JSON.stringify(shape)} took ${Date.now() - t0} ms`);
+    }
+  }
+  // Whitespace runs after a keyword (quadratic backtracking before the rewrite).
+  for (const pre of ['user', 'password', 'ssh', '<a', 'host']) {
+    const t0 = Date.now();
+    scanLines(pre + ' '.repeat(50000) + 'x');
+    assert.ok(Date.now() - t0 < 3000, pre);
+  }
+});
+
+test('H-79: a 500 KB line is scanned in bounded time and still finds a late secret', () => {
+  const t0 = Date.now();
+  const f = scanLines('x'.repeat(500000) + ' ' + piece('gh', 'p_', 'Zk3pQ9vL2xR7tW5yB8nM4cD6fH1jK0aS'));
+  assert.deepEqual(rules(f), ['HYG-CRED']);
+  assert.ok(Date.now() - t0 < 10000);
 });
