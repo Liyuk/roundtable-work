@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync } from 'node:fs';
 import fsp, { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -154,6 +154,18 @@ test('recovery: owner ids are unique per process start', withRoot(async (root) =
 }));
 
 // ---- R7: the lock is per work root ----
+test('lock: runtime lock is stored under .roundtable/state and ignored by git', withRoot(async (root) => {
+  const result = await runQueue({ workRoot: root, queue: [], handler: okHandler });
+  assert.equal(result.status, 'ok');
+  const lockDir = join(root, '.roundtable', 'state', 'rtd.lock.d');
+  assert.ok((await readdir(lockDir)).some((name) => /^epoch-\d+$/.test(name)));
+  await assert.rejects(readdir(join(root, 'rtd.lock.d')), { code: 'ENOENT' });
+
+  const ignored = spawnSync('git', ['check-ignore', '--no-index', '.roundtable/state/rtd.lock.d/epoch-1'], { encoding: 'utf8' });
+  assert.equal(ignored.status, 0, ignored.stderr || ignored.stdout);
+  assert.match(ignored.stdout, /^\.roundtable(?:\/state\/rtd\.lock\.d\/)?/m);
+}));
+
 test('lock: two runQueue on the same work root with different queue files -> second is locked', withRoot(async (root) => {
   await writeFile(join(root, 'q1.json'), JSON.stringify(['1']));
   await writeFile(join(root, 'q2.json'), JSON.stringify(['2']));
@@ -414,7 +426,7 @@ for (const hungPhase of ['developing', 'testing']) {
     let lockReleased = false;
     do {
       after = JSON.parse(await readFile(stateFile(root, 'A'), 'utf8'));
-      const lockDir = join(root, 'rtd.lock.d');
+      const lockDir = join(root, '.roundtable', 'state', 'rtd.lock.d');
       const epoch = (await readdir(lockDir)).filter((n) => /^epoch-\d+$/.test(n)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6))).at(-1);
       lockReleased = JSON.parse(await readFile(join(lockDir, epoch), 'utf8')).released === true;
       if (after.lease === null && lockReleased) break;
@@ -523,7 +535,8 @@ test('timeout: an abandoned handler keeps the queue lock and issue lease until i
   assert.equal(started, 1);
   const recorded = await readFile(stateFile(root, 'A'), 'utf8');
   assert.equal(JSON.parse(recorded).lease?.owner.startsWith('rtd-'), true, 'the lease was not released');
-  assert.equal(JSON.parse(await readFile(join(root, 'rtd.lock.d', (await readdir(join(root, 'rtd.lock.d'))).filter((n) => /^epoch-/.test(n)).sort().pop()), 'utf8')).released, undefined, 'the lock was not released');
+  const lockDir = join(root, '.roundtable', 'state', 'rtd.lock.d');
+  assert.equal(JSON.parse(await readFile(join(lockDir, (await readdir(lockDir)).filter((n) => /^epoch-/.test(n)).sort().pop()), 'utf8')).released, undefined, 'the lock was not released');
 
   // Before the lock TTL ends: busy, no handler, state untouched.
   const second = await runQueue(opts);

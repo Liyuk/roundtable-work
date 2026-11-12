@@ -100,7 +100,7 @@ export async function runQueue({
   if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
-  const lock = await acquireLock({ lockPath: await store.confinement.resolve('rtd.lock.d'), owner, now, ttlMs: lockTtlMs });
+  const lock = await acquireLock({ lockPath: await store.confinement.resolve('.roundtable/state/rtd.lock.d'), owner, now, ttlMs: lockTtlMs });
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
 

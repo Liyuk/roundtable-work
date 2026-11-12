@@ -3,5 +3,6 @@ node_modules/
 .env
 .env.*
 !.env.example
+.roundtable/state/rtd.lock.d/
 .roundtable/
 /.claude/agents/rt-*.md

@@ -12,8 +12,8 @@ import { acquireLock } from '../../runtime/lib/lock.mjs';
 
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-renewal-'));
-// Lock files live in `rtd.lock.d/epoch-<n>`: a successor process writes the next epoch; the holder is the highest one.
-const lockDirOf = (root) => join(root, 'rtd.lock.d');
+// Runtime lock files live in `.roundtable/state/rtd.lock.d/epoch-<n>`; the holder is the highest epoch.
+const lockDirOf = (root) => join(root, '.roundtable', 'state', 'rtd.lock.d');
 const epochsIn = (root) => readdirSync(lockDirOf(root)).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
 const plantEpoch = (root, rec) => writeFileSync(join(lockDirOf(root), `epoch-${Math.max(0, ...epochsIn(root)) + 1}`), JSON.stringify(rec));
 const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch-${Math.max(...epochsIn(root))}`), 'utf8'));
@@ -111,7 +111,7 @@ import { join } from 'node:path';
 export default async function ({ phase }) {
   if (process.env.RT_TEST_MODE === 'steal') {
     // A successor takes the lock over: it writes the next epoch file.
-    const dir = join(process.env.RT_TEST_ROOT, 'rtd.lock.d');
+    const dir = join(process.env.RT_TEST_ROOT, '.roundtable', 'state', 'rtd.lock.d');
     const next = Math.max(0, ...readdirSync(dir).map((n) => /^epoch-(\\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number)) + 1;
     writeFileSync(join(dir, 'epoch-' + next), JSON.stringify({ owner: 'thief', pid: process.pid, token: 't', acquiredAt: Date.now(), expiresAt: Date.now() + 60000 }));
   }
@@ -160,7 +160,7 @@ test('bad lock timing is rejected up front with a TypeError; valid and default t
       await assert.rejects(runQueue({ workRoot: root, queue: ['1'], handler, ...opts }), TypeError, JSON.stringify(opts));
     }
     // Rejected before anything ran: no lock file, no state.
-    await assert.rejects(readFile(join(root, 'rtd.lock.d', 'epoch-1')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(root, '.roundtable', 'state', 'rtd.lock.d', 'epoch-1')), { code: 'ENOENT' });
     await assert.rejects(readFile(join(root, 'state', '1.json')), { code: 'ENOENT' });
     // Exactly half a lease, and the defaults, are valid.
     assert.equal((await runQueue({ workRoot: root, queue: ['1'], handler, lockTtlMs: 1000, lockRenewMinMs: 500 })).status, 'ok');
