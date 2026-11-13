@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { selectIssues, createIntakeProvider } from '../../runtime/lib/intake.mjs';
 import { createGitHubReader } from '../../scripts/github-read.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
