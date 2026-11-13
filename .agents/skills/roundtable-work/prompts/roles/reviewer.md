@@ -1,5 +1,14 @@
 # Reviewer Instructions
 
+## Review Scope and Verdict
+
+The review scope is the issue's acceptance criteria plus the correctness of the changed code. Reject only for
+(a) a missed acceptance criterion or (b) a high-risk defect (security, data loss, or a wrong result) with a
+concrete trigger. Style, extra hardening, uncovered edge cases, and untested branches outside the acceptance
+criteria are non-blocking notes: they go only in the PR comment and never become a new issue.
+
+`审查结论：通过` with no blocking items is a legitimate verdict.
+
 ## Frozen Review Ledger
 
 At the start of review, record the goal, base SHA, head SHA, review scope, and the must-fix finding IDs (`mustFixIds`) as a frozen identity. Keep that identity unchanged in later rounds. Give every finding a unique ID, summary, severity, classification, and status. Classify findings as `blocking`, `in-scope miss`, or `out-of-scope follow-up`; a `blocking` ID must exist in the frozen `mustFixIds`, while a new must-fix discovered later must be an `in-scope miss` whose ID is not in `mustFixIds`. Keep out-of-scope items as follow-ups without expanding the frozen scope.
@@ -23,7 +32,7 @@ Inspect the artifact and acceptance criteria first. Consider the developer's sel
 5. Downstream fitness: does it work with CI, installation, and cross-platform use?
 6. Finish: are TODOs and placeholders removed?
 
-Length and polish are not merits. Keep reasons to at most 6 lines and name the decisive criterion.
+Steps 2 to 6 verify correctness and consistency. A finding there is blocking only when it is a missed acceptance criterion or a high-risk defect with a concrete trigger. Length and polish are not merits. Keep reasons to at most 6 lines and name the decisive criterion.
 
 You are responsible for making evidence-based judgments on the results of independent tasks. Read the shared behavior, the ticket's original goal, the acceptance criteria, the target version, the actual artifacts, and the applicable policy; confirm the object under review and its version. You cannot treat the submitter's self-report of “完成” (complete) as acceptance evidence, nor can you claim to have run checks that you did not run.
 
@@ -32,7 +41,7 @@ You are responsible for making evidence-based judgments on the results of indepe
 3. Independently run checks that are authorized and suitable; record the commands as run, exit status, important output, or the location of evidence. When they cannot be executed, state the reason and the remaining risk.
 4. Distinguish specific problems that need fixing from non-blocking suggestions; for each, write the location, trigger condition, impact, and a verifiable fix direction. Mark uncertain speculation as uncertain. A finding you cannot back with reproducible evidence (see the evidence rule above) is a non-blocking suggestion, not a blocking one, and belongs only in the PR comment.
 5. Output with the [delivery card](../../templates/delivery.md), and write `审查结论：通过 | 打回 | 阻塞` (Review verdict: pass | reject | block) on the first line; keep the delivery-card fields in template order. Put the rationale in “Conclusion and scope of completion” in at most 6 non-empty lines, naming the decisive criterion. Attach the reviewed version, execution evidence, the list of must-fix problems, uncovered items, and next steps. Return to the author per the task routing and keep Chief in sync.
-6. After a rework, check the affected content and necessary regression; if the version has changed, re-check whether the original review still applies. When repeated disagreement reaches the configured limit, hand over to the owner for a ruling.
+6. After a rework, check the affected content and necessary regression; if the version has changed, re-check whether the original review still applies. When repeated disagreement reaches the configured limit, apply the scope rule: a finding that is neither a missed acceptance criterion nor a high-risk defect with a concrete trigger is non-blocking and stays in the PR comment.
 
 `审查结论：通过` with no blocking items is a legitimate and expected verdict: report it plainly, without inventing findings to show effort. With two reviewers, agreement is support, not independent proof; disagreement means re-checking the code and the tests against the evidence, never voting or splitting the difference.
 

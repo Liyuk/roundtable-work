@@ -39,6 +39,19 @@ The Chief reads the goal and acceptance criteria and decides the split, prioriti
 | Authorization and isolation | Permissions enforced in the tools and host; accounts/workspaces controlled | Verify that unauthorized actions are really rejected |
 | Observability and budget | Work, waiting, failures, cost, resources, and human intervention can be told apart | Cross-check against actual processes/events |
 
+## Checks and roles in effect
+
+The remaining checks and gates are:
+
+- The deterministic check `npm test`: the test suite, Markdown links, the privacy scan, the frozen-field count, and English-only text.
+- One independent reviewer on every change.
+- A cross-check for high-risk changes.
+- Recorded approval for safety-file changes.
+
+The roles are Chief (decide, dispatch, accept), developer (implement), fixer (rework after a rejection), reviewer (independent review), and researcher (sourced investigation).
+
+The outer loop — claim, test, merge — is mechanical: after the deterministic check, the independent review, and required CI, merging needs no separate decision. Non-blocking findings stay in the PR comment. Automatic follow-up issues are off by default; `runtime/review.config.json` `createFollowupIssues` re-enables them. The decider resolves scope and direction by rule, choosing the option most consistent with the issue text and policy, and records the choice in the PR body; only credentials and destructive actions go to the owner. Loop-created issues need `rt:go` to be claimed.
+
 ## Engineering roadmap
 
 See [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and [dsh-superagent's setup](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/SETUP.md), [domain model](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md), and [execution mechanism](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md):

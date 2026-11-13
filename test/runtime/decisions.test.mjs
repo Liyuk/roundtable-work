@@ -234,6 +234,7 @@ test('decompose rejects traversal and creates labeled children with durable IDs 
   await applyDecision({ decision: { decision: 'decompose', drafts: ['child.json'] }, issue: { number: 7 }, store, client: tracker, repoRoot });
   assert.deepEqual((await store.load('7')).decomposition.childIds, [81]);
   assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 81 && e[2] === 'rt:self'));
+  assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 81 && e[2] === 'rt:go'));
   assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 7 && e[2] === 'rt:hold'));
 }));
 
