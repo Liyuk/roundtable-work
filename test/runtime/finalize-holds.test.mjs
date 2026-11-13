@@ -247,6 +247,145 @@ test('a handler-supplied mergeHold field never turns a successful merge into a h
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+/**
+ * The same world wired through the production adapter (`autoMerge.production === true`), with a pause
+ * provider and controllable merge result / main status, so a failure *after* the squash can be driven.
+ */
+function productionWorld(overrides = {}) {
+  const w = world(overrides);
+  w.state.squashResult = { mergeCommit: 'abcdef0123456789' };
+  w.state.main = { head: 'abcdef0123456789', status: 'green' };
+  w.state.mainThrows = false;
+  w.pause = {
+    writes: [], value: null,
+    async get() { return this.value; },
+    async put(value) { this.writes.push(value); this.value = value === null ? null : structuredClone(value); },
+  };
+  w.github = {
+    ...w.github,
+    async getPullRequest(pr) {
+      w.calls.push(`pr:${pr}`);
+      return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : 'reverthead', files: w.state.changedFiles };
+    },
+    async squashMerge(pr, options) { w.calls.push(['squash', pr, options]); return structuredClone(w.state.squashResult); },
+    async mainStatus() {
+      w.calls.push('mainStatus');
+      if (w.state.mainThrows) throw new Error('main status provider offline');
+      return structuredClone(w.state.main);
+    },
+    async openRevertPullRequest() { w.calls.push('revert-pr'); return { number: 91, head: 'reverthead' }; },
+    async createIssue() { w.calls.push('bug'); return { number: 92 }; },
+  };
+  w.context = { async get({ recovery } = {}) {
+    w.calls.push('context');
+    return recovery
+      ? { pr: 91, head: 'reverthead', tree: 'reverttree', highRisk: false, changedFiles: ['runtime/rtd.mjs'] }
+      : { pr: 90, head: w.state.head, tree: w.state.tree, highRisk: w.state.highRisk, changedFiles: w.state.changedFiles };
+  } };
+  w.autoMerge = createProductionAdapter({
+    pause: w.pause, github: w.github, gates: w.gates, context: w.context,
+    git: { async createRevert() { w.calls.push('revert'); return { sha: '1234567' }; } },
+  });
+  return w;
+}
+
+// --- post-merge bookkeeping failures are never finalize failures ---
+
+test('a post-merge invalid mergeCommit ends done with main paused and never squashes again', async () => {
+  for (const result of [{}, { mergeCommit: 'not-a-sha' }]) {
+    const root = await tmp();
+    try {
+      const w = productionWorld();
+      w.state.squashResult = result;
+      const first = await wake(root, w);
+      assert.deepEqual([first.outcomes[0].status, first.outcomes[0].class, first.outcomes[0].decision], ['done', 'ok', 'done'], JSON.stringify(result));
+      assert.match(first.outcomes[0].reason, /^merge monitor: provider github\.squashMerge must return mergeCommit SHA/, JSON.stringify(result));
+      const store = await createStateStore({ workRoot: root });
+      const s = await store.load('53');
+      assert.equal(s.status, 'done', JSON.stringify(result));
+      assert.equal(s.recovery, null, 'the wake is not interrupted');
+      assert.equal(s.lastEvent.type, 'ok', JSON.stringify(result));
+      assert.match(s.lastEvent.detail, /^merge monitor: /, 'the bookkeeping failure is kept, not dropped');
+      assert.deepEqual((await store.load('rt-main-monitor')).mainMonitor, { stage: 'merging' }, 'main stays paused, no invented SHA');
+      assert.deepEqual(w.pause.value, { stage: 'merging' }, 'the pause backend keeps the same hold');
+      assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash' }]], 'the pull request is squashed once');
+
+      // A later pass starts no new work while main is paused and never re-squashes that pull request.
+      w.calls.length = 0;
+      const phases = [];
+      const second = await wake(root, w, phases);
+      assert.deepEqual(phases, [], JSON.stringify(result));
+      assert.deepEqual(second.outcomes, [], JSON.stringify(result));
+      assert.deepEqual(second.skipped.map((entry) => entry.reason), ['main_paused'], JSON.stringify(result));
+      assert.equal(w.squashes().length, 0, JSON.stringify(result));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('a post-merge mainStatus failure ends done and keeps the monitoring record for the next pass', async () => {
+  for (const [name, breakIt] of Object.entries({
+    throws: (w) => { w.state.mainThrows = true; },
+    'invalid shape': (w) => { w.state.main = { status: 'unknown' }; },
+  })) {
+    const root = await tmp();
+    try {
+      const w = productionWorld();
+      breakIt(w);
+      const first = await wake(root, w);
+      assert.deepEqual([first.outcomes[0].status, first.outcomes[0].class, first.outcomes[0].decision], ['done', 'ok', 'done'], name);
+      assert.match(first.outcomes[0].reason, /^merge monitor: /, name);
+      const store = await createStateStore({ workRoot: root });
+      const s = await store.load('53');
+      assert.equal(s.status, 'done', name);
+      assert.equal(s.recovery, null, name);
+      assert.equal(s.lastEvent.type, 'ok', name);
+      assert.match(s.lastEvent.detail, /^merge monitor: /, name);
+      const monitor = { stage: 'monitoring', mergeCommit: 'abcdef0123456789' };
+      assert.deepEqual((await store.load('rt-main-monitor')).mainMonitor, monitor, name);
+      assert.deepEqual(w.pause.value, monitor, name);
+      assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash' }]], name);
+
+      // A later pass with a good provider still runs monitoring: green clears the monitor, nothing is re-squashed.
+      w.state.mainThrows = false;
+      w.state.main = { head: '2222222222222222', status: 'green' };
+      w.calls.length = 0;
+      const phases = [];
+      const second = await wake(root, w, phases);
+      assert.deepEqual(phases, [], name);
+      assert.equal(second.outcomes[0].status, 'done', `${name}: the issue stays terminal done`);
+      assert.equal(w.squashes().length, 0, name);
+      assert.equal((await store.load('rt-main-monitor')).mainMonitor, null, `${name}: green clears the monitor`);
+      assert.equal(w.pause.value, null, name);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('a red main after a post-merge mainStatus failure runs the revert path on the next pass', async () => {
+  const root = await tmp();
+  try {
+    const w = productionWorld();
+    w.state.mainThrows = true;
+    assert.equal((await wake(root, w)).outcomes[0].status, 'done');
+    const store = await createStateStore({ workRoot: root });
+    assert.deepEqual((await store.load('rt-main-monitor')).mainMonitor, { stage: 'monitoring', mergeCommit: 'abcdef0123456789' });
+
+    w.state.mainThrows = false;
+    w.state.main = { head: 'abcdef0123456789', status: 'red' };
+    w.state.reviewHead = 'reverthead'; // the recovery gates review the revert head
+    const phases = [];
+    const second = await wake(root, w, phases);
+    assert.deepEqual(phases, [], 'main is recovered before new work starts');
+    assert.deepEqual(second.outcomes, []);
+    assert.deepEqual(second.skipped.map((entry) => entry.reason), ['main_paused']);
+    assert.deepEqual(w.squashes().map((entry) => entry[1]), [90, 91], 'the revert pull request is merged, the issue PR is not');
+    for (const call of ['revert', 'revert-pr', 'bug']) assert.ok(w.calls.includes(call), call);
+    assert.equal(w.count('gate0'), 2, 'the issue merge and the revert merge each ran the gates');
+    const monitor = (await store.load('rt-main-monitor')).mainMonitor;
+    assert.equal(monitor.recovery.revertMerged.done, true);
+    assert.notEqual(w.pause.value, null, 'main stays paused after the revert');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 // --- runGates hold discriminator (hold: resumable wait, no merge side effect) ---
 
 function gateFixture(overrides = {}) {
