@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { createStateStore, StaleEpochError } from '../../runtime/lib/state.mjs';
 import { classify } from '../../runtime/lib/classify.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
@@ -503,6 +503,7 @@ const runChild = (args, env = {}) => new Promise((resolve) => {
 for (const phase of ['developing', 'finalizing']) {
   test(`timeout: the CLI exits on its own after a never-settling ${phase} handler, with the timeout recorded in state`, { timeout: 30000 }, withRoot(async (root) => {
     await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '1' }]));
+    if (phase === 'finalizing') await (await createStateStore({ workRoot: root })).checkpoint('1', 'reviewing');
     await writeFile(join(root, 'handler.mjs'), `export default ({ phase }) => (phase === ${JSON.stringify(phase)} ? new Promise(() => {}) : Promise.resolve({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' }));\n`);
     const r = await runChild([RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--phase-timeout-ms', '200', '--grace-ms', '50']);
     assert.equal(r.signal, null, 'the process ended by itself');

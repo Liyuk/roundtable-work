@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../runtime/rtd.mjs';
+import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { acquireLock, hostId, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 
@@ -73,9 +73,14 @@ async function cliSetup(mode) {
   const root = await tmp();
   await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '49' }]));
   await writeFile(join(root, 'handler.mjs'), HANDLER_SOURCE);
+  await writeFile(join(root, 'runner.mjs'), `import { runQueue, exitCodeFor } from ${JSON.stringify(new URL('./observation-fixture.mjs', import.meta.url).href)};
+import handler from './handler.mjs';
+const result = await runQueue({ workRoot: process.env.RT_TEST_ROOT, queue: 'queue.json', handler });
+console.log(JSON.stringify(result)); process.exitCode = exitCodeFor(result);
+`);
   const children = [];
   const run = () => {
-    const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')],
+    const child = spawn(process.execPath, [join(root, 'runner.mjs')],
       { env: { ...process.env, RT_TEST_ROOT: root, RT_TEST_MODE: mode }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);
     return child;
