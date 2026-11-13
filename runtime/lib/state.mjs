@@ -57,6 +57,11 @@ export function normalizeState(id, raw) {
   if (state.lease !== null && !(isPlainObject(state.lease) && typeof state.lease.owner === 'string' && Number.isFinite(state.lease.expiresAt))) throw new CorruptStateError(`State for ${id} has a malformed lease`);
   if (state.heartbeatAt !== null && !Number.isFinite(state.heartbeatAt)) throw new CorruptStateError(`State for ${id} has an invalid heartbeatAt`);
   if (!isCount(state.lockEpoch)) throw new CorruptStateError(`State for ${id} has an invalid lockEpoch`);
+  if (state.pendingDecision !== undefined && state.pendingDecision !== null
+    && (!isPlainObject(state.pendingDecision) || !isPlainObject(state.pendingDecision.decision)
+      || state.pendingDecision.decision.decision !== 'ask' || !isCount(state.pendingDecision.attempts))) {
+    throw new CorruptStateError(`State for ${id} has a malformed pending decision`);
+  }
   return state;
 }
 

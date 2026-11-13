@@ -16,6 +16,7 @@ import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
 import { createWorktreeManager } from './lib/worktree.mjs';
 import { applyDecision, resumeAfterOwnerReply } from './lib/decisions.mjs';
+import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
@@ -126,6 +127,7 @@ export async function runQueue({
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -659,7 +661,9 @@ export async function runQueue({
         const guard = withTimeout(phaseTimeoutMs, () => phaseAbort.abort(new Error('phase timed out')));
         try {
           running = Promise.resolve().then(async () => {
-            const result = await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal, routing });
+            const routeType = { developing: 'development', testing: 'verification', reviewing: 'review', finalizing: 'chief' }[phase];
+            const result = await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal, routing,
+              ...(modelRouter ? { model: modelRouter(routeType) } : {}) });
             if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
             const executeMerge = async () => {
               if (await readMonitor()) throw new Error('Main is paused');
@@ -698,7 +702,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, merge: { squash: guardedSquash }, models, routing });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, merge: { squash: guardedSquash }, models, routing, modelRouter });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;
@@ -787,16 +791,16 @@ export async function runQueue({
         }
 
         if (cls === 'ok' || cls === 'review_passed') {
-          const decision = step.decisionFile ?? step.decision;
+          const decision = state.pendingDecision?.decision ?? step.decisionFile ?? step.decision;
           if (phase === 'finalizing' && decision !== undefined) {
-            if (!githubClient && typeof decision !== 'string' && !['do', 'continue'].includes(decision?.decision)) throw new TypeError('non-queue decisions require the injected tracker client');
             const observation = await checkObservation(item, phase, step);
             if (!observation.allowed) {
               const reason = `observation_failed:${observation.mismatches.map((m) => m.reason).join(',')}`;
               await store.update(id, (s) => { s.status = 'waiting_external'; s.lastEvent = { type: 'observation_failed', at: now(), detail: reason }; });
               return out('waiting_external', { class: 'observation_failed', reason, decision: 'wait', observation });
             }
-            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, repoRoot: item.worktree ?? repoRoot, now });
+            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, repoRoot: item.worktree ?? repoRoot, now,
+              escalationAdapter, modelRouter, maxEscalationAttempts });
             if (isTerminal(decisionResult.status)) await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
             return out(decisionResult.status, { class: 'decision', decision: decisionResult.decision });
           }
@@ -958,13 +962,16 @@ async function main(argv) {
   const models = { reviewer: facts.roles.reviewer.model, crossCheck: facts.roles.crosscheck.model };
   const handlerModule = await import(pathToFileURL(resolve(args.handler)).href);
   const handler = handlerModule.default;
+  const escalationAdapter = handlerModule.escalationAdapter;
+  const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
+  const maxEscalationAttempts = escalationAdapter ? escalationAttemptBudget(process.env) : undefined;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
   if (args.github && !args.providers) {
     console.error('GitHub workers require --providers MODULE with production gate, GitHub and git providers');
     return 2;
   }
   const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) result.triage = queue.triage;
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {
