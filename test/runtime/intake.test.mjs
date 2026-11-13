@@ -181,6 +181,22 @@ test('tracker intake includes rt:ask and rt:blocked issues and carries owner ide
   assert.deepEqual(items[0].labels.map(label => label.name), ['rt:ask']);
 });
 
+test('corrupt state for an unrelated issue does not abort intake', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('corrupt-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot: root });
+    await mkdir(join(root, 'state'), { recursive: true });
+    await writeFile(join(root, 'state', '99.json'), '{invalid');
+    const entries = [issue(1, ['type:bug']), issue(99, ['type:feature'], { author: { login: 'other' } }), issue(2)];
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => entries }, { includeRunning: true });
+    assert.deepEqual((await provider({ store, client: {} })).map(item => item.number), [1, 2]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('held parents release only with valid durable child IDs after every child closes', async () => {
   const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
   await mkdir(base, { recursive: true });

@@ -1,4 +1,5 @@
 import { resumeDecomposition } from './decisions.mjs';
+import { CorruptStateError } from './state.mjs';
 
 const excluded = new Set(['rt:owner', 'rt:deferred', 'rt:running', 'rt:ask', 'rt:blocked', 'rt:hold', 'rt:ready-to-merge']);
 const labelsOf = issue => (issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
@@ -122,7 +123,9 @@ export function createIntakeProvider(reader, { includeRunning = false } = {}) {
       for (const issue of issues) {
         const number = Number(issue.number);
         if (!Number.isSafeInteger(number) || number < 1) continue;
-        let state = await store.load(String(number));
+        let state;
+        try { state = await store.load(String(number)); }
+        catch (error) { if (signal?.aborted || !(error instanceof CorruptStateError)) throw error; continue; }
         if (state.decomposition?.status === 'creating') {
           recovering.add(number);
           await resumeDecomposition({ number, store, client });
