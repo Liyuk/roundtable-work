@@ -51,6 +51,11 @@ test('comment cursor and later same-head CI failure are each recorded once witho
   assert.equal(second.record.suggestedAction, 'inspect_ci_failure');
   const third = await recorder.poll();
   assert.deepEqual(third.events, []);
+  assert.deepEqual((await f.store.load()).events, [
+    { type: 'new_comment', cursor: '17' },
+    { type: 'ci_success', headSha: 'head-a' },
+    { type: 'ci_failure', headSha: 'head-a' },
+  ]);
   assert.equal(f.record.seenCheckCursors.filter((cursor) => cursor === 'head-a:failure').length, 1);
   assert.equal(f.calls.filter((call) => Array.isArray(call) && call[0] === 'comments').length, 3);
 });
@@ -64,6 +69,12 @@ test('base movement and behind state are classified and persisted', async () => 
   const result = await recorder.poll();
   assert.deepEqual(result.events.map((event) => event.type), ['base_moved', 'branch_behind']);
   assert.deepEqual([result.record.baseSha, result.record.ahead, result.record.behind], ['base-b', 2, 3]);
+  await createAftercareRecorder({ enabled: true, client: f.client, store: f.store }).poll();
+  assert.deepEqual((await f.store.load()).events, [
+    { type: 'ci_success', headSha: 'head-a' },
+    { type: 'base_moved' },
+    { type: 'branch_behind', behind: 3, ahead: 2 },
+  ]);
 });
 
 test('merged and closed pull requests emit terminal state once and stop subsequent polling', async () => {

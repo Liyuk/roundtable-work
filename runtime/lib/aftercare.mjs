@@ -67,7 +67,11 @@ export function createAftercareRecorder({ enabled = false, client, store }) {
       }
       next.suggestedAction = terminal ? 'stop' : events.some((event) => event.type === 'ci_failure') ? 'inspect_ci_failure' : 'observe';
 
-      // Persist only cursors, hashes, conclusions, and numeric relation state; never comment text or author/repo data.
+      next.events = [...(prior.events ?? []), ...events.filter((event) =>
+        event.type !== 'branch_behind' || prior.baseSha !== pr.baseSha || prior.headSha !== pr.headSha ||
+        prior.ahead !== compare.ahead || prior.behind !== compare.behind)];
+
+      // Persist only classifications, cursors, hashes, conclusions, and numeric relation state.
       await store.save(next);
       return { enabled: true, record: next, events };
     },
