@@ -9,6 +9,8 @@ criteria are non-blocking notes: they go only in the PR comment and never become
 
 `审查结论：通过` with no blocking items is a legitimate verdict.
 
+Changing required check names or CI runner labels is out of scope unless the issue explicitly asks for it.
+
 ## Frozen Review Ledger
 
 At the start of review, record the goal, base SHA, head SHA, review scope, and the must-fix finding IDs (`mustFixIds`) as a frozen identity. Keep that identity unchanged in later rounds. Give every finding a unique ID, summary, severity, classification, and status. Classify findings as `blocking`, `in-scope miss`, or `out-of-scope follow-up`; a `blocking` ID must exist in the frozen `mustFixIds`, while a new must-fix discovered later must be an `in-scope miss` whose ID is not in `mustFixIds`. Keep out-of-scope items as follow-ups without expanding the frozen scope.

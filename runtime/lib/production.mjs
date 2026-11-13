@@ -10,6 +10,9 @@
  * `mergeCommit` SHA to resolve a merge whose outcome was unknown, and a closed pull request must report
  * `merged: false` to be treated as unmerged. github.squashMerge resolves only after a successful squash and returns
  * { mergeCommit: <SHA> }; github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
+ * github.requiredGreen returns `true` or `{ green, status? }`, where `status: 'cancelled'` means cancelled-only
+ * required CI; a provider may also expose the optional `rerunCancelled(pr)` used to re-run such CI. That method is
+ * optional by design: without it a cancelled answer keeps today's fail-closed behaviour.
  * Recovery providers return the revert result, { number, head } for the PR, and { number } for the
  * bug issue. GitHub and git effects are owned by the supplied providers.
  *
