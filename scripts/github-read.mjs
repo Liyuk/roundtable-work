@@ -4,6 +4,18 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const runGh = async (args, { signal } = {}) => JSON.parse((await exec('gh', args, { signal, maxBuffer: 16 * 1024 * 1024 })).stdout);
 
+/** GitHub's closing keywords followed by an issue number, optionally repository-qualified. */
+const CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)\b/gi;
+const linkedIssueNumbers = (body, fullName) => {
+  const numbers = new Set();
+  for (const match of body.matchAll(CLOSING_REFERENCE)) {
+    if (match[1] && match[1].toLowerCase() !== fullName) continue;
+    const number = Number(match[2]);
+    if (Number.isSafeInteger(number) && number > 0) numbers.add(number);
+  }
+  return numbers;
+};
+
 /** Only these fixed read-only gh commands can be invoked; no shell is involved. */
 export function createGitHubReader({ repo, run = runGh } = {}) {
   const repository = repo ? ['--repo', repo] : [];
@@ -13,8 +25,31 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
       if (!result?.owner?.login) throw new TypeError('Repository owner is missing');
       return result.owner.login;
     },
+    async getRepository(options) {
+      const result = await run(['repo', 'view', ...(repo ? [repo] : []), '--json', 'owner,name'], options);
+      if (!result?.owner?.login || !result?.name) throw new TypeError('Repository identity is missing');
+      return { owner: result.owner.login, name: result.name };
+    },
+    async listRecentMerges(options) {
+      const result = await run(['pr', 'list', ...repository, '--state', 'merged', '--limit', '10', '--json', 'number,title,mergedAt,headRefName,baseRefName'], options);
+      if (!Array.isArray(result)) throw new TypeError('Invalid merged pull requests');
+      return result.map(({ number, title, mergedAt, headRefName, baseRefName }) => ({ number, title, mergedAt, headRefName, baseRefName }));
+    },
+    async listLinkedPullRequests({ owner, name } = {}, options) {
+      if (typeof owner !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(owner) || typeof name !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(name)) throw new TypeError('Invalid repository identity');
+      const fullName = `${owner}/${name}`;
+      // `gh pr list` exposes no closing-reference field, so bodies are filtered locally; only numbers and titles are returned.
+      const result = await run(['pr', 'list', '--repo', fullName, '--state', 'all', '--limit', '1000', '--json', 'number,title,body'], options);
+      if (!Array.isArray(result) || result.length >= 1000) throw new TypeError('Invalid linked pull requests');
+      const linked = {};
+      for (const pr of result) {
+        if (!Number.isSafeInteger(pr?.number) || typeof pr?.title !== 'string' || typeof pr?.body !== 'string') throw new TypeError('Invalid linked pull request');
+        for (const issue of linkedIssueNumbers(pr.body, fullName.toLowerCase())) (linked[issue] ??= []).push({ number: pr.number, title: pr.title });
+      }
+      return linked;
+    },
     async listIssues(options) {
-      const result = await run(['issue', 'list', ...repository, '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,body,url'], options);
+      const result = await run(['issue', 'list', ...repository, '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,updatedAt,body,url'], options);
       if (!Array.isArray(result) || result.length >= 1000) throw new TypeError('Issue list is invalid or may be truncated');
       return result;
     },

@@ -128,7 +128,7 @@ test('GitHub adapter uses the selected repository for each read', async () => {
   await reader.getIssue(42);
   assert.deepEqual(calls, [
     ['repo', 'view', 'selected-owner/selected-repo', '--json', 'owner'],
-    ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,body,url'],
+    ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,updatedAt,body,url'],
     ['issue', 'view', '42', '--repo', 'selected-owner/selected-repo', '--json', 'state'],
   ]);
 });

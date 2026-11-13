@@ -19,6 +19,7 @@ import { applyDecision, resumeAfterOwnerReply } from './lib/decisions.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
+import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 export const EXIT_LOCKED = 75;
@@ -101,8 +102,8 @@ export function exitCodeFor(result) {
  */
 export async function runQueue({
   workRoot, queue, handler, now = Date.now, owner = `rtd-${process.pid}-${randomUUID()}`,
-  leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000, lockTtlMs = 5 * 60_000, lockRenewMinMs = 1000,
-  maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
+  leaseTtlMs = 60_000, heartbeatTimeoutMs = RUNTIME_DEFAULTS.heartbeatTimeoutMs, lockTtlMs = 5 * 60_000, lockRenewMinMs = 1000,
+  maxWakesPerIssue = RUNTIME_DEFAULTS.maxWakesPerIssue, maxDeveloperAttempts = RUNTIME_DEFAULTS.maxDeveloperAttempts, maxReviewerUnavailable = RUNTIME_DEFAULTS.maxReviewerUnavailable,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge,
 }) {
@@ -658,6 +659,11 @@ function withTimeout(ms, onTimeout) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'status') {
+    const { output } = await runStatus({ argv: argv.slice(1) });
+    console.log(output);
+    return 0;
+  }
   let args;
   try {
     args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
