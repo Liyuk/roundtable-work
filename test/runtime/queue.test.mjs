@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, stat, writeFile, symlink, rm } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readQueue, TERMINAL_STATES } from '../../runtime/lib/queue.mjs';
 import { createConfinement, PathEscapeError } from '../../runtime/lib/paths.mjs';
+import { createStateStore } from '../../runtime/lib/state.mjs';
 import { runQueue } from '../../runtime/rtd.mjs';
 
 // Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
@@ -13,6 +16,7 @@ const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-queue-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
 process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-queue-'));
+const rtd = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const okHandler = (calls = []) => async ({ item, phase }) => {
   calls.push(`${item.id}:${phase}`);
   return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\nlooks fine' : 'ok' };
@@ -70,6 +74,23 @@ test('clean start: runQueue drives each issue through every phase to done, in qu
     assert.deepEqual(result.outcomes.map((o) => [o.id, o.status]), [['1', 'done'], ['2', 'done']]);
     assert.deepEqual(calls.slice(0, 4), ['1:developing', '1:testing', '1:reviewing', '1:finalizing']);
     assert.deepEqual(result.skipped.map((s) => s.id), ['3']);
+    assert.ok((await stat(join(root, 'state'))).isDirectory());
+    assert.equal((await (await createStateStore({ workRoot: root })).load('1')).status, 'done');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI reads a confined queue and creates state in the work root', async () => {
+  const root = await tmp();
+  try {
+    await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: 'cli' }]));
+    await writeFile(join(root, 'handler.mjs'), `export default async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });`);
+    const child = spawnSync(process.execPath, [rtd, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')], { encoding: 'utf8' });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(JSON.parse(child.stdout).outcomes[0].status, 'done');
+    assert.ok((await stat(join(root, 'state'))).isDirectory());
+    assert.equal((await (await createStateStore({ workRoot: root })).load('cli')).status, 'done');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
