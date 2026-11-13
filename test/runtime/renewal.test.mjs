@@ -124,7 +124,7 @@ export default async function ({ phase }) {
 }
 `);
     const cli = (mode) => new Promise((resolve) => {
-      const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')],
+      const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs')],
         { env: { ...process.env, RT_TEST_ROOT: root, RT_TEST_LOCK_DIR: lockDirOf(root), RT_TEST_MODE: mode }, stdio: ['ignore', 'pipe', 'ignore'] });
       let out = '';
       child.stdout.on('data', (d) => { out += d; });

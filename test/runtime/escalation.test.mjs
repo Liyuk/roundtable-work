@@ -48,6 +48,12 @@ test('daemon retries a persisted disputed decision on a later invocation', async
 
 test('CLI passes the validated escalation route and injected adapter to runtime without live calls', async () => fixture(async root => {
   await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '71' }]));
+  const role = (model, tier) => ({ harness: 'pi', model, tier });
+  await writeFile(join(root, 'routing.json'), JSON.stringify({ version: 1, windows: [{
+    id: 'test', from: '2000-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z',
+    roles: { chief: role('provider/standard', 'standard'), developer: role('provider/standard', 'standard'), fixer: role('provider/standard', 'standard'),
+      reviewer: role('provider/reviewer', 'strong'), researcher: role('provider/standard', 'standard'), crosscheck: role('provider/audit', 'strong') },
+  }] }));
   await writeFile(join(root, 'handler.mjs'), `
 import { writeFileSync } from 'node:fs';
 export const observationClients = {
@@ -70,7 +76,7 @@ export default async ({ phase }) => phase === 'finalizing'
     RT_MODEL: 'provider/standard', RT_REVIEWER_MODEL: 'provider/reviewer',
     RT_DECIDER_MODEL: 'provider/escalation', RT_CROSSCHECK_MODEL: 'provider/audit',
     RT_ALLOWED_MODELS: 'provider/standard,provider/reviewer,provider/escalation,provider/audit' };
-  const cli = spawnSync(process.execPath, [CLI, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')], { cwd: ROOT, env, encoding: 'utf8' });
+  const cli = spawnSync(process.execPath, [CLI, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--routing', join(root, 'routing.json')], { cwd: ROOT, env, encoding: 'utf8' });
   assert.equal(cli.status, 0, cli.stderr);
   assert.equal(JSON.parse(cli.stdout).outcomes[0].status, 'queued');
   assert.deepEqual(JSON.parse(await readFile(resultPath, 'utf8')), { decision: question, model: 'provider/escalation', attempt: 1 });

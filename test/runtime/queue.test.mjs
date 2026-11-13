@@ -89,7 +89,7 @@ test('CLI reads a confined queue and creates state in the work root', async () =
       const sha = 'a'.repeat(40);
       export const observationClients = { expectedSha: () => sha, issue: { get: async () => ({ state: 'open', labels: ['rt:running'] }) }, worktree: { inspect: async () => ({ dirty: false }) }, git: { head: async () => sha, commit: async () => ({ sha }) }, evidence: { checks: async () => ({ sha, conclusion: 'success' }), review: async () => ({ sha, conclusion: 'approved' }) } };
       export default async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });`);
-    const child = spawnSync(process.execPath, [rtd, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')], { encoding: 'utf8' });
+    const child = spawnSync(process.execPath, [rtd, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs')], { encoding: 'utf8' });
     assert.equal(child.status, 0, child.stderr);
     assert.equal(JSON.parse(child.stdout).outcomes[0].status, 'done');
     assert.ok((await stat(join(root, 'state'))).isDirectory());
@@ -141,7 +141,7 @@ test('queue read cannot follow an ancestor swapped after validation', async () =
   try {
     await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: 'missing' }]));
     await writeFile(join(root, 'handler.mjs'), `export default async () => ({ exitCode: 0, output: 'ok' });`);
-    const child = spawnSync(process.execPath, [rtd, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')], { encoding: 'utf8' });
+    const child = spawnSync(process.execPath, [rtd, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs')], { encoding: 'utf8' });
     assert.equal(JSON.parse(child.stdout).outcomes[0].status, 'waiting_external');
     assert.equal((await (await createStateStore({ workRoot: root })).load('missing')).checkpoint, null);
   } finally { await rm(root, { recursive: true, force: true }); }

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { runGates, recoverRedMain } from '../../runtime/lib/gates.mjs';
 import { createMergeEntryPoint } from '../../runtime/lib/merge.mjs';
 
@@ -9,6 +10,7 @@ function fixture(overrides = {}) {
   const input = {
     issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true,
     changedFiles: ['runtime/lib/gates.mjs'], pr: 90,
+    models: { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' },
     state: { async get(id) { calls.push('state:get'); return records.get(id); }, async put(id, value) { calls.push(`state:put:${value.passed.at(-1)}`); records.set(id, structuredClone(value)); } },
     gates: {
       async gate0() { calls.push('gate0'); return { passed: true }; },
@@ -56,7 +58,7 @@ test('runs deterministic gates, CI, then single squash entry point without a hum
 });
 
 test('review and cross-check gates use their configured work-type routes', async () => {
-  const f = fixture({ modelRouter: type => ({ review: 'review-config', 'cross-check': 'audit-config' })[type] });
+  const f = fixture({ models: {}, modelRouter: type => ({ review: 'review-config', 'cross-check': 'audit-config' })[type] });
   let reviewModel; let crossCheckModel;
   f.input.gates = {
     async gate0() { return true; },
@@ -200,7 +202,7 @@ test('safety-file diff requires recorded escalation-model approval for current h
 });
 
 test('cross-check model approval cannot authorize a safety-file merge', async () => {
-  const f = fixture({ changedFiles: ['.github/workflows/check.yml'],
+  const f = fixture({ changedFiles: ['.github/workflows/check.yml'], models: {},
     modelRouter: type => ({ review: 'review-model', escalation: 'escalation-model', 'cross-check': 'cross-check-model' })[type],
     github: { async recordedEscalationApproval() { return { approved: true, model: 'cross-check-model', head: 'abc1234' }; }, async addLabel() {} },
   });
@@ -213,7 +215,7 @@ test('approved safety-file change records approval at gate time and merges throu
   const f = fixture({
     changedFiles: files,
     github: {
-      async recordedEscalationApproval() { f.calls.push('approval'); return { approved: true, model: 'gpt-6.1-terra', head: 'abc1234' }; },
+      async recordedEscalationApproval() { f.calls.push('approval'); return { approved: true, model: 'model-crosscheck', head: 'abc1234' }; },
       async addLabel(_pr, label) { f.calls.push(`label:${label}`); },
     },
   });
@@ -231,6 +233,58 @@ test('approved safety-file change records approval at gate time and merges throu
     },
   });
   assert.deepEqual(await entry(90, { issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true, passed: ['gate0', 'gate1', 'gate2', 'ci'], ciGreen: true }), { merged: { method: 'squash' } });
+});
+
+test('runGates passes the routed reviewer and cross-check models to the gates', async () => {
+  const seen = {};
+  const f = fixture({
+    gates: {
+      async gate0() { return true; },
+      async reviewer(arg) { seen.reviewer = arg.model; return { passed: true, head: 'abc1234' }; },
+      async crossCheck(arg) { seen.crossCheck = arg.model; return true; },
+    },
+  });
+  assert.equal((await runGates(f.input)).status, 'merged');
+  assert.deepEqual(seen, { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' });
+});
+
+test('a high-risk diff without a configured cross-check model fails closed, not as a hold', async () => {
+  const f = fixture({ models: {} });
+  const result = await runGates(f.input);
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.gate, 'gate2');
+  assert.equal(result.hold, false);
+  assert.match(result.reason, /cross-check model/);
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('a safety-file change without a configured cross-check model is a clear hold', async () => {
+  const f = fixture({ highRisk: false, changedFiles: ['.github/workflows/check.yml'], models: {} });
+  const result = await runGates(f.input);
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.gate, 'safety-approval');
+  assert.equal(result.hold, true);
+  assert.match(result.reason, /cross-check model/);
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('the safety approval must name the routed cross-check model', async () => {
+  const f = fixture({
+    changedFiles: ['.github/workflows/check.yml'],
+    github: {
+      async recordedEscalationApproval() { f.calls.push('approval'); return { approved: true, model: 'model-other', head: 'abc1234' }; },
+      async addLabel(_pr, label) { f.calls.push(`label:${label}`); },
+    },
+  });
+  const result = await runGates(f.input);
+  assert.equal(result.gate, 'safety-approval');
+  assert.equal(result.hold, true);
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('gates source contains no hard-coded model literal', async () => {
+  const source = await readFile(new URL('../../runtime/lib/gates.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /model:\s*'/);
 });
 
 test('red-main recovery pauses claims and merges, opens revert PR, and files bug issue', async () => {
