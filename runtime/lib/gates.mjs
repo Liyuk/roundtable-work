@@ -90,9 +90,21 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
       return failed('safety-approval', 'Safety-file changes require a configured cross-check model for recorded approval', true);
     }
     const approval = await github.recordedEscalationApproval(pr);
-    if (approval?.approved !== true || approval?.model !== models.crossCheck || approval?.head !== head) {
+    const modelApproved = approval?.approved === true && approval?.model === models.crossCheck && approval?.head === head;
+    const live = modelApproved || typeof github.getPullRequest !== 'function' ? null : await github.getPullRequest(pr);
+    const ownerApproved = live?.head === head && typeof live.ownerLogin === 'string' &&
+      Array.isArray(live.comments) && live.comments.some((comment) =>
+        typeof comment?.author?.login === 'string' && comment.author.login.toLowerCase() === live.ownerLogin.toLowerCase() &&
+        typeof comment.body === 'string' && comment.body.includes('APPROVE-MERGE') && comment.body.includes(head));
+    if (!modelApproved && !ownerApproved) {
       await github.addLabel(pr, 'rt:ready-to-merge');
-      return failed('safety-approval', 'Safety-file changes require recorded cross-check-model approval for this head', true);
+      const fixable = approval?.reject === true && approval.inScope === true && approval.safetyGuardWeakening !== true &&
+        typeof approval.fix === 'string' && approval.fix.trim() !== '' && typeof approval.reason === 'string' && approval.reason.trim() !== '';
+      if (fixable) {
+        await github.createComment(pr, `<!-- rt:safety-finding -->\nReason: ${approval.reason}\nFix: ${approval.fix}`);
+        return { ...await failed('safety-approval', approval.reason), fix: approval.fix, retryable: true };
+      }
+      return failed('safety-approval', 'Safety-file changes require recorded escalation-model or current-head owner approval', true);
     }
   }
   let checks;

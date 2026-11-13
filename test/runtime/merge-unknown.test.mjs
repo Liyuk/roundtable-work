@@ -30,6 +30,7 @@ function providers(overrides = {}) {
     async squashMerge(pr) { return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {},
     async recordedEscalationApproval() {},
+    async createComment() {},
     async mainStatus() { return { head: 'abcdef0123456789', status: 'green' }; },
     async openRevertPullRequest() { return { number: 91, head: 'reverthead' }; },
     async createIssue() { return { number: 92 }; },

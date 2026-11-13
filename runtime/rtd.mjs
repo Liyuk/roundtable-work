@@ -706,6 +706,7 @@ export async function runQueue({
                 // issue waits instead of failing closed. The passed gates are already persisted, so the next
                 // wake resumes at finalizing and reuses them (only live CI and the safety approval are rechecked).
                 if (gated.hold === true) return { ...result, mergeHold: { gate: gated.gate, reason: gated.reason } };
+                if (gated.retryable === true) return { ...result, retryableGateFailure: true, retryFinding: { reason: gated.reason, fix: gated.fix }, exitCode: 1, output: `${gated.gate}: ${gated.reason}` };
                 // A genuine gate failure (an explicit not-pass verdict, or a merge entry point rejection such as
                 // a stale head or a changed safety-file set) stays fail-closed: interrupted, decision ask.
                 throw new Error(`${gated.gate}: ${gated.reason}`);
@@ -812,7 +813,7 @@ export async function runQueue({
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
           // After a phase timeout the abandoned handler may still be running: never start the retry in this wake.
-          const next = await store.retryDeveloper(id, cls, reason, phaseTimedOut ? { suspendPhase: phase } : undefined);
+          const next = await store.retryDeveloper(id, cls, reason, { ...(phaseTimedOut ? { suspendPhase: phase } : {}), retryFinding: step.retryFinding });
           if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop', verdict.ruleRelated === true);
           if (phaseTimedOut) return out('queued', { class: cls, reason, decision: 'wait', phase: PHASES[0] });
           phase = PHASES[0];
