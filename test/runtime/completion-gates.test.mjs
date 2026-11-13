@@ -24,7 +24,7 @@ async function runCase(failure) {
     }, github,
   };
   try {
-    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' }) });
+    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, models: { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' }, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' }) });
     return { result, calls };
   } finally { await rm(root, { recursive: true, force: true }); }
 }

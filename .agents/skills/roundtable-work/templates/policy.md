@@ -21,10 +21,12 @@
 
 | Work Type | Execution Method | Model Tier | Verified |
 | --- | --- | --- | --- |
-| Implement / Fix | Harness sub-session | Inherit | Not verified |
-| Independent Review | Another harness sub-session | Inherit | Not verified |
+| Implement / Fix | Harness sub-session | From routing table | Not verified |
+| Independent Review | Another harness sub-session | From routing table | Not verified |
 
 "Verified" only changes to date and evidence location after actually running through once.
+
+Role-to-model routing comes from the single active routing table; this policy neither sets nor bans individual model names. A model listed in the injected routing facts block is expected and allowed; an unlisted model is a configuration error to record, not a reason to stop.
 
 ## Triggering and Wake-up
 

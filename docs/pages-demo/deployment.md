@@ -67,6 +67,12 @@ npm run check                 # the Markdown link check on its own
 
 To change the page content, edit [`scenario.json`](scenario.json) (or the hand-written `site/styles.css` and `site/app.js`), run `npm run build:site`, then `npm test`, and commit the regenerated `site/index.html` with the change. The CI drift check fails if you forget.
 
+### Runtime status output
+
+Status is local by default: `node runtime/rtd.mjs status` writes text to standard output, and `--json` writes JSON there. To create an optional HTML file, use `node runtime/rtd.mjs status --html -o ./status.html`. Any status file written with `-o` or `--publish FILE` is scanned before writing; a privacy finding exits non-zero and leaves an existing destination unchanged. `--publish FILE` can be combined with `--json` or `--html` to choose the output format. Publishing fails closed when the scan rejects the rendered output.
+
+If a maintainer separately chooses a Pages path, keep the status artifact in an isolated staging directory and publish only the reviewed status file through a separately configured Pages artifact. Do not copy runtime output into this demo's `site/` or enable Pages as part of local status generation. The default remains local, and passing the scan is a safety check rather than a substitute for review.
+
 ### Validation
 
 `npm run validate:site` fails when:
