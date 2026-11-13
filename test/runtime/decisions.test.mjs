@@ -38,6 +38,7 @@ test('parses the frozen decision-file lines and rejects malformed terms or ask c
   assert.deepEqual(parseDecisionFile('DECISION=do\nContinue the task\n'), { decision: 'do', reason: 'Continue the task' });
   assert.deepEqual(parseDecisionFile('DECISION=continue\nContinue the task\n'), { decision: 'continue', reason: 'Continue the task' });
   assert.deepEqual(parseDecisionFile('DECISION=ask\nscope\nMay I expand scope?\n'), { decision: 'ask', category: 'scope', question: 'May I expand scope?' });
+  assert.deepEqual(parseDecisionFile('DECISION=decompose\nchild.json\nsecond/child.json'), { decision: 'decompose', drafts: ['child.json', 'second/child.json'] });
   assert.deepEqual(parseDecisionFile('DECISION=out-of-scope\nOutside the authorized scope'), { decision: 'out-of-scope', reason: 'Outside the authorized scope' });
   for (const input of ['DECISION=merge\nReason', 'DECISION=ask\nmerge\nQuestion', 'DECISION=ask\nscope']) assert.throws(() => parseDecisionFile(input), TypeError);
 });
@@ -170,4 +171,18 @@ test('out-of-scope comments and applies rt:blocked without closing the issue', a
     ['removeLabel', 9, 'rt:running'],
   ]);
   assert.equal(issue.state, 'OPEN'); assert.equal((await store.load('9')).status, 'out-of-scope');
+}));
+
+test('decompose rejects traversal and creates labeled children with durable IDs and parent hold', async () => fixture(async root => {
+  const { writeFile } = await import('node:fs/promises');
+  const repoRoot = join(root, 'repo'); await mkdir(repoRoot);
+  await writeFile(join(repoRoot, 'child.json'), JSON.stringify({ title: 'Child task', body: 'Do the child work.' }));
+  const store = await createStateStore({ workRoot: root });
+  const tracker = client(); tracker.createIssue = async (title, body) => { tracker.events.push(['createIssue', title, body]); return { number: 81 }; };
+  await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['../escape.json'] }, issue: { number: 7 }, store, client: tracker, repoRoot }), /safe relative/);
+  assert.deepEqual(tracker.events, []);
+  await applyDecision({ decision: { decision: 'decompose', drafts: ['child.json'] }, issue: { number: 7 }, store, client: tracker, repoRoot });
+  assert.deepEqual((await store.load('7')).decomposition.childIds, [81]);
+  assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 81 && e[2] === 'rt:self'));
+  assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 7 && e[2] === 'rt:hold'));
 }));

@@ -141,6 +141,26 @@ test('tracker intake includes stale running issues for durable recovery', async 
   assert.equal(items.length, 1); assert.deepEqual(items[0].labels, ['rt:running']); assert.equal(items[0].body, issue.body);
 });
 
+test('daemon intake selects and releases a held parent when its recorded children close', async () => {
+  const { root, repo, workRoot } = await fixture();
+  try {
+    const held = { id: '70', number: 70, state: 'OPEN', author: { login: 'owner' }, title: '[A] parent', body: '', createdAt: '2020-01-01', labels: ['type:feature', 'rt:hold'] };
+    const events = [];
+    const client = { removeLabel: async (n, label) => { events.push(['removeLabel', n, label]); held.labels = held.labels.filter(x => x !== label); }, addLabel: async () => {}, createComment: async () => {}, listComments: async () => [] };
+    const { createIntakeProvider } = await import('../../runtime/lib/intake.mjs');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot });
+    await store.update('70', s => { s.status = 'waiting_external'; s.decomposition = { status: 'waiting', childIds: [701] }; });
+    const queue = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [held], getIssue: async () => ({ state: 'CLOSED' }) }, { includeRunning: true });
+    const phases = [];
+    const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue, handler: async ctx => { phases.push(ctx.phase); return handler(ctx); } });
+    assert.deepEqual(events, [['removeLabel', 70, 'rt:hold']]);
+    assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
+    assert.equal(result.outcomes[0].id, '70');
+    assert.equal(result.outcomes[0].status, 'done');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('tracker writer exposes only claim-related operations and selects the repository', async () => {
   const { createGitHubWriter } = await import('../../scripts/github-read.mjs');
   const calls = [];

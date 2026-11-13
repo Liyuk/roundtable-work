@@ -1,16 +1,21 @@
+import { readFile, realpath } from 'node:fs/promises';
+import { relative, resolve, sep } from 'node:path';
+
 const ASK_CATEGORIES = Object.freeze(['scope', 'credentials', 'destructive', 'direction']);
-const DECISION_TYPES = Object.freeze(['do', 'continue', 'ask', 'out-of-scope']);
+const DECISION_TYPES = Object.freeze(['do', 'continue', 'ask', 'out-of-scope', 'decompose']);
 
 /** Validate the machine-readable end-of-turn decision before changing durable or tracker state. */
 export function validateDecision(value) {
-  if (!plain(value) || !DECISION_TYPES.includes(value.decision)) throw new TypeError('decision must be do, continue, ask, or out-of-scope');
-  const allowed = value.decision === 'ask'
-    ? ['decision', 'category', 'question']
-    : ['decision', 'reason'];
+  if (!plain(value) || !DECISION_TYPES.includes(value.decision)) throw new TypeError('decision must be do, continue, ask, out-of-scope, or decompose');
+  const allowed = value.decision === 'ask' ? ['decision', 'category', 'question']
+    : value.decision === 'decompose' ? ['decision', 'drafts'] : ['decision', 'reason'];
   if (Object.keys(value).some(key => !allowed.includes(key))) throw new TypeError('decision has unexpected fields');
   if (value.decision === 'ask') {
     if (!ASK_CATEGORIES.includes(value.category)) throw new TypeError('ask category must be scope, credentials, destructive, or direction');
     if (!nonEmpty(value.question)) throw new TypeError('ask question is required');
+  } else if (value.decision === 'decompose') {
+    if (!Array.isArray(value.drafts) || value.drafts.length === 0 || value.drafts.length > 20 || value.drafts.some(path => typeof path !== 'string' || !path.trim())) throw new TypeError('decompose drafts must be a non-empty array of at most 20 relative paths');
+    return { decision: value.decision, drafts: value.drafts.map(path => path.trim()) };
   } else if (!nonEmpty(value.reason)) throw new TypeError(`${value.decision} reason is required`);
   return { ...value };
 }
@@ -20,15 +25,16 @@ export function parseDecisionFile(source) {
   if (typeof source !== 'string') throw new TypeError('decision file must be text');
   const lines = source.replace(/\r\n/g, '\n').split('\n');
   while (lines.length && lines.at(-1) === '') lines.pop();
-  const match = /^DECISION=(do|continue|ask|out-of-scope)$/.exec(lines.shift() ?? '');
-  if (!match) throw new TypeError('decision file must start with DECISION=do, DECISION=continue, DECISION=ask, or DECISION=out-of-scope');
+  const match = /^DECISION=(do|continue|ask|out-of-scope|decompose)$/.exec(lines.shift() ?? '');
+  if (!match) throw new TypeError('decision file must start with DECISION=do, DECISION=continue, DECISION=ask, DECISION=out-of-scope, or DECISION=decompose');
   const decision = match[1];
   if (decision === 'ask') return validateDecision({ decision, category: lines.shift(), question: lines.join('\n') });
+  if (decision === 'decompose') return validateDecision({ decision, drafts: lines });
   return validateDecision({ decision, reason: lines.join('\n') });
 }
 
 /** Apply one validated decision using durable state and the caller's injected tracker client. */
-export async function applyDecision({ decision: raw, issue, store, client, now = Date.now }) {
+export async function applyDecision({ decision: raw, issue, store, client, repoRoot, now = Date.now }) {
   const decision = typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw);
   const number = issue?.number ?? issue?.id;
   if (!Number.isSafeInteger(Number(number)) || Number(number) < 1) throw new TypeError('issue number is required');
@@ -36,6 +42,17 @@ export async function applyDecision({ decision: raw, issue, store, client, now =
   const queueNext = ['do', 'continue'].includes(decision.decision);
   if (!queueNext && (!client || typeof client.createComment !== 'function' || typeof client.addLabel !== 'function' || typeof client.removeLabel !== 'function')) throw new TypeError('injected tracker client is required');
   const id = String(number);
+
+  if (decision.decision === 'decompose') {
+    if (typeof repoRoot !== 'string' || typeof client.createIssue !== 'function') throw new TypeError('repoRoot and injected tracker createIssue are required for decompose');
+    const drafts = await Promise.all(decision.drafts.map(path => readDraft(repoRoot, path)));
+    await store.update(id, state => {
+      state.decomposition = { status: 'creating', drafts, childIds: [], inFlight: false };
+      state.status = 'waiting_external';
+    });
+    const childIds = await resumeDecomposition({ number, store, client, now });
+    return { status: 'waiting_external', decision: decision.decision, childIds };
+  }
 
   if (queueNext) {
     await store.update(id, state => {
@@ -64,6 +81,53 @@ export async function applyDecision({ decision: raw, issue, store, client, now =
     state.lastEvent = { type: `decision_${decision.decision}`, at: now(), detail: asking ? decision.question : decision.reason };
   });
   return { status: asking ? 'waiting_person' : 'out-of-scope', decision: decision.decision };
+}
+
+/** Continue only creation steps whose previous tracker outcome is known. */
+export async function resumeDecomposition({ number, store, client, now = Date.now }) {
+  const id = String(number);
+  let decomposition = (await store.load(id)).decomposition;
+  if (decomposition?.status !== 'creating' || !Array.isArray(decomposition.drafts)
+    || decomposition.drafts.length === 0 || decomposition.drafts.length > 20
+    || decomposition.drafts.some(draft => !plain(draft) || !nonEmpty(draft.title) || !nonEmpty(draft.body))
+    || !Array.isArray(decomposition.childIds) || decomposition.childIds.length > decomposition.drafts.length
+    || decomposition.childIds.some(child => !Number.isSafeInteger(child) || child < 1)
+    || new Set(decomposition.childIds).size !== decomposition.childIds.length) return null;
+  await client.addLabel(number, 'rt:hold');
+  for (const child of decomposition.childIds) await client.addLabel(child, 'rt:self');
+  // A failed or interrupted create may have succeeded remotely. Never retry it blindly.
+  if (decomposition.inFlight !== false) return null;
+  while (decomposition.childIds.length < decomposition.drafts.length) {
+    const draft = decomposition.drafts[decomposition.childIds.length];
+    await store.update(id, state => { state.decomposition.inFlight = true; });
+    const created = await client.createIssue(draft.title, draft.body);
+    const child = Number(created?.number ?? created?.id);
+    if (!Number.isSafeInteger(child) || child < 1 || decomposition.childIds.includes(child)) throw new TypeError('tracker did not return a valid child issue number');
+    await store.update(id, state => { state.decomposition.childIds.push(child); state.decomposition.inFlight = false; });
+    decomposition = (await store.load(id)).decomposition;
+    await client.addLabel(child, 'rt:self');
+  }
+  const childIds = decomposition.childIds;
+  await store.update(id, state => {
+    state.decomposition.status = 'waiting'; state.status = 'waiting_external';
+    state.lastEvent = { type: 'decision_decompose', at: now(), detail: childIds };
+  });
+  return childIds;
+}
+
+async function readDraft(repoRoot, path) {
+  if (path.includes('\\') || path.includes('\0') || path.startsWith('/') || /^[A-Za-z]:/.test(path) || path.split('/').includes('..')) throw new TypeError(`Draft path must be safe relative: ${path}`);
+  const root = await realpath(resolve(repoRoot));
+  const absolute = resolve(root, path);
+  const rel = relative(root, absolute);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || rel.split(sep).includes('..')) throw new TypeError(`Draft path must be safe relative: ${path}`);
+  const actual = await realpath(absolute);
+  const actualRel = relative(root, actual);
+  if (actualRel === '..' || actualRel.startsWith(`..${sep}`)) throw new TypeError(`Draft path must be safe relative: ${path}`);
+  let draft;
+  try { draft = JSON.parse(await readFile(actual, 'utf8')); } catch (error) { throw new TypeError(`Draft ${path} must be readable JSON: ${error.message}`); }
+  if (!plain(draft) || !nonEmpty(draft.title) || !nonEmpty(draft.body)) throw new TypeError(`Draft ${path} requires non-empty title and body`);
+  return { title: draft.title.trim(), body: draft.body.trim() };
 }
 
 /** Resume a paused issue only after its owner has posted after the pause comment. */

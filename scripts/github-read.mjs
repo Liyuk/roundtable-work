@@ -25,7 +25,7 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
   };
 }
 
-/** Restricted issue mutations and comment lookup for daemon claims. */
+/** Tracker writes used by daemon claims and decomposition, plus claim comment lookup. */
 export function createGitHubWriter({ repo, run = async (args) => (await exec('gh', args, { maxBuffer: 16 * 1024 * 1024 })).stdout } = {}) {
   const repository = repo ? ['--repo', repo] : [];
   const id = (number) => {
@@ -34,6 +34,12 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
     return String(value);
   };
   return {
+    createIssue: async (title, body) => {
+      const output = await run(['issue', 'create', ...repository, '--title', title, '--body', body]);
+      const match = String(output).match(/(?:\/issues\/|#)(\d+)\s*$/);
+      if (!match) throw new TypeError('GitHub did not return a child issue number');
+      return { number: Number(match[1]) };
+    },
     addLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--add-label', label]),
     removeLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--remove-label', label]),
     createComment: (number, body) => run(['issue', 'comment', id(number), ...repository, '--body', body]),

@@ -179,3 +179,129 @@ test('tracker intake includes rt:ask and rt:blocked issues and carries owner ide
   assert.deepEqual(items[0].author, paused.author);
   assert.deepEqual(items[0].labels.map(label => label.name), ['rt:ask']);
 });
+
+test('held parents release only with valid durable child IDs after every child closes', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('held-', base).pathname);
+  try {
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot: root });
+    const held = issue(90, ['type:feature', 'rt:hold']);
+    const unrelated = issue(91, ['type:feature', 'rt:hold']);
+    await store.update('90', s => { s.status = 'waiting_external'; s.decomposition = { status: 'waiting', childIds: [101, 102] }; });
+    await store.update('91', s => { s.status = 'waiting_external'; });
+    let statuses = { 101: 'CLOSED', 102: 'OPEN' };
+    const events = [];
+    const client = { removeLabel: async (id, label) => events.push(['removeLabel', id, label]) };
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [held, unrelated], getIssue: async id => ({ state: statuses[id] }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.deepEqual(events, []);
+    statuses[102] = 'CLOSED';
+    const items = await provider({ store, client });
+    assert.deepEqual(items.map(item => item.number), [90]);
+    assert.deepEqual(events, [['removeLabel', 90, 'rt:hold']]);
+    assert.equal((await store.load('90')).status, 'queued');
+    assert.equal((await store.load('90')).decomposition.status, 'released');
+    assert.equal((await store.load('91')).status, 'waiting_external');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('recovers a held parent after child labeling fails without duplicating its child', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('interrupted-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const { applyDecision } = await import('../../runtime/lib/decisions.mjs');
+    await writeFile(`${root}/child.json`, JSON.stringify({ title: 'Child', body: 'Work' }));
+    const store = await createStateStore({ workRoot: root });
+    const labels = new Set(['type:feature']);
+    let childState = 'OPEN', creations = 0, failLabel = true;
+    const childLabels = new Set();
+    const client = {
+      createComment: async () => {},
+      createIssue: async () => { creations++; return { number: 101 }; },
+      addLabel: async (id, label) => {
+        if (id === 101 && failLabel) { failLabel = false; throw new Error('label failed'); }
+        if (id === 90) labels.add(label);
+        if (id === 101) childLabels.add(label);
+      },
+      removeLabel: async (id, label) => { if (id === 90) labels.delete(label); },
+    };
+    await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['child.json'] }, issue: { number: 90 }, store, client, repoRoot: root }), /label failed/);
+    assert.deepEqual((await store.load('90')).decomposition.childIds, [101]);
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(90, [...labels])], getIssue: async () => ({ state: childState }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.equal(labels.has('rt:hold'), true);
+    assert.equal(childLabels.has('rt:self'), true);
+    childState = 'CLOSED';
+    assert.deepEqual((await provider({ store, client })).map(item => item.number), [90]);
+    assert.equal(creations, 1);
+    assert.deepEqual((await store.load('90')).decomposition.childIds, [101]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('recovers remaining drafts after an early label interruption without duplicating children', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('remaining-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const { applyDecision } = await import('../../runtime/lib/decisions.mjs');
+    for (const n of [1, 2]) await writeFile(`${root}/${n}.json`, JSON.stringify({ title: `Child ${n}`, body: 'Work' }));
+    const store = await createStateStore({ workRoot: root });
+    const labels = new Set(['type:feature']);
+    const childLabels = new Set();
+    const created = [];
+    let fail = true, closed = false;
+    const client = {
+      createComment: async () => {},
+      createIssue: async title => { created.push(title); return { number: 100 + created.length }; },
+      addLabel: async (id, label) => {
+        if (id === 101 && fail) { fail = false; throw new Error('label failed'); }
+        if (id === 90) labels.add(label); else childLabels.add(id);
+      },
+      removeLabel: async (id, label) => { if (id === 90) labels.delete(label); },
+    };
+    await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['1.json', '2.json'] }, issue: { number: 90 }, store, client, repoRoot: root }), /label failed/);
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(90, [...labels])], getIssue: async () => ({ state: closed ? 'CLOSED' : 'OPEN' }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.deepEqual(created, ['Child 1', 'Child 2']);
+    assert.deepEqual([...childLabels], [101, 102]);
+    assert.equal(labels.has('rt:hold'), true);
+    closed = true;
+    assert.deepEqual((await provider({ store, client })).map(item => item.number), [90]);
+    assert.deepEqual(created, ['Child 1', 'Child 2']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('does not retry an ambiguous later creation or release its parent', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('ambiguous-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const { applyDecision } = await import('../../runtime/lib/decisions.mjs');
+    for (const n of [1, 2]) await writeFile(`${root}/${n}.json`, JSON.stringify({ title: `Child ${n}`, body: 'Work' }));
+    const store = await createStateStore({ workRoot: root });
+    const labels = new Set(['type:feature']);
+    let calls = 0;
+    const client = {
+      createComment: async () => {},
+      createIssue: async () => { if (++calls === 2) throw new Error('response lost'); return { number: 101 }; },
+      addLabel: async (id, label) => { if (id === 90) labels.add(label); },
+      removeLabel: async (id, label) => { if (id === 90) labels.delete(label); },
+    };
+    await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['1.json', '2.json'] }, issue: { number: 90 }, store, client, repoRoot: root }), /response lost/);
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(90, [...labels])], getIssue: async () => ({ state: 'CLOSED' }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.equal(calls, 2);
+    assert.equal(labels.has('rt:hold'), true);
+    assert.equal((await store.load('90')).decomposition.inFlight, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

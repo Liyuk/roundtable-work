@@ -242,7 +242,7 @@ export async function runQueue({
       const queueAbort = new AbortController();
       const guard = withTimeout(queueTimeoutMs, () => queueAbort.abort(new Error('queue provider timed out')));
       try {
-        read = await Promise.race([readQueue(queue, { confinement: store.confinement, signal: queueAbort.signal }), guard.timeout.then(() => {
+        read = await Promise.race([readQueue(queue, { confinement: store.confinement, signal: queueAbort.signal, context: { store, client: githubClient } }), guard.timeout.then(() => {
           throw Object.assign(new Error(`queue provider did not settle within ${queueTimeoutMs} ms`), { code: 'RT_QUEUE_TIMEOUT' });
         })]);
       } finally { guard.clear(); }
@@ -550,8 +550,8 @@ export async function runQueue({
         if (cls === 'ok' || cls === 'review_passed') {
           const decision = step.decisionFile ?? step.decision;
           if (phase === 'finalizing' && decision !== undefined) {
-            if (!githubClient && typeof decision !== 'string' && !['do', 'continue'].includes(decision?.decision)) throw new TypeError('ask and out-of-scope decisions require the injected tracker client');
-            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, now });
+            if (!githubClient && typeof decision !== 'string' && !['do', 'continue'].includes(decision?.decision)) throw new TypeError('non-queue decisions require the injected tracker client');
+            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, repoRoot, now });
             return out(decisionResult.status, { class: 'decision', decision: decisionResult.decision });
           }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
