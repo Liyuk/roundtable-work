@@ -1,6 +1,7 @@
 import fsPromises from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { createConfinement, assertSafeId } from './paths.mjs';
 import { isTerminal } from './queue.mjs';
 
@@ -191,9 +192,10 @@ export async function createStateStore({
    * (`setFence`) it is also refused when the lock anchor's high-water epoch is above this store's epoch.
    */
   async function update(id, fn) {
-    const key = await fileFor(id);
+    const key = join(confinement.root, 'state', `${assertSafeId(id)}.json`);
     const previous = CHAINS.get(key) ?? Promise.resolve();
     const run = previous.then(async () => {
+      await fileFor(id);
       const state = await load(id);
       await assertCurrent(state.lockEpoch, id);
       const before = JSON.stringify(state);
