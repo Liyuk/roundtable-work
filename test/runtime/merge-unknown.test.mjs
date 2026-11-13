@@ -30,6 +30,7 @@ function providers(overrides = {}) {
     async squashMerge(pr) { return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {},
     async recordedEscalationApproval() {},
+    async createComment() {},
     async mainStatus() { return { head: 'abcdef0123456789', status: 'green' }; },
     async openRevertPullRequest() { return { number: 91, head: 'reverthead' }; },
     async createIssue() { return { number: 92 }; },
@@ -104,14 +105,30 @@ test('a transient squash failure is resolved from the still-open pull request on
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('a pre-seeded crash marker for a closed, unmerged pull request clears the hold and admits work', async () => {
+test('a closed pull request without a merged field retains the hold and admits no work', async () => {
   const root = await tmp();
   let pulls = 0;
+  let ran = false;
   const autoMerge = providers({ github: { async getPullRequest() { pulls++; return { state: 'closed', draft: false, mergeable: false, head: 'head', files: ['x'] }; } } });
   try {
     const store = await seedMarker(root, marker());
+    const result = await runQueue({ workRoot: root, queue: ['54'], handler: async () => { ran = true; return { exitCode: 0, output: 'ok' }; }, autoMerge, now: () => 1_000_000 });
+    assert.deepEqual(result.outcomes, []);
+    assert.deepEqual(result.skipped, [{ id: '54', reason: 'main_paused' }], 'a closed state without merged:false is ambiguous, so the hold stays');
+    assert.ok(pulls >= 1, 'the marker was resolved from the live pull request');
+    assert.equal(ran, false);
+    assert.equal((await store.load('rt-main-monitor')).mainMonitor.stage, 'merging');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a pre-seeded crash marker for a closed, unmerged pull request clears the hold and admits work', async () => {
+  const root = await tmp();
+  let pulls = 0;
+  const autoMerge = providers({ github: { async getPullRequest() { pulls++; return { state: 'closed', merged: false, draft: false, mergeable: false, head: 'head', files: ['x'] }; } } });
+  try {
+    const store = await seedMarker(root, marker());
     const result = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge });
-    assert.deepEqual(result.skipped, [], 'a closed unmerged pull request clears the hold instead of pausing the pass');
+    assert.deepEqual(result.skipped, [], 'an explicitly unmerged closed pull request clears the hold instead of pausing the pass');
     assert.ok(pulls >= 1, 'the marker was resolved from the live pull request');
     assert.notEqual(result.outcomes[0]?.status, 'main_paused');
     assert.equal((await store.load('rt-main-monitor')).mainMonitor, null, 'the record is cleared, never re-seeded');

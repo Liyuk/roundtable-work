@@ -22,6 +22,14 @@ import { basename, dirname, join, resolve } from 'node:path';
  * `<lock name>` is the last path component of the caller's `lockPath`; the caller's directory is irrelevant
  * (the in-repo `.roundtable/state/*.lock.d` path is at most a hint, never consulted).
  *
+ * Anchor domain: because the anchor root comes from the environment, one work root would otherwise be shared by
+ * two disjoint lock namespaces (both publishing the same `epoch-1` state file). The work root therefore records
+ * the *identity* of the domain it is used with in `<work root>/.roundtable/lock-domain`
+ * (`{"version":1,"anchor":sha256(realpath(anchor))}`, 0600, written once as a private temp file `link()`ed into
+ * place). A later invocation that resolves a different anchor fails closed (`anchor_mismatch`), even after the
+ * first lock was released; a symlinked, non-directory or corrupt marker fails closed (`invalid_lock_domain`). The
+ * marker never selects the anchor or the lock directory: it can only refuse.
+ *
  * The holder is the owner of the highest epoch, as long as that record is not released and not stale:
  *  - acquire creates `epoch-(max+1)` with `link()` of a private temp file (`EEXIST` = somebody else won),
  *    then re-lists and fails when a higher epoch exists;
@@ -54,6 +62,7 @@ const MAX_EPOCH = 999_999_999_999_999;
 const TMP_PREFIX = '.tmp-';
 const IDENTITY_PREFIX = '.repo-';
 const MAX_IDENTITY_BYTES = 512;
+const MAX_DOMAIN_BYTES = 512;
 
 /** The lock fence cannot be read any more (anchor replaced, record gone): state writes must fail closed. */
 export class LockFenceError extends Error {
@@ -91,6 +100,13 @@ export function anchorRootOf({ env = process.env, home = homedir() } = {}) {
 export function repoIdOf(repoRoot) {
   let real;
   try { real = realpathSync(repoRoot); } catch { real = resolve(repoRoot); }
+  return createHash('sha256').update(real).digest('hex');
+}
+
+/** `sha256(realpath(anchor))`: the anchor-domain identity recorded in the work root. */
+function domainIdOf(anchor) {
+  let real;
+  try { real = realpathSync(anchor); } catch { real = resolve(anchor); }
   return createHash('sha256').update(real).digest('hex');
 }
 
@@ -157,6 +173,57 @@ async function readIdentityFile(fs, file) {
     if (!value || !Number.isFinite(value.dev) || !Number.isFinite(value.ino)) return { ok: false, detail: 'identity:invalid' };
     return { ok: true, value };
   } finally { await fh.close().catch(() => {}); }
+}
+
+/** Read the work-root domain marker without following symlinks; `missing` when it does not exist yet. */
+async function readDomain(fs, file) {
+  let fh;
+  try { fh = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (err) {
+    if (err.code === 'ENOENT') return { ok: true, missing: true };
+    return { ok: false };
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > MAX_DOMAIN_BYTES) return { ok: false };
+    const buf = Buffer.alloc(MAX_DOMAIN_BYTES + 1);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    let value;
+    try { value = JSON.parse(buf.toString('utf8', 0, bytesRead)); } catch { return { ok: false }; }
+    if (value?.version !== 1 || typeof value.anchor !== 'string' || !/^[0-9a-f]{64}$/.test(value.anchor)) return { ok: false };
+    return { ok: true, anchor: value.anchor };
+  } finally { await fh.close().catch(() => {}); }
+}
+
+/**
+ * Bind the work root to the anchor domain it is used with (see the module docs): the marker is created once
+ * through a validated real directory, and an existing marker bound to another anchor fails closed. The marker
+ * only ever refuses; it is never read to choose an anchor or a lock directory.
+ */
+async function bindDomain(fs, { domainRoot, anchor }) {
+  const id = domainIdOf(anchor);
+  const dir = join(domainRoot, '.roundtable');
+  const file = join(dir, 'lock-domain');
+  const invalid = (detail) => ({ ok: false, reason: 'invalid_lock_domain', detail });
+  let cur = await readDomain(fs, file);
+  if (!cur.ok) return invalid('lock_domain:invalid');
+  if (cur.missing) {
+    if (!(await mkdirPrivate(fs, dir, 'lock_domain')).ok) return invalid('lock_domain:mkdir_failed');
+    const st = await fs.lstat(dir).catch(() => null);
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) return invalid('lock_domain:not_a_directory');
+    // The content goes into a private temp file first and is `link()`ed into place, so a concurrent reader never
+    // sees a half-written marker: exactly one linker wins, every other invocation re-reads what it linked.
+    const tmp = join(dir, `.lock-domain-${randomUUID()}`);
+    try {
+      await fs.writeFile(tmp, JSON.stringify({ version: 1, anchor: id }), { flag: 'wx', mode: 0o600 });
+      await fs.link(tmp, file);
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    } finally { await fs.unlink(tmp).catch(() => {}); }
+    cur = await readDomain(fs, file);
+    if (!cur.ok || cur.missing) return invalid('lock_domain:invalid');
+  }
+  if (cur.anchor !== id) return { ok: false, reason: 'anchor_mismatch', detail: 'lock_domain:mismatch' };
+  return { ok: true };
 }
 
 /**
@@ -241,6 +308,9 @@ export async function acquireLock({
   if (!madeLockDir.ok) return fail('invalid_anchor', null, { detail: madeLockDir.detail });
   const lockDirStat = await privateDir(fs, lockDir, currentUid, 'lock_dir');
   if (!lockDirStat.ok) return fail('invalid_lock_dir', null, { detail: lockDirStat.detail });
+  // Refuse before any epoch exists, so a foreign anchor domain can never fence a state write in this work root.
+  const domain = await bindDomain(fs, { domainRoot: repoRoot ?? dirname(lockPath), anchor });
+  if (!domain.ok) return fail(domain.reason, null, { detail: domain.detail });
   ctx.lockDir = lockDir;
   ctx.lockDirId = { dev: lockDirStat.dev, ino: lockDirStat.ino };
   const fileOf = (epoch) => join(lockDir, `epoch-${epoch}`);

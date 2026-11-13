@@ -55,7 +55,7 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
     },
     async getIssue(number, options) {
       if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
-      return run(['issue', 'view', String(number), ...repository, '--json', 'state'], options);
+      return run(['issue', 'view', String(number), ...repository, '--json', 'state,labels'], options);
     },
     async listComments(number, options) {
       if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
@@ -85,5 +85,14 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
     removeLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--remove-label', label]),
     createComment: (number, body) => run(['issue', 'comment', id(number), ...repository, '--body', body]),
     listComments: async (number) => JSON.parse(await run(['issue', 'view', id(number), ...repository, '--json', 'comments'])).comments,
+    listOpenPullRequests: async ({ headPrefix } = {}) => {
+      if (typeof headPrefix !== 'string' || !/^rt\/\d+-$/.test(headPrefix)) throw new TypeError('Invalid head branch prefix');
+      const pulls = JSON.parse(await run(['pr', 'list', ...repository, '--state', 'open', '--limit', '1000', '--json', 'number,headRefName,state']));
+      if (!Array.isArray(pulls) || pulls.length >= 1000) throw new TypeError('Pull request list is invalid or may be truncated');
+      const matching = pulls.filter(pull => typeof pull?.headRefName === 'string' && pull.headRefName.startsWith(headPrefix));
+      if (matching.some(pull => !Number.isSafeInteger(pull.number) || typeof pull.state !== 'string')) throw new TypeError('Invalid pull request');
+      return matching.map(({ number, headRefName, state }) => ({ number, headRefName, state }));
+    },
+    closePullRequest: (number, body) => run(['pr', 'close', id(number), ...repository, '--comment', body]),
   };
 }

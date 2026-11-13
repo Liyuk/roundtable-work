@@ -130,7 +130,7 @@ test('GitHub adapter uses the selected repository for each read', async () => {
   assert.deepEqual(calls, [
     ['repo', 'view', 'selected-owner/selected-repo', '--json', 'owner'],
     ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,updatedAt,body,url'],
-    ['issue', 'view', '42', '--repo', 'selected-owner/selected-repo', '--json', 'state'],
+    ['issue', 'view', '42', '--repo', 'selected-owner/selected-repo', '--json', 'state,labels'],
   ]);
 });
 test('orders by bug, priority, self, age and extracts series', () => {
@@ -322,6 +322,69 @@ test('does not retry an ambiguous later creation or release its parent', async (
     assert.equal((await store.load('90')).decomposition.inFlight, true);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+const terminalCase = async (prefix, fn) => {
+  const base = new URL('../../.roundtable/scratch/193-dev-1/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL(prefix, base).pathname);
+  try { await fn(root); } finally { await rm(root, { recursive: true, force: true }); }
+};
+const pausedAsk = (store, id) => store.update(id, s => { s.status = 'waiting_person'; s.pause = { kind: 'ask', pausedAt: 1 }; });
+
+test('a closed ask drops its pause labels and becomes a terminal done row', () => terminalCase('closed-', async root => {
+  const { createStateStore } = await import('../../runtime/lib/state.mjs');
+  const store = await createStateStore({ workRoot: root });
+  await pausedAsk(store, '90');
+  const labels = new Set(['type:feature', 'rt:ask', 'rt:blocked']);
+  const events = [];
+  const client = { removeLabel: async (id, label) => { events.push(['removeLabel', id, label]); labels.delete(label); } };
+  const reader = { getOwner: async () => 'owner', listIssues: async () => [], getIssue: async () => ({ state: 'closed', labels: [...labels].map(name => ({ name })) }) };
+  const provider = createIntakeProvider(reader, { includeRunning: true });
+  assert.deepEqual(await provider({ store, client }), []);
+  assert.deepEqual(events, [['removeLabel', 90, 'rt:ask'], ['removeLabel', 90, 'rt:blocked']]);
+  const state = await store.load('90');
+  assert.equal(state.status, 'done');
+  assert.equal(state.pause, undefined);
+  assert.equal(state.lastEvent.type, 'terminal_closed');
+  assert.equal(state.lastEvent.detail, 'CLOSED');
+  assert.deepEqual(await provider({ store, client }), []);
+  assert.equal(events.length, 2);
+}));
+
+test('an open ask keeps its pause and its labels', () => terminalCase('open-', async root => {
+  const { createStateStore } = await import('../../runtime/lib/state.mjs');
+  const store = await createStateStore({ workRoot: root });
+  await pausedAsk(store, '90');
+  const events = [];
+  const client = { removeLabel: async (id, label) => events.push(['removeLabel', id, label]) };
+  const reader = { getOwner: async () => 'owner', listIssues: async () => [issue(90, ['rt:ask'])], getIssue: async () => ({ state: 'OPEN', labels: [{ name: 'rt:ask' }] }) };
+  const items = await createIntakeProvider(reader, { includeRunning: true })({ store, client });
+  assert.deepEqual(events, []);
+  assert.equal((await store.load('90')).status, 'waiting_person');
+  assert.deepEqual(items.map(item => item.number), [90]);
+}));
+
+test('a remote read error during terminal cleanup skips that issue and keeps intake going', () => terminalCase('unreadable-', async root => {
+  const { createStateStore } = await import('../../runtime/lib/state.mjs');
+  const store = await createStateStore({ workRoot: root });
+  await pausedAsk(store, '90');
+  const client = { removeLabel: async () => { throw new Error('must not remove a label'); } };
+  const reader = { getOwner: async () => 'owner', listIssues: async () => [issue(91, ['type:bug'])], getIssue: async () => { throw new Error('not found'); } };
+  assert.deepEqual((await createIntakeProvider(reader, { includeRunning: true })({ store, client })).map(item => item.number), [91]);
+  assert.equal((await store.load('90')).status, 'waiting_person');
+}));
+
+test('state ids read the state directory, prefer the newest epoch and tolerate a missing one', () => terminalCase('ids-', async root => {
+  const { createStateStore } = await import('../../runtime/lib/state.mjs');
+  const store = await createStateStore({ workRoot: root });
+  assert.deepEqual(await store.ids(), []);
+  await pausedAsk(store, '90');
+  const successor = await createStateStore({ workRoot: root });
+  successor.setEpoch(2);
+  await successor.update('90', s => { s.status = 'done'; });
+  await store.update('91', s => { s.status = 'working'; });
+  assert.deepEqual((await store.ids()).sort(), ['90', '91']);
+}));
 
 test('rt:self children without a type label are intake-eligible and sort after type:bug', () => {
   assert.deepEqual(select([issue(1, ['rt:self']), issue(2, ['type:bug']), issue(3, ['type:feature'])]).issues.map(i => i.number), [2, 1, 3]);

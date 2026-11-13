@@ -6,6 +6,12 @@ test('production adapter rejects missing providers with a concrete diagnostic', 
   assert.throws(() => createProductionAdapter({}), /provider.*required/i);
 });
 
+test('production adapter requires github.createComment for actionable safety rejects', () => {
+  const fn = async () => {};
+  const github = Object.fromEntries(['getPullRequest', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue'].map((name) => [name, fn]));
+  assert.throws(() => createProductionAdapter({ context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn }, github, git: { createRevert: fn } }), /provider github\.createComment is required/);
+});
+
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runQueue } from '../../runtime/rtd.mjs';
@@ -30,7 +36,7 @@ test('an in-flight recovery effect stays paused and requests human intervention 
     github: {
       async getPullRequest() { return { state: 'open', draft: false, mergeable: true, head: 'head', files: ['x'] }; },
       async requiredGreen() { return true; }, async squashMerge() { return { mergeCommit: 'abcdef0123456789' }; },
-      async addLabel() {}, async recordedEscalationApproval() { return null; },
+      async addLabel() {}, async recordedEscalationApproval() { return null; }, async createComment() {},
       async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
       async openRevertPullRequest() { return { number: 91, head: 'reverthead' }; },
       async createIssue(input) { calls.push(['issue', input]); return { number: 121 }; },
@@ -71,7 +77,7 @@ test('distinct unknown recovery effects each receive an intervention notificatio
   const autoMerge = createProductionAdapter({
     github: {
       async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
-      async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
+      async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
       async openRevertPullRequest() { throw new Error('must not repeat pull request'); },
       async createIssue(input) { calls.push(input); return { number: 120 + calls.length }; },
     },
@@ -112,7 +118,7 @@ for (const scenario of ['throws', 'null', 'restart']) {
     const autoMerge = createProductionAdapter({
       github: {
         async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
-        async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
+        async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
         async openRevertPullRequest() {}, async createIssue() { calls++; if (scenario === 'throws') throw new Error('network failure'); return null; },
       },
       git: { async createRevert() { throw new Error('must not repeat'); } },
@@ -142,7 +148,7 @@ test('an uncertain notification does not duplicate or hide a different unknown e
   const autoMerge = createProductionAdapter({
     github: {
       async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
-      async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
+      async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
       async openRevertPullRequest() {}, async createIssue(input) { calls.push(input); return { number: 122 }; },
     },
     git: { async createRevert() {} }, context: { async get() {} }, observation: observationProvider(),
@@ -171,7 +177,7 @@ for (const status of [{ head: 'changed', status: 'red' }, { head: 'changed', sta
     const autoMerge = createProductionAdapter({
       github: {
         async getPullRequest() {}, async requiredGreen() {}, async squashMerge() { throw new Error('must not repeat'); }, async addLabel() {},
-        async recordedEscalationApproval() {}, async mainStatus() { return status; }, async openRevertPullRequest() {},
+        async recordedEscalationApproval() {}, async mainStatus() { return status; }, async openRevertPullRequest() {}, async createComment() {},
         async createIssue() { calls++; return { number: 121 }; },
       },
       git: { async createRevert() {} }, context: { async get() {} }, observation: observationProvider(),
@@ -195,7 +201,7 @@ test('production adapter triggers recovery after red main and holds later work',
     async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr, options) { calls.push(['merge', pr, options]); return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
-    async addLabel() {}, async recordedEscalationApproval() {},
+    async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
     async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
     async openRevertPullRequest() { calls.push('revert-pr'); return { number: 91, head: REVERT_SHA }; },
     async createIssue() { calls.push('bug'); return { number: 92 }; },
@@ -241,7 +247,7 @@ export default {
   async getPullRequest(pr) { return {state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
   async requiredGreen(pr) { return pr === 90 || ${revertGreen}; },
   async squashMerge(pr,options) { await log('squash',pr,options); return {mergeCommit:pr === 90 ? 'abcdef0123456789' : '1111111111111111'}; },
-  async addLabel() {}, async recordedEscalationApproval() {},
+  async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
   async mainStatus() { return {head:'abcdef0123456789',status:${JSON.stringify(status)}}; },
   async openRevertPullRequest() { await log('revert-pr'); return {number:91,head:'${REVERT_SHA}'}; },
   async createIssue(arg) { await log('bug',arg.labels); return {number:92}; },
@@ -327,7 +333,7 @@ test('pending main and failed revert gate hold tracker claims across passes', as
   const pause = { value: null, async get() { return this.value; }, async put(value) { this.value = structuredClone(value); } };
   const github = {
     async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
-    async requiredGreen() { return true; }, async addLabel() {}, async recordedEscalationApproval() {},
+    async requiredGreen() { return true; }, async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
     async squashMerge(pr) { calls.push(pr); return { mergeCommit: 'abcdef0123456789' }; },
     async mainStatus() { return { head: mainHead, status: main }; },
     async openRevertPullRequest() { return { number: 91, head: REVERT_SHA }; },

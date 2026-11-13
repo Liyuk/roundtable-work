@@ -65,7 +65,7 @@ test('production adapter requires observation providers', async () => {
   const fn = async () => {};
   const providers = {
     context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn },
-    github: Object.fromEntries(['getPullRequest', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue'].map((name) => [name, fn])),
+    github: Object.fromEntries(['getPullRequest', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'].map((name) => [name, fn])),
     git: { createRevert: fn },
   };
   assert.throws(() => createProductionAdapter(providers), /observation/i);
