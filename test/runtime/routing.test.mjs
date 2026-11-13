@@ -67,6 +67,22 @@ test('reviewer and fixer tiers must be at least the developer tier', () => {
   }
 });
 
+for (const tier of ['economy', 'standard']) {
+  test(`crosscheck tier ${tier} is rejected with the window and role`, () => {
+    const config = table();
+    config.windows[0].roles.crosscheck.tier = tier;
+    assert.throws(() => validateRouting(config), (error) => (
+      error instanceof RoutingError && error.message.includes('2026-11')
+      && error.message.includes('crosscheck') && error.message.includes('strong')
+    ));
+  });
+}
+
+test('crosscheck tier strong is accepted', () => {
+  const config = table();
+  assert.equal(validateRouting(config), config);
+});
+
 test('a valid table is returned unchanged and produces the routing facts block', () => {
   const source = table();
   const validated = validateRouting(source);

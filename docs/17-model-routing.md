@@ -10,7 +10,7 @@ The table must define exactly these roles:
 
 `chief`, `developer`, `fixer`, `reviewer`, `researcher`, `crosscheck`
 
-Tiers are ordered low to high: `economy`, `standard`, `strong`. A window's `reviewer` and `fixer` must be at least the `developer` tier, so review and repair are never graded below implementation.
+Tiers are ordered low to high: `economy`, `standard`, `strong`. A window's `reviewer` and `fixer` must be at least the `developer` tier, so review and repair are never graded below implementation. The `crosscheck` role, used for Gate 2 and safety-file approval, has a minimum tier of `strong`.
 
 ## Table schema
 
@@ -39,7 +39,7 @@ Version 1 uses ISO timestamps and one or more non-overlapping, sorted windows:
 
 `model-dev`, `model-review-strong`, and the other ids above are illustrative, obviously fake names; deployments replace them with locally probed ids and must not treat the examples as available models.
 
-Validation (`validateRouting`) rejects: a version other than 1; empty, duplicate-id, unsorted, overlapping, or invalid-timestamp windows; a missing or unknown role, naming the window and role; an empty `harness` or `model`; an unknown tier; and a `reviewer` or `fixer` tier below `developer`. A valid table is returned unchanged; the runtime invents no defaults.
+Validation (`validateRouting`) rejects: a version other than 1; empty, duplicate-id, unsorted, overlapping, or invalid-timestamp windows; a missing or unknown role, naming the window and role; an empty `harness` or `model`; an unknown tier; a `reviewer` or `fixer` tier below `developer`; and a `crosscheck` tier below `strong`, naming the window and role. A valid table is returned unchanged; the runtime invents no defaults.
 
 ## Active window and prompt injection
 

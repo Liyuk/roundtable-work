@@ -54,6 +54,7 @@ export function validateRouting(config) {
     for (const role of ['reviewer', 'fixer']) {
       if (rank(roles[role].tier) < rank(roles.developer.tier)) fail(`window "${window.id}" role "${role}" tier must be >= developer tier`);
     }
+    if (roles.crosscheck.tier !== 'strong') fail(`window "${window.id}" role "crosscheck" tier must be strong`);
   }
   return config;
 }
