@@ -306,17 +306,25 @@ test('a post-merge invalid mergeCommit ends done with main paused and never squa
       assert.equal(s.recovery, null, 'the wake is not interrupted');
       assert.equal(s.lastEvent.type, 'ok', JSON.stringify(result));
       assert.match(s.lastEvent.detail, /^merge monitor: /, 'the bookkeeping failure is kept, not dropped');
-      assert.deepEqual((await store.load('rt-main-monitor')).mainMonitor, { stage: 'merging' }, 'main stays paused, no invented SHA');
-      assert.deepEqual(w.pause.value, { stage: 'merging' }, 'the pause backend keeps the same hold');
+      const marker = (await store.load('rt-main-monitor')).mainMonitor;
+      assert.equal(marker.stage, 'merging', 'main stays paused, no invented SHA');
+      assert.deepEqual({ pr: marker.pr, head: marker.head, tree: marker.tree }, { pr: 90, head: 'head1', tree: 'tree1' });
+      assert.equal(typeof marker.since, 'number');
+      assert.deepEqual(w.pause.value, marker, 'the pause backend keeps the same self-describing hold');
       assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash' }]], 'the pull request is squashed once');
 
       // A later pass starts no new work while main is paused and never re-squashes that pull request.
       w.calls.length = 0;
+      w.github.getPullRequest = async () => ({ state: 'unknown' });
       const phases = [];
       const second = await wake(root, w, phases);
       assert.deepEqual(phases, [], JSON.stringify(result));
       assert.deepEqual(second.outcomes, [], JSON.stringify(result));
-      assert.deepEqual(second.skipped.map((entry) => entry.reason), ['main_paused'], JSON.stringify(result));
+      assert.deepEqual(second.skipped, [{ id: '53', reason: 'main_paused' }], JSON.stringify(result));
+      assert.equal((await store.load('53')).status, 'done');
+      const retained = (await store.load('rt-main-monitor')).mainMonitor;
+      assert.equal(retained.stage, 'merging');
+      assert.deepEqual(w.pause.value, retained);
       assert.equal(w.squashes().length, 0, JSON.stringify(result));
     } finally { await rm(root, { recursive: true, force: true }); }
   }
