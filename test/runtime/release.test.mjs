@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveCurrentRelease, ReleaseError } from '../../runtime/lib/release.mjs';
@@ -28,7 +28,7 @@ test('a valid current symlink resolves to its release sha', async () => {
     await symlink(join(rtd, 'releases', 'abc1234'), join(rtd, 'current'));
     const got = await resolveCurrentRelease(rtd);
     assert.equal(got.sha, 'abc1234');
-    assert.equal(got.path, join(rtd, 'releases', 'abc1234'));
+    assert.equal(got.path, await realpath(join(rtd, 'releases', 'abc1234')));
   } finally { await cleanup(); }
 });
 
