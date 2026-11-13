@@ -46,9 +46,9 @@ async function readBounded(path, maxBytes) {
  * @param {Array|Function|string} source
  * @param {{ confinement?: object, maxBytes?: number, signal?: AbortSignal }} [options]
  */
-export async function readQueue(source, { confinement, maxBytes = MAX_QUEUE_BYTES, signal } = {}) {
+export async function readQueue(source, { confinement, maxBytes = MAX_QUEUE_BYTES, signal, context } = {}) {
   let entries;
-  if (typeof source === 'function') entries = await source({ signal });
+  if (typeof source === 'function') entries = await source({ signal, ...context });
   else if (typeof source === 'string') {
     if (!confinement) throw new TypeError('A file-backed queue needs a confinement');
     entries = JSON.parse(await confinement.withParent(source, (dir, name) => readBounded(`${dir}/${name}`, maxBytes)));

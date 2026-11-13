@@ -1,22 +1,31 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
 import * as realFs from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { acquireLock, hostId } from '../../runtime/lib/lock.mjs';
+import { acquireLock, anchorRootOf, hostId, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 
 // RT_LOCK_MODULE lets a reviewer point the child processes at another implementation (e.g. to show
 // that the test fails against an older lock); by default the real module is used.
 const LOCK_MODULE = process.env.RT_LOCK_MODULE
   ? pathToFileURL(process.env.RT_LOCK_MODULE).href
   : new URL('../../runtime/lib/lock.mjs', import.meta.url).href;
+// Lock records live in the private anchor, never in the work root: RTW_STATE_DIR (inherited by the child
+// processes below) points at a per-file temporary anchor, and the work roots stay ordinary temporary dirs.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-lock-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+after(() => rm(ANCHOR, { recursive: true, force: true }));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-lock-'));
 const exists = (p) => access(p).then(() => true, () => false);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const lockDir = (dir) => join(dir, 'rtd.lock.d');
+// The path the caller acquires and the directory that (only) the anchor holds are deliberately different.
+const lockPathOf = (dir, name = 'rtd.lock.d') => join(dir, name);
+const lockDir = (dir, name = 'rtd.lock.d') => lockDirectoryFor({ lockPath: lockPathOf(dir, name), repoRoot: dir, anchorRoot: ANCHOR });
+/** Anchored directory of a lock path whose repo root is its own parent (`withDir` fixtures). */
+const anchor = (lockPath) => lockDirectoryFor({ lockPath, repoRoot: dirname(lockPath), anchorRoot: ANCHOR });
 const epochsOf = async (dir) => (await readdir(lockDir(dir))).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
 const readEpochFile = async (dir, n) => JSON.parse(await readFile(join(lockDir(dir), `epoch-${n}`), 'utf8'));
 const topEpoch = async (dir) => { const e = await epochsOf(dir); return e[e.length - 1]; };
@@ -26,7 +35,7 @@ const clockAt = (t) => { const c = { t }; c.now = () => c.t; return c; };
 
 /** Write a holder record as `epoch-<n>` (what an earlier or a foreign process would have left). */
 async function plantEpoch(dir, n, rec) {
-  await mkdir(lockDir(dir), { recursive: true });
+  await mkdir(lockDir(dir), { recursive: true, mode: 0o700 });
   const body = { owner: 'planted', pid: process.pid, hostId: hostId(), token: `planted-${n}`, epoch: n, acquiredAt: 1, expiresAt: Date.now() + 3_600_000, ...rec };
   await writeFile(join(lockDir(dir), `epoch-${n}`), JSON.stringify(body));
   return body;
@@ -145,7 +154,7 @@ test('lock: N processes x M rounds, stale holder plus orphan mutex/guard, never 
 
 test('lock: in-process contenders racing for an expired lock yield exactly one holder', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const first = await acquireLock({ lockPath, owner: 'first', now: clock.now, ttlMs: 100 });
   assert.equal(first.acquired, true);
   assert.equal(first.epoch, 1);
@@ -159,39 +168,39 @@ test('lock: in-process contenders racing for an expired lock yield exactly one h
   assert.equal(await winner.refresh(), true);
   assert.equal(await winner.release(), true);
   assert.equal((await readEpochFile(dir, 2)).released, true, 'release marks the file, it does not unlink it');
-  assert.deepEqual((await readdir(dir)).sort(), ['rtd.lock.d'], 'no mutex or guard files beside the lock directory');
+  assert.deepEqual(await readdir(dir), [], 'nothing is written into the work root');
 }));
 
 test('lock: a displaced holder cannot refresh over or release its successor\'s lock', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const a = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100 });
   clock.t += 101;
   const b = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 100 });
   assert.equal(b.acquired, true);
-  const before = await readFile(join(lockPath, 'epoch-2'), 'utf8');
+  const before = await readFile(join(anchor(lockPath), 'epoch-2'), 'utf8');
   assert.equal(await a.refresh(), false);
   await a.release();
-  assert.equal(await readFile(join(lockPath, 'epoch-2'), 'utf8'), before, 'the successor\'s file is byte for byte unchanged');
+  assert.equal(await readFile(join(anchor(lockPath), 'epoch-2'), 'utf8'), before, 'the successor\'s file is byte for byte unchanged');
   assert.equal(await b.refresh(), true);
 }));
 
 test('lock: a live holder with a fresh lease is never taken over, and its lock file is left untouched', withDir(async (dir) => {
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const a = await acquireLock({ lockPath, owner: 'a' });
-  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  const before = await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8');
   const results = await Promise.all(Array.from({ length: 6 }, () => acquireLock({ lockPath, owner: 'x' })));
   assert.deepEqual(results.map((r) => r.acquired), Array(6).fill(false));
   assert.deepEqual(results.map((r) => r.reason), Array(6).fill('held'));
   assert.equal(results[0].holder.token, a.token);
-  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before);
+  assert.equal(await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8'), before);
   assert.deepEqual(await epochsOf(dir), [1]);
   await a.release();
 }));
 
 test('lock: only epochs far below the newest are garbage collected, after a successful acquire', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   for (let i = 0; i < 12; i++) {
     const h = await acquireLock({ lockPath, owner: `o${i}`, now: clock.now, ttlMs: 10 });
     assert.equal(h.acquired, true);
@@ -212,17 +221,17 @@ test('lock: refresh never writes through a planted symlink', withDir(async (dir)
   try {
     const sentinel = join(outside, 'sentinel.txt');
     await writeFile(sentinel, 'do not touch');
-    const lockPath = lockDir(dir);
+    const lockPath = lockPathOf(dir);
     const h = await acquireLock({ lockPath, owner: 'a' });
     assert.equal(h.acquired, true);
     // The refresh temp name the previous implementation used (pid and token are readable from the lock file).
-    const oldNames = [`${lockPath}.${process.pid}.${h.token}.refresh`, join(lockPath, `${process.pid}.${h.token}.refresh`), join(lockPath, `epoch-${h.epoch}.refresh`), join(lockPath, `epoch-${h.epoch}.tmp`)];
+    const oldNames = [`${anchor(lockPath)}.${process.pid}.${h.token}.refresh`, join(anchor(lockPath), `${process.pid}.${h.token}.refresh`), join(anchor(lockPath), `epoch-${h.epoch}.refresh`), join(anchor(lockPath), `epoch-${h.epoch}.tmp`)];
     for (const name of oldNames) await symlink(sentinel, name);
     let result;
     try { result = await h.refresh(); } catch { result = 'threw'; }
     assert.equal(await readFile(sentinel, 'utf8'), 'do not touch', 'nothing was written through the symlink');
     assert.equal(result, true, 'a fresh random temp name is used, the planted names are irrelevant');
-    assert.equal((await lstat(join(lockPath, `epoch-${h.epoch}`))).isFile(), true);
+    assert.equal((await lstat(join(anchor(lockPath), `epoch-${h.epoch}`))).isFile(), true);
     for (const name of oldNames) assert.equal((await lstat(name)).isSymbolicLink(), true, 'the planted symlink is left alone');
     // A leftover regular file at that name does not block refresh either.
     for (const name of oldNames) { await rm(name); await writeFile(name, 'leftover'); }
@@ -235,7 +244,7 @@ test('lock: refresh never writes through a planted symlink', withDir(async (dir)
 test('lock: two breakers can never both hold the guard', withDir(async (dir) => {
   // Contenders A and B both judged the stale epoch-1 stale and sit right before their link(); then C and D start.
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   await plantStale(dir, 1);
   const gA = gate(); const gB = gate();
   const A = acquireLock({ lockPath, owner: 'A', now: clock.now, ttlMs: 100, __hooks: { beforeLink: gA.hook } });
@@ -286,7 +295,7 @@ test('lock: two breakers can never both hold the guard', withDir(async (dir) => 
 // L3
 test('lock: a live but slow holder is never overlapped and never loses or damages anything to a successor', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const g = gate();
   let stall = false;
   const h = await acquireLock({ lockPath, owner: 'H', now: clock.now, ttlMs: 1000, __hooks: { beforeRefreshWrite: () => (stall ? g.hook() : undefined) } });
@@ -300,7 +309,7 @@ test('lock: a live but slow holder is never overlapped and never loses or damage
   clock.t += 1101;
   const c2 = await acquireLock({ lockPath, owner: 'C', now: clock.now, ttlMs: 1000 });
   assert.equal(c2.acquired, true);
-  const successorFile = join(lockPath, `epoch-${c2.epoch}`);
+  const successorFile = join(anchor(lockPath), `epoch-${c2.epoch}`);
   const inode = (await stat(successorFile)).ino;
   const bytes = await readFile(successorFile, 'utf8');
   g.open();
@@ -309,13 +318,13 @@ test('lock: a live but slow holder is never overlapped and never loses or damage
   assert.equal((await stat(successorFile)).ino, inode, 'the stalled holder never touched a file it did not create');
   assert.equal(await readFile(successorFile, 'utf8'), bytes);
   // No mutex or guard exists anywhere, so there is nothing a stalled holder could break or delete.
-  assert.deepEqual([...await readdir(dir), ...await readdir(lockPath)].filter((n) => /mutex|break/.test(n)), []);
+  assert.deepEqual([...await readdir(dir), ...await readdir(anchor(lockPath))].filter((n) => /mutex|break/.test(n)), []);
 }));
 
 // L6: a refresh that completes after its own previous lease ran out cannot coexist with a takeover
 test('lock: a refresh stalled past its own expiry is lost, never valid next to a takeover', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const gA = gate();
   const gB = gate();
   const A = await acquireLock({ lockPath, owner: 'A', now: clock.now, ttlMs: 100, __hooks: { beforeRefreshWrite: gA.hook } });
@@ -341,7 +350,7 @@ test('lock: a refresh stalled past its own expiry is lost, never valid next to a
 
 test('lock: a refresh stalled past its expiry, with nobody taking over, leaves no live lease behind', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const gA = gate();
   const A = await acquireLock({ lockPath, owner: 'A', now: clock.now, ttlMs: 100, __hooks: { beforeRefreshWrite: gA.hook } });
   const aRefresh = A.refresh();
@@ -375,7 +384,7 @@ test('lock: randomized interleavings (virtual clock, random yields) never show t
       const worker = async (name) => {
         for (let r = 0; r < 50; r++) {
           const t0 = clock.t;
-          const h = await acquireLock({ lockPath: lockDir(dir), owner: name, now: clock.now, ttlMs: TTL, isAlive: () => true, __hooks: hooks });
+          const h = await acquireLock({ lockPath: lockPathOf(dir), owner: name, now: clock.now, ttlMs: TTL, isAlive: () => true, __hooks: hooks });
           if (!h.acquired) { await yieldy(); continue; }
           grants++;
           valid.set(name, t0 + TTL); // lower bound of the granted lease: the record is stamped no earlier than t0
@@ -399,12 +408,12 @@ test('lock: randomized interleavings (virtual clock, random yields) never show t
 
 // L5
 test('lock: refresh while a foreign live mutex is present', withDir(async (dir) => {
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   await plantStale(dir, 3);
   const h = await acquireLock({ lockPath, owner: 'a' });
   assert.equal(h.epoch, 4);
   const live = JSON.stringify({ pid: process.pid, id: 'foreign', expiresAt: Date.now() + 10_000 });
-  for (const name of [`${lockPath}.mutex`, `${lockPath}.mutex.break`, join(lockPath, '.mutex'), join(lockPath, 'mutex'), join(lockPath, 'epoch-0.tmp')]) await writeFile(name, live);
+  for (const name of [`${anchor(lockPath)}.mutex`, `${anchor(lockPath)}.mutex.break`, join(anchor(lockPath), '.mutex'), join(anchor(lockPath), 'mutex'), join(anchor(lockPath), 'epoch-0.tmp')]) await writeFile(name, live);
   const t0 = performance.now();
   assert.equal(await h.refresh(), true, 'refresh does not involve any mutex');
   assert.equal(await h.refresh(), true);
@@ -417,13 +426,13 @@ test('lock: refresh while a foreign live mutex is present', withDir(async (dir) 
 // L6
 test('lock: refresh after own lease expiry reports lost', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const h = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100 });
   assert.equal(await h.refresh(), true);
-  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  const before = await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8');
   clock.t += 100; // expiresAt <= now
   assert.equal(await h.refresh(), false);
-  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before, 'an expired lease is never revived');
+  assert.equal(await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8'), before, 'an expired lease is never revived');
   assert.equal(await h.refresh(), false, 'and stays lost');
   const b = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 100 });
   assert.equal(b.acquired, true);
@@ -431,16 +440,17 @@ test('lock: refresh after own lease expiry reports lost', withDir(async (dir) =>
 
 test('lock: refresh with a higher epoch present reports lost and leaves our file unchanged', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const h = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100_000 });
-  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  const before = await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8');
   await plantEpoch(dir, 2, {});
   clock.t += 1; // a rewrite would change expiresAt
   assert.equal(await h.refresh(), false);
-  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before);
+  assert.equal(await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8'), before);
   // A higher epoch that appears during the write is caught by the check after it.
   let epoch2;
-  const h2 = await acquireLock({ lockPath: join(dir, 'b.lock.d'), owner: 'b', now: clock.now, ttlMs: 100_000, __hooks: { afterRefreshWrite: () => writeFile(join(dir, 'b.lock.d', `epoch-${epoch2 + 1}`), '{}') } });
+  const bLockPath = lockPathOf(dir, 'b.lock.d');
+  const h2 = await acquireLock({ lockPath: bLockPath, owner: 'b', now: clock.now, ttlMs: 100_000, __hooks: { afterRefreshWrite: () => writeFile(join(anchor(bLockPath), `epoch-${epoch2 + 1}`), '{}') } });
   epoch2 = h2.epoch;
   assert.equal(await h2.refresh(), false);
 }));
@@ -448,7 +458,7 @@ test('lock: refresh with a higher epoch present reports lost and leaves our file
 // L7
 test('lock: dead-looking pid from a different host identity is not taken over before expiry', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   await plantEpoch(dir, 1, { hostId: 'other', pid: deadPid(), expiresAt: 5000 });
   const r = await acquireLock({ lockPath, owner: 'x', now: clock.now, ttlMs: 100 });
   assert.equal(r.acquired, false);
@@ -461,14 +471,14 @@ test('lock: dead-looking pid from a different host identity is not taken over be
   const dir2 = await tmp();
   try {
     await plantEpoch(dir2, 1, { pid: deadPid(), expiresAt: 10 ** 12 });
-    assert.equal((await acquireLock({ lockPath: lockDir(dir2), owner: 'x', now: clock.now, ttlMs: 100 })).acquired, true);
+    assert.equal((await acquireLock({ lockPath: lockPathOf(dir2), owner: 'x', now: clock.now, ttlMs: 100 })).acquired, true);
     // A record without any hostId is not known to be local either.
     await plantEpoch(dir2, 9, { hostId: undefined, pid: deadPid(), expiresAt: 10 ** 12 });
-    assert.equal((await acquireLock({ lockPath: lockDir(dir2), owner: 'x', now: clock.now, ttlMs: 100 })).acquired, false);
+    assert.equal((await acquireLock({ lockPath: lockPathOf(dir2), owner: 'x', now: clock.now, ttlMs: 100 })).acquired, false);
     // The record we write carries a hash, never the host name.
     const rec = await readEpochFile(dir, 2);
     assert.equal(rec.hostId, hostId());
-    assert.ok(!(await readFile(join(lockPath, 'epoch-2'), 'utf8')).includes(hostname()) || hostname().length < 4);
+    assert.ok(!(await readFile(join(anchor(lockPath), 'epoch-2'), 'utf8')).includes(hostname()) || hostname().length < 4);
     assert.match(rec.hostId, /^[0-9a-f]{32}$/);
     assert.equal(rec.pid, process.pid);
   } finally { await rm(dir2, { recursive: true, force: true }); }
@@ -487,19 +497,22 @@ test('lock: non-regular lock entries fail closed and fast', { timeout: 30000 }, 
       assert.equal(typeof r.reason, 'string');
       return r;
     };
-    // The lock path itself: a symlink to a directory holding a live-looking holder, a FIFO, a huge file.
+    // The anchored lock directory itself: a symlink to a directory holding a live-looking holder, a FIFO, a
+    // huge file. The caller's path stays an ordinary work-root path; only the anchor holds the entries.
     const live = { owner: 'outside', pid: process.pid, hostId: hostId(), token: 'o', expiresAt: Date.now() + 1e9 };
     await mkdir(join(outside, 'target'));
     await writeFile(join(outside, 'target', 'epoch-7'), JSON.stringify(live));
-    await symlink(join(outside, 'target'), join(dir, 'link.lock.d'));
-    const viaLink = await fast(join(dir, 'link.lock.d'));
+    const plantAt = async (name, make) => {
+      const target = anchor(lockPathOf(dir, name));
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      await make(target);
+      return lockPathOf(dir, name);
+    };
+    const viaLink = await fast(await plantAt('link.lock.d', (p) => symlink(join(outside, 'target'), p)));
     assert.equal(viaLink.holder, null, 'nothing outside the root was read');
     assert.deepEqual(await readdir(join(outside, 'target')), ['epoch-7'], 'and nothing was written there');
-    mkfifo(join(dir, 'fifo.lock.d'));
-    await fast(join(dir, 'fifo.lock.d'));
-    await writeFile(join(dir, 'big.lock.d'), '');
-    await truncate(join(dir, 'big.lock.d'), 10 * 1024 * 1024);
-    await fast(join(dir, 'big.lock.d'));
+    await fast(await plantAt('fifo.lock.d', (p) => mkfifo(p)));
+    await fast(await plantAt('big.lock.d', async (p) => { await writeFile(p, ''); await truncate(p, 10 * 1024 * 1024); }));
 
     // An entry named like an epoch: symlink, FIFO, directory, 10 MiB file, 5 KiB file.
     const kinds = {
@@ -511,11 +524,11 @@ test('lock: non-regular lock entries fail closed and fast', { timeout: 30000 }, 
     };
     for (const [kind, make] of Object.entries(kinds)) {
       const lockPath = join(dir, `${kind}.entries.d`);
-      await mkdir(lockPath);
-      await make(join(lockPath, 'epoch-3'));
+      await mkdir(anchor(lockPath), { recursive: true, mode: 0o700 });
+      await make(join(anchor(lockPath), 'epoch-3'));
       const r = await fast(lockPath);
       assert.equal(r.reason, 'invalid_epoch_file', kind);
-      assert.deepEqual((await readdir(lockPath)).filter((n) => n !== 'epoch-3'), [], `${kind}: nothing written next to it`);
+      assert.deepEqual((await readdir(anchor(lockPath))).filter((n) => n !== 'epoch-3'), [], `${kind}: nothing written next to it`);
     }
     assert.deepEqual(await readdir(join(outside, 'target')), ['epoch-7']);
   } finally { await rm(outside, { recursive: true, force: true }); }
@@ -524,9 +537,9 @@ test('lock: non-regular lock entries fail closed and fast', { timeout: 30000 }, 
 // L9
 test('lock: all expiry decisions use the injected clock', withDir(async (dir) => {
   const clock = clockAt(10 ** 12);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   await plantEpoch(dir, 1, { expiresAt: 5000 }); // our own live pid, but the (injected) clock is far past its lease
-  await writeFile(`${lockPath}.mutex`, JSON.stringify({ pid: process.pid, id: 'x', expiresAt: 5000 }));
+  await writeFile(`${anchor(lockPath)}.mutex`, JSON.stringify({ pid: process.pid, id: 'x', expiresAt: 5000 }));
   const realNow = Date.now;
   Date.now = () => { throw new Error('Date.now must not be consulted'); };
   try {
@@ -544,7 +557,7 @@ test('lock: all expiry decisions use the injected clock', withDir(async (dir) =>
 // L10
 test('lock: handle exposes a strictly increasing epoch across takeovers', withDir(async (dir) => {
   const clock = clockAt(1000);
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const h1 = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100 });
   clock.t += 101;
   const h2 = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 100 });
@@ -558,7 +571,7 @@ test('lock: handle exposes a strictly increasing epoch across takeovers', withDi
 
 // L11
 test('lock: release reports whether the lock was released', withDir(async (dir) => {
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   const a = await acquireLock({ lockPath, owner: 'a' }); // our own pid is alive and the lease is fresh
   assert.equal(await a.release(), true);
   assert.equal((await readEpochFile(dir, 1)).released, true);
@@ -568,30 +581,30 @@ test('lock: release reports whether the lock was released', withDir(async (dir) 
   assert.equal(b.acquired, true, 'taken immediately although the first holder\'s pid is alive');
   assert.equal(b.epoch, 2);
   // Not released: our file is gone (or no longer ours).
-  await rm(join(lockPath, 'epoch-2'));
+  await rm(join(anchor(lockPath), 'epoch-2'));
   assert.equal(await b.release(), false);
   assert.equal(b.releaseReason, 'not_owner');
   const c = await acquireLock({ lockPath, owner: 'c' });
-  await writeFile(join(lockPath, `epoch-${c.epoch}`), JSON.stringify({ token: 'someone else', pid: 1 }));
+  await writeFile(join(anchor(lockPath), `epoch-${c.epoch}`), JSON.stringify({ token: 'someone else', pid: 1 }));
   assert.equal(await c.release(), false);
   assert.equal(c.releaseReason, 'not_owner');
-  assert.equal(JSON.parse(await readFile(join(lockPath, `epoch-${c.epoch}`), 'utf8')).token, 'someone else', 'a file that is not ours is not rewritten');
+  assert.equal(JSON.parse(await readFile(join(anchor(lockPath), `epoch-${c.epoch}`), 'utf8')).token, 'someone else', 'a file that is not ours is not rewritten');
 }));
 
 // L12
 test('lock: leftover temp files never block acquire or refresh', withDir(async (dir) => {
-  const lockPath = lockDir(dir);
-  await mkdir(lockPath);
+  const lockPath = lockPathOf(dir);
+  await mkdir(anchor(lockPath), { recursive: true, mode: 0o700 });
   const leftovers = ['.tmp-1', '.tmp-deadbeef', 'epoch-1.tmp', 'epoch-2.tmp', `epoch-1.${process.pid}.refresh`, 'epoch-2.stale'];
-  for (const name of leftovers) await writeFile(join(lockPath, name), 'junk');
-  for (const name of [`${lockPath}.${process.pid}.tok.tmp`, `${lockPath}.${process.pid}.tok.refresh`, `${lockPath}.mutex.stale`]) await writeFile(name, 'junk');
+  for (const name of leftovers) await writeFile(join(anchor(lockPath), name), 'junk');
+  for (const name of [`${anchor(lockPath)}.${process.pid}.tok.tmp`, `${anchor(lockPath)}.${process.pid}.tok.refresh`, `${anchor(lockPath)}.mutex.stale`]) await writeFile(name, 'junk');
   const h = await acquireLock({ lockPath, owner: 'a' });
   assert.equal(h.acquired, true);
   assert.equal(await h.refresh(), true);
   assert.equal(await h.release(), true);
   const h2 = await acquireLock({ lockPath, owner: 'b' });
   assert.equal(h2.acquired, true);
-  for (const name of leftovers) assert.equal(await readFile(join(lockPath, name), 'utf8'), 'junk', `${name} untouched`);
+  for (const name of leftovers) assert.equal(await readFile(join(anchor(lockPath), name), 'utf8'), 'junk', `${name} untouched`);
   assert.equal(await h2.release(), true);
 }));
 
@@ -599,18 +612,18 @@ test('lock: a write that fails mid-way leaves no temp file behind and the lock u
   // Every write stores a few bytes and then fails (e.g. ENOSPC).
   let failing = true;
   const fs = { writeFile: async (p, content, opts) => { if (!failing) return realFs.writeFile(p, content, opts); await realFs.writeFile(p, String(content).slice(0, 5), opts); throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }); } };
-  const lockPath = lockDir(dir);
+  const lockPath = lockPathOf(dir);
   await assert.rejects(acquireLock({ lockPath, owner: 'a', fs }), /no space/);
-  assert.deepEqual(await readdir(lockPath), [], 'the partial temp file was removed and no epoch was created');
+  assert.deepEqual(await readdir(anchor(lockPath)), [], 'the partial temp file was removed and no epoch was created');
   failing = false;
   const h = await acquireLock({ lockPath, owner: 'a', fs });
   assert.equal(h.acquired, true);
-  const before = await readFile(join(lockPath, 'epoch-1'), 'utf8');
+  const before = await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8');
   failing = true;
   await assert.rejects(h.refresh(), /no space/);
   await assert.rejects(h.release(), /no space/);
-  assert.deepEqual(await readdir(lockPath), ['epoch-1']);
-  assert.equal(await readFile(join(lockPath, 'epoch-1'), 'utf8'), before, 'a failed write leaves the lock file intact');
+  assert.deepEqual(await readdir(anchor(lockPath)), ['epoch-1']);
+  assert.equal(await readFile(join(anchor(lockPath), 'epoch-1'), 'utf8'), before, 'a failed write leaves the lock file intact');
   failing = false;
   assert.equal(await h.refresh(), true);
   assert.equal(await h.release(), true);
@@ -620,15 +633,15 @@ test('lock: a write that fails mid-way leaves no temp file behind and the lock u
 test('lock: lock files are created 0600', { skip: process.platform === 'win32' }, withDir(async (dir) => {
   const oldUmask = process.umask(0);
   try {
-    const lockPath = lockDir(dir);
+    const lockPath = lockPathOf(dir);
     const h = await acquireLock({ lockPath, owner: 'a' });
     const mode = async (p) => (await stat(p)).mode & 0o777;
-    assert.equal(await mode(join(lockPath, 'epoch-1')), 0o600);
+    assert.equal(await mode(join(anchor(lockPath), 'epoch-1')), 0o600);
     assert.equal(await h.refresh(), true);
-    assert.equal(await mode(join(lockPath, 'epoch-1')), 0o600);
+    assert.equal(await mode(join(anchor(lockPath), 'epoch-1')), 0o600);
     assert.equal(await h.release(), true);
-    assert.equal(await mode(join(lockPath, 'epoch-1')), 0o600);
-    assert.equal((await mode(lockPath)) & 0o077, 0, 'the lock directory is private');
+    assert.equal(await mode(join(anchor(lockPath), 'epoch-1')), 0o600);
+    assert.equal((await mode(anchor(lockPath))) & 0o077, 0, 'the lock directory is private');
   } finally { process.umask(oldUmask); }
 }));
 
@@ -638,6 +651,165 @@ test('lock: link failure is surfaced, not degraded', withDir(async (dir) => {
     const lockPath = join(dir, `${code}.lock.d`);
     const fs = { link: async () => { throw Object.assign(new Error(`link: ${code}`), { code }); } };
     await assert.rejects(acquireLock({ lockPath, owner: 'a', fs }), (err) => err.code === code);
-    assert.deepEqual(await readdir(lockPath), [], 'no lock file and no temp file exists');
+    assert.deepEqual(await readdir(anchor(lockPath)), [], 'no lock file and no temp file exists');
   }
+}));
+
+
+// ---------------------------------------------------------------------------------------------
+// Anchored authority (issue #77): the work root is a hint, the private anchor is authoritative.
+
+test('anchor: RTW_STATE_DIR is the anchor root, XDG_STATE_HOME gets /roundtable, no ~/.rtw fallback', () => {
+  const home = join(tmpdir(), 'rt-fake-home');
+  assert.equal(anchorRootOf({ env: { RTW_STATE_DIR: '/tmp/rtw-state' }, home }), '/tmp/rtw-state');
+  assert.equal(anchorRootOf({ env: { XDG_STATE_HOME: '/tmp/xdg' }, home }), '/tmp/xdg/roundtable');
+  assert.equal(anchorRootOf({ env: {}, home }), join(home, '.local', 'state', 'roundtable'));
+  assert.ok(!anchorRootOf({ env: {}, home }).includes('.rtw'), 'no ~/.rtw fallback');
+  assert.equal(anchorRootOf({ env: { RTW_STATE_DIR: '/tmp/a', XDG_STATE_HOME: '/tmp/xdg' }, home }), '/tmp/a');
+});
+
+test('anchor: a missing anchor is created 0700; locks/, the per-repo dir and the lock dir are private', withDir(async (dir) => {
+  const anchorRoot = join(dir, 'state', 'anchor');
+  const lockPath = lockPathOf(dir);
+  const h = await acquireLock({ lockPath, repoRoot: dir, anchorRoot, owner: 'a' });
+  assert.equal(h.acquired, true);
+  const mode = async (p) => (await stat(p)).mode & 0o777;
+  const repoDir = dirname(h.lockDirectory);
+  assert.equal(await mode(anchorRoot), 0o700);
+  assert.equal(await mode(join(anchorRoot, 'locks')), 0o700);
+  assert.equal(await mode(repoDir), 0o700);
+  assert.equal(await mode(h.lockDirectory), 0o700);
+  assert.match(repoDir.slice(-64), /^[0-9a-f]{64}$/, 'the repo directory is a hash, never a user-controlled name');
+  assert.equal(h.lockDirectory, lockDirectoryFor({ lockPath, repoRoot: dir, anchorRoot }), 'callers can compute the same path');
+  assert.equal((await mode(join(anchorRoot, 'locks', `.repo-${repoDir.slice(-64)}.json`))) & 0o177, 0, 'the identity record is private');
+  assert.equal(await h.release(), true);
+}));
+
+// Case 1
+test('anchor: a symlinked anchor root is refused and nothing is written through the link', withDir(async (dir) => {
+  const outside = await tmp();
+  try {
+    const linkAnchor = join(dir, 'state-link');
+    await symlink(outside, linkAnchor);
+    const r = await acquireLock({ lockPath: lockPathOf(dir), repoRoot: dir, anchorRoot: linkAnchor, owner: 'x' });
+    assert.deepEqual([r.acquired, r.reason], [false, 'invalid_anchor']);
+    assert.match(r.detail, /anchor:not_a_directory/);
+    assert.deepEqual(await readdir(outside), [], 'no lock directory, no epoch and no identity file was created through the link');
+  } finally { await rm(outside, { recursive: true, force: true }); }
+}));
+
+// Case 2
+test('anchor: an anchor owned by another uid is refused by the real ownership check', withDir(async (dir) => {
+  const anchorRoot = join(dir, 'anchor');
+  await mkdir(anchorRoot, { mode: 0o700 });
+  const owner = (await stat(anchorRoot)).uid;
+  // The test process cannot chown, so it injects the uid it claims to run as: lstat and the comparison stay real.
+  const r = await acquireLock({ lockPath: lockPathOf(dir), repoRoot: dir, anchorRoot, owner: 'x', uid: owner + 1 });
+  assert.deepEqual([r.acquired, r.reason], [false, 'invalid_anchor']);
+  assert.match(r.detail, /anchor:wrong_owner/);
+  assert.deepEqual(await readdir(anchorRoot), []);
+}));
+
+test('anchor: a group/world accessible anchor is refused, not silently chmod-ed', withDir(async (dir) => {
+  const anchorRoot = join(dir, 'anchor');
+  await mkdir(anchorRoot, { mode: 0o700 });
+  await chmod(anchorRoot, 0o755);
+  const r = await acquireLock({ lockPath: lockPathOf(dir), repoRoot: dir, anchorRoot, owner: 'x' });
+  assert.deepEqual([r.acquired, r.reason], [false, 'invalid_anchor']);
+  assert.match(r.detail, /anchor:insecure_mode/);
+  assert.equal((await stat(anchorRoot)).mode & 0o777, 0o755, 'the anchor is left as found');
+  assert.deepEqual(await readdir(anchorRoot), []);
+}));
+
+// Case 3
+test('anchor: a record swapped between the identity check and the rewrite is lost (dev+ino), never rewritten', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockPathOf(dir);
+  const anchored = anchor(lockPath);
+  let swap = true;
+  const h = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 10_000, __hooks: { beforeRefreshWrite: async () => {
+    if (!swap) return;
+    swap = false;
+    // Same epoch, same token, same bytes: only the inode differs.
+    const copy = join(anchored, '.swapped');
+    await writeFile(copy, await readFile(join(anchored, 'epoch-1'), 'utf8'));
+    await realFs.rename(copy, join(anchored, 'epoch-1'));
+  } } });
+  assert.equal(h.acquired, true);
+  assert.equal(await h.refresh(), false, 'the rewrite detected the swapped record and reported the lease lost');
+  assert.equal(await h.release(), false);
+  assert.equal(h.releaseReason, 'not_owner');
+  // The swapped-in record keeps the same live lease for everybody else: it is not a second valid holder,
+  // and it is never reused as the next holder's record either.
+  const held = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 10_000 });
+  assert.deepEqual([held.acquired, held.reason], [false, 'held']);
+  clock.t += 10_001;
+  const next = await acquireLock({ lockPath, owner: 'c', now: clock.now, ttlMs: 10_000 });
+  assert.equal(next.acquired, true);
+  assert.equal(next.epoch, 2, 'a new epoch file is created; the swapped record is never handed out');
+  assert.equal(await h.refresh(), false);
+  assert.equal(await next.release(), true);
+}));
+
+test('anchor: release of a replaced record fails closed and leaves the replacement untouched', withDir(async (dir) => {
+  const lockPath = lockPathOf(dir);
+  const anchored = anchor(lockPath);
+  const h = await acquireLock({ lockPath, owner: 'a' });
+  const copy = join(anchored, '.swapped');
+  await writeFile(copy, await readFile(join(anchored, 'epoch-1'), 'utf8'));
+  await realFs.rename(copy, join(anchored, 'epoch-1'));
+  const bytes = await readFile(join(anchored, 'epoch-1'), 'utf8');
+  assert.equal(await h.release(), false);
+  assert.equal(h.releaseReason, 'not_owner');
+  assert.equal(await readFile(join(anchored, 'epoch-1'), 'utf8'), bytes);
+}));
+
+// Case 5
+test('anchor: replacing the per-repo anchor directory invalidates the handle and refuses new holders', withDir(async (dir) => {
+  const anchorRoot = join(dir, 'anchor');
+  const lockPath = lockPathOf(dir);
+  const h = await acquireLock({ lockPath, repoRoot: dir, anchorRoot, owner: 'a' });
+  const repoDir = dirname(h.lockDirectory);
+  await realFs.rename(repoDir, `${repoDir}.saved`);
+  await mkdir(repoDir, { mode: 0o700 });
+  assert.equal(await h.refresh(), false, 'renew after the anchored directory was replaced fails closed');
+  assert.equal(await h.release(), false);
+  assert.equal(h.releaseReason, 'lock_lost');
+  await assert.rejects(h.anchorHighWater(), { code: 'RT_LOCK_LOST' });
+  const replacement = await acquireLock({ lockPath, repoRoot: dir, anchorRoot, owner: 'b' });
+  assert.deepEqual([replacement.acquired, replacement.reason], [false, 'invalid_anchor']);
+  assert.match(replacement.detail, /repo:id_changed/, 'the recorded directory inode no longer matches');
+  assert.deepEqual(await readdir(repoDir), [], 'nothing was written into the replacement');
+}));
+
+test('anchor: emptying the anchored lock directory invalidates the holder instead of resetting its lease', withDir(async (dir) => {
+  const anchorRoot = join(dir, 'anchor');
+  const lockPath = lockPathOf(dir);
+  const h = await acquireLock({ lockPath, repoRoot: dir, anchorRoot, owner: 'a' });
+  await rm(h.lockDirectory, { recursive: true, force: true });
+  assert.equal(await h.refresh(), false);
+  assert.equal(await h.release(), false);
+  await assert.rejects(h.anchorHighWater(), { code: 'RT_LOCK_LOST' });
+}));
+
+// Case 6
+test('anchor: in-repo lock-directory churn can neither validate an older holder nor reset the fencing token', withDir(async (dir) => {
+  const clock = clockAt(1000);
+  const lockPath = lockPathOf(dir);
+  const anchored = anchor(lockPath);
+  const live = JSON.stringify({ owner: 'forged', pid: process.pid, hostId: hostId(), token: 'forged', expiresAt: 10 ** 13 });
+  const h = await acquireLock({ lockPath, owner: 'a', now: clock.now, ttlMs: 100 });
+  // The work root (including the old in-repo lock path) is churned: replaced, filled with a forged record, emptied.
+  await mkdir(lockPath, { recursive: true });
+  await writeFile(join(lockPath, 'epoch-99'), live);
+  await rm(lockPath, { recursive: true, force: true });
+  assert.equal(await h.refresh(), true, 'the work root is not authoritative in either direction');
+  clock.t += 101;
+  const next = await acquireLock({ lockPath, owner: 'b', now: clock.now, ttlMs: 100 });
+  assert.equal(next.acquired, true);
+  assert.equal(next.epoch, h.epoch + 1, 'epochs continue above the anchor high-water mark, never below it');
+  assert.equal(await h.refresh(), false, 'an older holder is never valid next to a new one');
+  assert.equal(await h.anchorHighWater(), next.epoch);
+  assert.deepEqual(await readdir(anchored), ['epoch-1', 'epoch-2'], 'both records live in the anchor, not in the work root');
+  await next.release();
 }));
