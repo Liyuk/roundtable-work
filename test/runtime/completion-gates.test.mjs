@@ -24,7 +24,7 @@ async function runCase(failure) {
     }, github,
   };
   try {
-    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' }) });
+    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, models: { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' }, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' }) });
     return { result, calls };
   } finally { await rm(root, { recursive: true, force: true }); }
 }
@@ -32,7 +32,7 @@ async function runCase(failure) {
 test('worker completion runs ordered gates and rechecked CI through one squash entry point', async () => {
   const { result, calls } = await runCase();
   assert.equal(result.outcomes[0].status, 'done');
-  assert.deepEqual(calls, ['gate0', 'gate1', 'gate2', 'ci', 'pr', 'ci', ['squash', { method: 'squash' }]]);
+  assert.deepEqual(calls, ['gate0', 'gate1', 'gate2', 'ci', 'pr', 'ci', ['squash', { method: 'squash', sha: 'a'.repeat(40) }]]);
 });
 
 test('worker completion fails closed on gate failures, unavailable reviewer and CI failures', async () => {

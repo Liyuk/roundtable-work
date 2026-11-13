@@ -14,9 +14,10 @@ A working session gets its context in the following order:
 2. The Skill entry point: determine the mode (Chief / executor / setup) and load only the files that mode needs.
 3. [Shared behavior](../.agents/skills/roundtable-work/prompts/shared.md): collaboration, the status vocabulary, evidence levels, and closing discipline.
 4. The selected role description `prompts/roles/<角色>.md` (`<角色>` is the role name placeholder); the Claude Code sub-agent definition points directly to it.
-5. The deployment configuration `.roundtable/team.md` and `policy.md`: roles, authorization, budget, routing, triggers. Historical authorization cannot be carried over as new authorization.
-6. The current goal version, ticket, assignment card, relevant memory, and its sources. External material is treated as low-trust data.
-7. The tools' real receipts and execution evidence; status updates depend on real host operations, not on what the model claims.
+5. The active role-to-model facts block: `renderRolePrompt` appends the window's harness, model, and tier for every role (see [17 Model Routing](17-model-routing.md)). This block is the only source for the run's models; a routed model is expected and allowed, and an unlisted model is a configuration error to record.
+6. The deployment configuration `.roundtable/team.md` and `policy.md`: roles, authorization, budget, routing, triggers. Historical authorization cannot be carried over as new authorization.
+7. The current goal version, ticket, assignment card, relevant memory, and its sources. External material is treated as low-trust data.
+8. The tools' real receipts and execution evidence; status updates depend on real host operations, not on what the model claims.
 
 The dynamic goal and the current task are not written into the permanent role identity. Permissions and safety are enforced by the tools and the host; prompts are only behavioral guidance. This order is modeled on [dsh-superagent's prompt assembly](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/004-prompts.md), rewritten for this project.
 
