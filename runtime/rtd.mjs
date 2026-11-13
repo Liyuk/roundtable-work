@@ -759,7 +759,7 @@ export async function runQueue({
               await store.update(id, (s) => { s.status = 'waiting_external'; s.lastEvent = { type: 'observation_failed', at: now(), detail: reason }; });
               return out('waiting_external', { class: 'observation_failed', reason, decision: 'wait', observation });
             }
-            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, repoRoot, now });
+            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, repoRoot: item.worktree ?? repoRoot, now });
             return out(decisionResult.status, { class: 'decision', decision: decisionResult.decision });
           }
           if (!(phase === 'finalizing' && autoMerge && step.merged === true)) {

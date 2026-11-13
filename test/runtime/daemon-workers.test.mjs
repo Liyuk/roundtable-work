@@ -193,3 +193,24 @@ test('daemon finishes a claim interrupted after adding the label', async () => {
     assert.equal(result.outcomes[0].status, 'done'); assert.equal(issue.comments.length, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('daemon reads decompose drafts from the worker worktree, not the repository root', async () => {
+  const { root, repo, workRoot } = await fixture();
+  try {
+    await writeFile(join(repo, 'child.json'), JSON.stringify({ title: 'Repository decoy', body: 'Decoy' }));
+    const issue = { id: '50', number: 50, title: '[A] decompose', labels: [], comments: [] };
+    const created = [];
+    const client = {
+      addLabel: async (n, label) => { if (n === 50) issue.labels.push(label); },
+      removeLabel: async () => {},
+      createComment: async (n, body) => { issue.comments.push({ body }); },
+      listComments: async () => issue.comments,
+      createIssue: async title => { created.push(title); return { number: 501 }; },
+    };
+    await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], handler: async ({ phase, item }) => {
+      if (phase === 'developing') await writeFile(join(item.worktree, 'child.json'), JSON.stringify({ title: 'Worktree child', body: 'Work' }));
+      return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', ...(phase === 'finalizing' ? { decision: { decision: 'decompose', drafts: ['child.json'] } } : {}) };
+    } });
+    assert.deepEqual(created, ['Worktree child']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

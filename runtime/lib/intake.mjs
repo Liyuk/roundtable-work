@@ -83,7 +83,7 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
     const recovering = includeRunning && labels.some(label => ['rt:running', 'rt:ask', 'rt:blocked'].includes(label));
     if (!recovering && labels.includes('rt:proposed') && !labels.includes('rt:approved')) continue;
     if (!labels.length) { triage.push(issue); continue; }
-    if (!recovering && !labels.includes('type:bug') && !labels.includes('type:feature')) continue;
+    if (!recovering && !labels.includes('type:bug') && !labels.includes('type:feature') && !labels.includes('rt:self')) continue;
     if (!recovering && !dependencies(admissionText(issue)).every(n => String(dependencyStates[n] ?? '').toUpperCase() === 'CLOSED')) continue;
     if (!recovering) {
       const result = admission(issue);
