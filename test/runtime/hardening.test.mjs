@@ -654,19 +654,36 @@ test('state: a paused old epoch cannot replace a successor checkpoint or artifac
 test('timeout: renewal prevents a second runner after the original TTL while the handler runs', withRoot(async (root) => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  // Use seconds of headroom so a slow CI runner can still service several renewal ticks.
-  const opts = { workRoot: root, queue: ['A'], handler: async () => { await gate; return { exitCode: 0 }; }, phaseTimeoutMs: 30, graceMs: 10, lockTtlMs: 5000, lockRenewMinMs: 1000, leaseTtlMs: 5000 };
-  const first = await runQueue(opts);
-  assert.equal(first.abandonedHandler, true);
-  await sleep(10_000); // twice the original TTL; multiple renewal ticks must keep both records live
-  const runnerUrl = new URL('../../runtime/rtd.mjs', import.meta.url).href;
-  const script = `import { runQueue } from ${JSON.stringify(runnerUrl)}; import { writeFile } from 'node:fs/promises'; const r = await runQueue({workRoot:process.argv[1], queue:['A'], handler:async () => ({exitCode:0}), lockTtlMs:5000, lockRenewMinMs:1000, leaseTtlMs:5000}); await writeFile(process.argv[2], r.status);`;
-  const resultFile = join(root, 'contender-result');
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script, root, resultFile], { stdio: 'inherit' });
+  const ttlMs = 5000;
+  const t0 = Date.now();
+  // The holder's clock is injected, so crossing the TTL is a controlled jump instead of a fixed sleep. A lease
+  // record only reaches `target + ttlMs` when a real renewal tick ran after the clock was set to `target`.
+  let clock = t0;
+  const lockDir = lockDirOf(root);
+  const renewTo = async (target) => {
+    clock = target;
+    const deadline = Date.now() + 15000;
+    for (;;) {
+      const epochs = (await readdir(lockDir)).filter((n) => /^epoch-\d+$/.test(n)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+      const holder = JSON.parse(await readFile(join(lockDir, epochs.at(-1)), 'utf8'));
+      const { lease } = JSON.parse(await readFile(stateFile(root, 'A'), 'utf8'));
+      if (holder.expiresAt === target + ttlMs && lease.expiresAt === target + ttlMs) return;
+      if (Date.now() > deadline) assert.fail(`no renewal tick after the clock reached +${target - t0} ms (lock lease +${holder.expiresAt - t0} ms, issue lease +${lease.expiresAt - t0} ms)`);
+      await sleep(25);
+    }
+  };
   try {
+    const first = await runQueue({ workRoot: root, queue: ['A'], handler: async () => { await gate; return { exitCode: 0 }; }, phaseTimeoutMs: 30, graceMs: 10, lockTtlMs: ttlMs, lockRenewMinMs: 1000, leaseTtlMs: ttlMs, now: () => clock });
+    assert.equal(first.abandonedHandler, true);
+    await renewTo(t0 + ttlMs / 2); // still inside the original TTL
+    await renewTo(t0 + ttlMs + 1000); // the original TTL has passed; only renewal can keep both leases live
+    const runnerUrl = new URL('../../runtime/rtd.mjs', import.meta.url).href;
+    const script = `import { runQueue } from ${JSON.stringify(runnerUrl)}; import { writeFile } from 'node:fs/promises'; const r = await runQueue({workRoot:process.argv[1], queue:['A'], handler:async () => ({exitCode:0}), lockTtlMs:5000, lockRenewMinMs:1000, leaseTtlMs:5000, now:() => Number(process.argv[3])}); await writeFile(process.argv[2], r.status);`;
+    const resultFile = join(root, 'contender-result');
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script, root, resultFile, String(clock)], { stdio: 'inherit' });
     assert.equal(await new Promise((resolve) => child.on('exit', resolve)), 0);
     assert.equal(await readFile(resultFile, 'utf8'), 'locked');
     const state = await createStateStore({ workRoot: root }).then((store) => store.load('A'));
-    assert.ok(state.lease.expiresAt > Date.now(), 'the issue lease is also renewed');
+    assert.ok(state.lease.expiresAt > clock, 'the issue lease is also renewed past the original TTL');
   } finally { release(); }
 }));
