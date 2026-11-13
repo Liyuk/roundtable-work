@@ -30,25 +30,30 @@ export function validateReviewLedger(value, options = {}) {
     validateFinding(finding);
     if (ids.has(finding.id)) throw new TypeError(`duplicate finding id: ${finding.id}`);
     ids.add(finding.id);
+    const frozenMustFix = frozen.mustFixIds.includes(finding.id);
+    if (finding.classification === 'blocking' && !frozenMustFix) throw new TypeError(`blocking finding ${finding.id} is not in the frozen must-fix set`);
+    if (finding.classification === 'in-scope miss' && frozenMustFix) throw new TypeError(`in-scope miss ${finding.id} must be a new finding outside the frozen must-fix set`);
     if (finding.classification === 'out-of-scope follow-up') {
       followUps.push({ id: finding.id, summary: finding.summary, severity: finding.severity });
       continue;
     }
     if (finding.status !== 'fixed' || finding.retest.result !== 'passed' || finding.retest.headSha !== currentHeadSha) blocked = true;
   }
+  for (const id of frozen.mustFixIds) if (!value.findings.some(finding => finding.id === id && finding.classification === 'blocking')) throw new TypeError(`frozen must-fix ${id} is missing from the findings as blocking`);
   return { verdict: riskBlocked ? VERDICTS.block : blocked ? VERDICTS.reject : VERDICTS.pass, followUps };
 }
 
 function validateFreeze(value) {
-  if (!validFreeze(value)) throw new TypeError('freeze requires goal, baseSha, headSha, reviewScope, and highRisk');
+  if (!validFreeze(value)) throw new TypeError('freeze requires goal, baseSha, headSha, reviewScope, highRisk, and mustFixIds');
 }
 
 function validFreeze(value) {
-  return plain(value) && exactOrFalse(value, ['goal', 'baseSha', 'headSha', 'reviewScope', 'highRisk'])
+  return plain(value) && exactOrFalse(value, ['goal', 'baseSha', 'headSha', 'reviewScope', 'highRisk', 'mustFixIds'])
     && nonEmpty(value.goal) && sha(value.baseSha) && sha(value.headSha)
     && Array.isArray(value.reviewScope) && value.reviewScope.length > 0
     && value.reviewScope.every(nonEmpty) && new Set(value.reviewScope).size === value.reviewScope.length
-    && typeof value.highRisk === 'boolean';
+    && typeof value.highRisk === 'boolean'
+    && Array.isArray(value.mustFixIds) && value.mustFixIds.every(nonEmpty) && new Set(value.mustFixIds).size === value.mustFixIds.length;
 }
 
 function validateFinding(value) {
