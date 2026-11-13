@@ -62,8 +62,9 @@ function validateFinding(value) {
     exact(value, ['id', 'summary', 'severity', 'classification', 'status'], 'finding');
     if (value.status !== 'follow-up') throw new TypeError('out-of-scope finding status must be follow-up');
   } else {
-    exact(value, ['id', 'summary', 'severity', 'classification', 'status', ...(value.status === 'fixed' ? ['fixCommit', 'retest'] : [])], 'finding');
+    exact(value, ['id', 'summary', 'severity', 'classification', 'status', 'evidence', ...(value.status === 'fixed' ? ['fixCommit', 'retest'] : [])], 'finding');
     if (!CLASSES.includes(value.classification)) throw new TypeError('unknown finding classification');
+    if (!nonEmpty(value.evidence)) throw new TypeError('blocking and in-scope-miss findings require non-empty evidence');
     if (!STATUSES.includes(value.status) || value.status === 'follow-up') throw new TypeError('unknown or inconsistent finding status');
     if (value.status === 'fixed') {
       if (!sha(value.fixCommit)) throw new TypeError('fixed finding requires a fix commit SHA');
