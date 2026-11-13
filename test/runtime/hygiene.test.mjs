@@ -106,17 +106,17 @@ test('hygiene scanner fails closed on unsupported denylist entry shapes', async 
 
 test('hygiene scanner allows loopback addresses and version-like IPs', async () => {
   await withDenylist(async (config) => {
-    assert.deepEqual(await kindsOf(config, 'listen on 127.0.0.1 and 127.1.2.3'), []);
-    assert.deepEqual(await kindsOf(config, 'release v192.168.1.1 and commit @10.1.2.3'), []);
+    assert.deepEqual(await kindsOf(config, `listen on ${[127, 0, 0, 1].join('.')} and ${[127, 1, 2, 3].join('.')}`), []);
+    assert.deepEqual(await kindsOf(config, `release v${[192, 168, 1, 1].join('.')} and commit @${[10, 1, 2, 3].join('.')}`), []);
   });
 });
 
 test('hygiene scanner covers home path variants and skips angle-bracket placeholders', async () => {
   await withDenylist(async (config) => {
-    for (const value of ['see /root/.ssh/config', 'C:\\Users\\EXAMPLE\\.gitconfig', '~EXAMPLE/cache', '~/cache']) {
+    for (const value of [`see ${['', 'root', '.ssh', 'config'].join('/')}`, 'C:\\Users\\EXAMPLE\\.gitconfig', '~EXAMPLE/cache', '~/cache']) {
       assert.deepEqual(await kindsOf(config, value), ['home-path'], value);
     }
-    for (const value of ['/home/<vps>', 'C:\\Users\\<vps>', '/root/<vps>']) assert.deepEqual(await kindsOf(config, value), [], value);
+    for (const value of [['', 'home', '<vps>'].join('/'), 'C:\\Users\\<vps>', ['', 'root', '<vps>'].join('/')]) assert.deepEqual(await kindsOf(config, value), [], value);
   });
 });
 
@@ -130,9 +130,9 @@ test('hygiene scanner distinguishes private/public IPs and safe versions', async
   await withDenylist(async (config) => {
     const findings = await scanHygiene({
       ...config,
-      entries: [{ source: 'release-notes', value: 'Version 2.4.1; endpoints 8.8.8.8 and 192.168.44.2' }],
+      entries: [{ source: 'release-notes', value: `Version 2.4.1; endpoints ${[8, 8, 8, 8].join('.')} and ${[192, 168, 44, 2].join('.')}` }],
     });
-    assert.deepEqual(findings.map((item) => item.kind), ['private-ip']);
+    assert.deepEqual(findings.map((item) => item.kind), ['public-ip', 'private-ip']);
   });
 });
 
@@ -141,7 +141,7 @@ test('hygiene scanner catches private hostnames in prose and path-like text plus
     const findings = await scanHygiene({
       ...config,
       entries: [{ source: 'metadata', value: 'connect to buildbox.internal; see /var/lib/worker.lan/cache and distinctive-node/common' },
-        { source: 'paths', value: '~/.config/tool and /home/example/cache' }],
+        { source: 'paths', value: `~/.config/tool and ${['', 'home', 'example', 'cache'].join('/')}` }],
     });
     assert.deepEqual(new Set(findings.map((item) => item.kind)), new Set(['private-hostname', 'denylisted-name', 'home-path']));
   });
@@ -199,5 +199,49 @@ test('hygiene scanner fails closed for missing, in-repository, and changed denyl
     await writeFile(inside, JSON.stringify(['private-value']));
     const insideHash = createHash('sha256').update(await readFile(inside)).digest('hex');
     await assert.rejects(scanHygiene({ ...config, entries, denylistPath: inside, expectedSha256: insideHash }), { code: 'RT_HYGIENE_CONFIG' });
+  });
+});
+
+test('finding labels never reveal submitted sensitive paths', async () => {
+  await withDenylist(async (config) => {
+    const secret = 'distinctive-node';
+    const findings = await scanHygiene({ ...config, entries: [{ source: `src/${secret}/file`, value: secret }] });
+    assert.ok(findings.length);
+    assert.ok(!JSON.stringify(findings).includes(secret));
+  });
+});
+
+test('detects credential forms without exposing them', async () => {
+  await withDenylist(async (config) => {
+    for (const value of [['gh', 'p_', 'FAKE'.repeat(10)].join(''), ['sk', '-', 'FAKE'.repeat(10)].join(''), ['-----BEGIN ', 'OPENSSH', ' PRIVATE KEY-----'].join(''), ['https://', 'FAKE:EXAMPLE', '@example.com'].join('')]) {
+      const findings = await scanHygiene({ ...config, entries: [{ source: value, value }] });
+      assert.ok(findings.some((item) => item.kind === 'credential'));
+      assert.ok(!JSON.stringify(findings).includes(value));
+    }
+  });
+});
+
+test('detects non-allowlisted IPs and allows documentation and loopback', async () => {
+  await withDenylist(async (config) => {
+    for (const [value, kind] of [ [[8,8,8,8].join('.'), 'public-ip'], [[10,1,2,3].join('.'), 'private-ip'], [['2606','4700','','1111'].join(':'), 'public-ip'], [['fd12','','1234'].join(':'), 'private-ip'] ]) {
+      assert.ok((await kindsOf(config, value)).includes(kind));
+    }
+    for (const value of [[192,0,2,1].join('.'), [198,51,100,2].join('.'), [203,0,113,3].join('.'), ['2001','db8','','1'].join(':'), ['', '', '1'].join(':'), ['', '', 'ffff', '7f00', '1'].join(':')]) {
+      assert.deepEqual(await kindsOf(config, value), []);
+    }
+  });
+});
+
+test('detects short encoded credentials without flagging ordinary short words', async () => {
+  await withDenylist(async (config) => {
+    assert.ok((await kindsOf(config, Buffer.from('token=42').toString('base64'))).includes('credential'));
+    assert.deepEqual(await kindsOf(config, 'ordinary prose and release notes'), []);
+  });
+});
+
+test('matches distinctive names at domain label boundaries', async () => {
+  await withDenylist(async (config) => {
+    assert.ok((await kindsOf(config, ['distinctive-node', 'example', 'com'].join('.'))).includes('denylisted-name'));
+    assert.deepEqual(await kindsOf(config, 'predistinctive-node-suffix'), []);
   });
 });

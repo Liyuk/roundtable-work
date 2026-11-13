@@ -6,14 +6,16 @@ const PRIVATE_HOST_SUFFIXES = ['.internal', '.local', '.lan', '.home'];
 const COMMON_HOST_SUFFIX = /^\.(?:local|lan|internal|home)(?![a-z0-9-])/;
 const COMMON_HOST_PREFIX = /(?:@|\/\/)$/;
 const SSH_TARGET = /\b(?:ssh|scp)\s+(?:-\S+\s+)*(?:\S+\s+)?$/;
-const NAME_EDGE = /[a-z0-9._-]/;
+const NAME_EDGE = /[a-z0-9_-]/;
 const CREDENTIAL_KEY = /(?:^|[\s"'`;,])(?:password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret)(?:\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/ig;
+const CREDENTIAL_FORMS = /(?:\b(?:gh[pousr]_|github_pat_|sk_live_|sk-|xox[baprs]-|AKIA)[A-Za-z0-9_-]{8,}|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----|\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@)/gi;
 const HOME_PATH = new RegExp('(?:^|[\\s=:"\'])(?:' + [
   '/(?:home|Users|root)/[^/\\s<][^/\\s]*',
   '~/[^\\s]+',
   '~[\\w.-]+/',
   '[A-Za-z]:\\\\Users\\\\[^\\\\\\s<][^\\\\\\s]*',
 ].join('|') + ')', 'gi');
+const IPV6 = /(?<![\w:])(?:[a-f\d]{0,4}:){2,7}[a-f\d]{0,4}(?![\w:])/gi;
 const IPV4 = /(?<![\w.@])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g;
 
 export class HygieneConfigError extends Error {
@@ -31,9 +33,21 @@ function ipv4Kind(address) {
   const octets = address.split('.').map(Number);
   if (octets.some((n) => n > 255)) return null;
   const [a, b] = octets;
-  if (a === 127) return 'loopback';
+  if (a === 127 || (a === 192 && b === 0 && octets[2] === 2) || (a === 198 && b === 51 && octets[2] === 100) || (a === 203 && b === 0 && octets[2] === 113)) return 'allowed';
   if (a === 10 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return 'private-ip';
   return 'public-ip';
+}
+
+function ipv6Kind(address) {
+  let normalized;
+  try { normalized = new URL(`http://[${address}]/`).hostname.slice(1, -1); } catch { return null; }
+  if (normalized.startsWith('::ffff:')) {
+    const parts = normalized.slice(7).split(':').map((part) => parseInt(part, 16));
+    return ipv4Kind([parts[0] >> 8, parts[0] & 255, parts[1] >> 8, parts[1] & 255].join('.'));
+  }
+  if (normalized === '::1' || normalized.startsWith('2001:db8:') || normalized === '2001:db8::') return 'allowed';
+  const first = parseInt(normalized.split(':')[0] || '0', 16);
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || normalized === '::' ? 'private-ip' : 'public-ip';
 }
 
 function decodeLayers(text) {
@@ -42,7 +56,7 @@ function decodeLayers(text) {
   if (decoded !== text) variants.push(decoded);
   const candidates = [...variants];
   for (const value of candidates) {
-    for (const token of value.match(/[A-Za-z0-9+/]{20,}={0,2}/g) ?? []) {
+    for (const token of value.match(/(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{8,}={0,2}(?![A-Za-z0-9+/=])/g) ?? []) {
       if (token.length % 4 === 1) continue;
       try {
         const decoded = Buffer.from(token, 'base64').toString('utf8');
@@ -95,7 +109,7 @@ export async function scanHygiene({ entries, denylistPath, repoRoot, expectedSha
   const denylist = await trustedDenylist({ denylistPath, repoRoot, expectedSha256 });
   const findings = [];
   for (const [index, entry] of entries.entries()) {
-    const label = typeof entry?.source === 'string' && /^[A-Za-z0-9._/-]{1,120}$/.test(entry.source) ? entry.source : `entry-${index}`;
+    const label = `entry-${index}`;
     const text = binaryText(entry?.value);
     const seen = new Set();
     for (const variant of decodeLayers(text)) {
@@ -105,8 +119,13 @@ export async function scanHygiene({ entries, denylistPath, repoRoot, expectedSha
       };
       for (const match of variant.matchAll(IPV4)) {
         const kind = ipv4Kind(match[0]);
-        if (kind === 'private-ip') emit(kind, match.index);
+        if (kind && kind !== 'allowed') emit(kind, match.index);
       }
+      for (const match of variant.matchAll(IPV6)) {
+        const kind = ipv6Kind(match[0]);
+        if (kind && kind !== 'allowed') emit(kind, match.index);
+      }
+      for (const match of variant.matchAll(CREDENTIAL_FORMS)) emit('credential', match.index);
       for (const match of variant.matchAll(HOME_PATH)) emit('home-path', match.index);
       CREDENTIAL_KEY.lastIndex = 0;
       for (const match of variant.matchAll(CREDENTIAL_KEY)) emit('credential', match.index);
