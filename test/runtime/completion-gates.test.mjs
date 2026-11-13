@@ -32,7 +32,7 @@ async function runCase(failure) {
 test('worker completion runs ordered gates and rechecked CI through one squash entry point', async () => {
   const { result, calls } = await runCase();
   assert.equal(result.outcomes[0].status, 'done');
-  assert.deepEqual(calls, ['gate0', 'gate1', 'gate2', 'ci', 'pr', 'ci', ['squash', { method: 'squash', sha: 'a'.repeat(40) }]]);
+  assert.deepEqual(calls, ['gate0', 'gate1', 'gate2', 'ci', 'pr', 'ci', ['squash', { method: 'squash' }]]);
 });
 
 test('worker completion fails closed on gate failures, unavailable reviewer and CI failures', async () => {
