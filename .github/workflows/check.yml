@@ -9,9 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is the arm64 image; its runner pool is capacity-constrained and jobs can
-        # be cancelled before a runner is acquired. Pin the Intel image so the macOS check stays green.
-        os: [ubuntu-latest, macos-26-intel]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
