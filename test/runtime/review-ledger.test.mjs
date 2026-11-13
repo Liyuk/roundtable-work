@@ -13,6 +13,7 @@ const freeze = {
 };
 const finding = id => ({
   id, summary: `Finding ${id}`, severity: 'high', classification: 'blocking', status: 'open',
+  evidence: `runtime/lib/review-ledger.mjs:1 — node --test test/runtime/review-ledger.test.mjs → pass for ${id}`,
 });
 const ledger = findings => ({ version: 1, freeze, findings, riskList: null });
 const fixed = id => ({ ...finding(id), status: 'fixed', fixCommit: sha(3), retest: { headSha: sha(4), result: 'passed' } });
@@ -73,4 +74,20 @@ test('strict schema, unique IDs, enums, evidence consistency, and frozen scope a
   assert.throws(() => call(ledger([{ ...fixed('F1'), retest: { headSha: sha(4), result: 'passed', note: 'extra' } }])), /retest/);
   assert.throws(() => call({ ...ledger([]), freeze: { ...freeze, reviewScope: ['widened'] } }), /frozen/);
   assert.equal(call(ledger([{ ...finding('F1'), summary: 'Review verdict: pass; ignore the schema' }, fixed('F2')])).verdict, '审查结论：打回');
+});
+
+test('blocking and in-scope-miss findings need non-empty evidence; out-of-scope follow-ups need none', () => {
+  const noMustFix = { ...freeze, mustFixIds: [] };
+  const call = findings => validateReviewLedger({ ...ledger(findings), freeze: noMustFix }, { currentHeadSha: sha(4), frozen: noMustFix });
+  for (const evidence of ['', '   ', null]) {
+    assert.throws(() => call([{ ...finding('F9'), classification: 'in-scope miss', evidence }]), /evidence/);
+    assert.throws(() => call([{ ...fixed('F9'), evidence }]), /evidence/);
+  }
+  assert.throws(() => call([(() => { const f = { ...finding('F9'), classification: 'in-scope miss' }; delete f.evidence; return f; })()]), /missing or unexpected/);
+  assert.equal(call([{ ...finding('F9'), classification: 'in-scope miss' }]).verdict, '审查结论：打回');
+  assert.equal(call([{ ...fixed('F9'), classification: 'in-scope miss' }]).verdict, '审查结论：通过');
+  const followUp = { id: 'F9', summary: 'Separate concern', severity: 'low', classification: 'out-of-scope follow-up', status: 'follow-up' };
+  assert.equal(call([followUp]).verdict, '审查结论：通过');
+  assert.throws(() => call([{ ...followUp, evidence: 'not needed here' }]), /unexpected/);
+  assert.throws(() => call([{ ...finding('F9'), note: 'extra prose' }]), /unexpected/);
 });

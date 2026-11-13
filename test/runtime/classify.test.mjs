@@ -75,3 +75,29 @@ test('a failed or timed-out finalize step is its own class: asks a person and ne
   }
   assert.deepEqual([classify({ stage: 'finalize', exitCode: 0 }).class, classify({ stage: 'finalize', exitCode: 0 }).decision], ['ok', 'done']);
 });
+
+test('a rejected verdict whose blocking findings lack evidence is malformed and retries the reviewer', () => {
+  const rej = (findings) => reviewer({ output: '审查结论：打回\nneeds work', findings });
+  const reason = 'unevidenced_blocking_findings';
+  for (const findings of [
+    [{ classification: 'blocking', evidence: '' }],
+    [{ classification: 'blocking', evidence: '   ' }],
+    [{ classification: 'blocking' }],
+    [{ classification: 'in-scope miss' }],
+    [{ classification: 'blocking', evidence: 'ok' }, { classification: 'in-scope miss' }],
+  ]) {
+    const r = rej(findings);
+    assert.deepEqual([r.class, r.decision, r.reason, r.consumesDeveloperRetry], ['reviewer_unavailable', 'wait', reason, false]);
+  }
+});
+
+test('a rejection with evidence on every blocking or in-scope finding stays a review rejection', () => {
+  const rej = (findings) => reviewer({ output: '审查结论：打回', findings });
+  const evidence = 'runtime/lib/classify.mjs:74 — node --test test/runtime/classify.test.mjs → 1 failing';
+  assert.equal(rej([{ classification: 'blocking', evidence }]).class, 'review_rejected');
+  assert.equal(rej([{ classification: 'in-scope miss', evidence }, { classification: 'out-of-scope follow-up' }]).class, 'review_rejected');
+  assert.equal(rej([]).class, 'review_rejected');
+  assert.equal(reviewer({ output: '审查结论：打回' }).class, 'review_rejected', 'absent findings keeps the old behavior');
+  assert.equal(reviewer({ output: '审查结论：通过', findings: [{ classification: 'blocking' }] }).class, 'review_passed', 'a pass is never malformed by the evidence rule');
+  assert.equal(reviewer({ output: '审查结论：阻塞', findings: [{ classification: 'blocking' }] }).class, 'human_block');
+});
