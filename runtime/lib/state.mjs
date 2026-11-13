@@ -91,6 +91,28 @@ export async function createStateStore({
   const confinement = await createConfinement(workRoot);
   const fileFor = (id) => confinement.resolve('state', `${assertSafeId(id)}.json`);
   let epoch;
+  let fence;
+
+  /**
+   * Refuse a write that is not backed by the current lock token: the state file carries a higher epoch, or the
+   * anchor's high-water mark (read fresh from the lock, never from the state file) is above our epoch. A fence
+   * that cannot be read fails closed as stale. With no epoch/fence configured the store behaves as before.
+   */
+  async function assertCurrent(lockEpoch, id) {
+    if (epoch === undefined) return;
+    if (isCount(lockEpoch) && lockEpoch > epoch) {
+      throw new StaleEpochError(`State for ${id} belongs to lock epoch ${lockEpoch}, this writer holds ${epoch}`);
+    }
+    if (!fence) return;
+    let highWater;
+    try { highWater = await fence.highWater(); } catch (err) {
+      throw new StaleEpochError(`State for ${id} cannot be fenced: the lock high-water mark is unreadable (${err.message})`, { cause: err });
+    }
+    if (!isCount(highWater)) throw new StaleEpochError(`State for ${id} cannot be fenced: the lock high-water mark is not a valid epoch`);
+    if (highWater > epoch) {
+      throw new StaleEpochError(`State for ${id} is fenced by anchor epoch ${highWater}, this writer holds ${epoch}`);
+    }
+  }
 
   async function load(id) {
     const safeId = assertSafeId(id);
@@ -122,6 +144,11 @@ export async function createStateStore({
 
   async function save(state) {
     const id = assertSafeId(state.id);
+    const incomingEpoch = state.lockEpoch;
+    if (epoch !== undefined && isCount(incomingEpoch) && incomingEpoch > epoch) {
+      // Even a direct save() may not demote a state file that a newer lock epoch already owns.
+      throw new StaleEpochError(`State for ${id} belongs to lock epoch ${incomingEpoch}, this writer holds ${epoch}`);
+    }
     if (epoch !== undefined) state.lockEpoch = epoch;
     const name = epoch === undefined ? `${id}.json` : `~${Buffer.from(id).toString('hex')}.epoch-${epoch}.json`;
     await confinement.withParent(`state/${name}`, async (dir, leaf) => {
@@ -138,6 +165,10 @@ export async function createStateStore({
       }
       try {
         try { await fh.writeFile(body); await fh.sync(); } finally { await fh.close(); }
+        // Fence as late as possible: right before the rename publishes the file. The high-water read is not
+        // atomic with the rename (pure Node built-ins have no compare-and-swap on two directories), but the
+        // lock's own epoch can only be lost after this point, never silently reused by a newer writer.
+        await assertCurrent(state.lockEpoch, id);
         await fs.rename(tmp, file);
       } catch (err) {
         await fs.unlink(tmp).catch(() => {});
@@ -156,14 +187,15 @@ export async function createStateStore({
    * `update` for the same id itself (it would wait for its own turn forever). Nothing is written when
    * `fn` leaves the state unchanged, so a no-op (e.g. releasing a lease we do not own) never rewrites
    * state that another process may have changed in the meantime. With an epoch set (`setEpoch`) the update
-   * is refused with `StaleEpochError` when the state carries a higher `lockEpoch`.
+   * is refused with `StaleEpochError` when the state carries a higher `lockEpoch`; with a fence
+   * (`setFence`) it is also refused when the lock anchor's high-water epoch is above this store's epoch.
    */
   async function update(id, fn) {
     const key = await fileFor(id);
     const previous = CHAINS.get(key) ?? Promise.resolve();
     const run = previous.then(async () => {
       const state = await load(id);
-      if (epoch !== undefined && state.lockEpoch > epoch) throw new StaleEpochError(`State for ${id} belongs to lock epoch ${state.lockEpoch}, this writer holds ${epoch}`);
+      await assertCurrent(state.lockEpoch, id);
       const before = JSON.stringify(state);
       const next = (await fn(state)) ?? state;
       if (JSON.stringify(next) === before) return next;
@@ -184,6 +216,16 @@ export async function createStateStore({
     setEpoch(n) {
       if (!isCount(n)) throw new TypeError('epoch must be a non-negative integer');
       epoch = n;
+    },
+    /**
+     * Fence writes by the lock's anchor high-water mark: `highWater()` must resolve to the highest lock epoch
+     * currently present under the anchor (e.g. `() => lock.anchorHighWater()`). A write is refused with
+     * `StaleEpochError` when that mark is above this store's epoch, so a stale writer stays stale even after
+     * the in-repo state directory was swapped or emptied.
+     */
+    setFence({ highWater } = {}) {
+      if (typeof highWater !== 'function') throw new TypeError('setFence requires a highWater function');
+      fence = { highWater };
     },
     load,
     save,

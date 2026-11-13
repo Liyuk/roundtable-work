@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createStateStore } from '../../runtime/lib/state.mjs';
+import { createStateStore, freshState } from '../../runtime/lib/state.mjs';
+import { acquireLock } from '../../runtime/lib/lock.mjs';
 import { PathEscapeError } from '../../runtime/lib/paths.mjs';
 
 async function setup(opts = {}) {
@@ -198,4 +199,69 @@ test('state save cannot follow an ancestor swapped during the write', async () =
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// Anchored fencing (issue #77): the high-water token comes from the anchor lock, never the state file.
+
+test('a stale epoch is rejected after a newer writer commits and the in-repo state directory is replaced', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rt-state-fence-'));
+  const anchor = await mkdtemp(join(tmpdir(), 'rt-state-fence-anchor-'));
+  const fsp = await import('node:fs/promises');
+  try {
+    const clock = { t: 1_000_000 };
+    const lockPath = join(root, '.roundtable', 'state', 'rtd.lock.d');
+    const older = await acquireLock({ lockPath, repoRoot: root, anchorRoot: anchor, owner: 'old', now: () => clock.t, ttlMs: 1000 });
+    assert.equal(older.acquired, true);
+    const store = await createStateStore({ workRoot: root, now: () => clock.t });
+    store.setEpoch(older.epoch);
+    store.setFence({ highWater: () => older.anchorHighWater() });
+    await store.update('1', (state) => { state.changedFiles = 1; });
+    assert.equal((await store.load('1')).lockEpoch, 1);
+
+    // A newer holder takes the lock over (lease expiry) and commits epoch N+1.
+    clock.t += 1001;
+    const newer = await acquireLock({ lockPath, repoRoot: root, anchorRoot: anchor, owner: 'new', now: () => clock.t, ttlMs: 1000 });
+    assert.equal(newer.acquired, true);
+    assert.equal(newer.epoch, 2);
+
+    // The in-repo state directory is replaced (or emptied): the state file no longer carries the epoch, so
+    // only the anchor high-water mark can still tell the stale writer that it lost.
+    await fsp.rename(join(root, 'state'), join(root, 'displaced'));
+    await fsp.mkdir(join(root, 'state'));
+    await assert.rejects(store.update('1', (state) => { state.changedFiles = 99; }), { code: 'RT_STALE_EPOCH' });
+    await assert.rejects(store.save({ ...freshState('1'), changedFiles: 42 }), { code: 'RT_STALE_EPOCH' });
+    assert.deepEqual(await fsp.readdir(join(root, 'state')), [], 'the stale writer published nothing');
+    assert.equal(await older.refresh(), false);
+    await newer.release();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(anchor, { recursive: true, force: true });
+  }
+});
+
+test('a fence that cannot be read fails closed as a stale write, before anything is published', async () => {
+  const { root, cleanup } = await setup();
+  try {
+    const store = await createStateStore({ workRoot: root });
+    store.setEpoch(5);
+    let calls = 0;
+    store.setFence({ highWater: async () => { calls++; throw new Error('anchor is gone'); } });
+    await assert.rejects(store.update('1', (state) => { state.changedFiles = 1; }), { code: 'RT_STALE_EPOCH' });
+    assert.ok(calls >= 1);
+    assert.deepEqual(await readdir(join(root, 'state')).catch(() => []), [], 'no state file was published');
+  } finally { await cleanup(); }
+});
+
+test('a fence at or below our epoch does not block writes, and the epoch is stamped on them', async () => {
+  const { root, store, cleanup } = await setup();
+  try {
+    store.setEpoch(3);
+    store.setFence({ highWater: async () => 3 });
+    await store.update('1', (state) => { state.changedFiles = 1; });
+    assert.equal((await store.load('1')).lockEpoch, 3);
+    store.setFence({ highWater: async () => 4 });
+    await assert.rejects(store.update('1', (state) => { state.changedFiles = 2; }), { code: 'RT_STALE_EPOCH' });
+  } finally { await cleanup(); }
 });

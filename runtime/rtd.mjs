@@ -11,7 +11,14 @@ import { randomUUID } from 'node:crypto';
 import { createStateStore, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
 import { createIntakeProvider } from './lib/intake.mjs';
-import { createGitHubReader } from '../scripts/github-read.mjs';
+import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.mjs';
+import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
+import { runWorkers } from './lib/workers.mjs';
+import { createWorktreeManager } from './lib/worktree.mjs';
+import { applyDecision, resumeAfterOwnerReply } from './lib/decisions.mjs';
+import { runGates, recoverRedMain } from './lib/gates.mjs';
+import { createProductionAdapter } from './lib/production.mjs';
+import { createMergeEntryPoint } from './lib/merge.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 export const EXIT_LOCKED = 75;
@@ -34,11 +41,21 @@ export function exitCodeFor(result) {
  * `{ exitCode, timedOut, output, scopeMismatch, humanBlock, artifacts, changedFiles }`.
  * It must not delete worktree / diff / output artifacts; it reports their paths (returned or via
  * `recordArtifacts`, which persists them immediately so a crash cannot lose the record).
+ * For auto-merge, `autoMerge.context({ item, state, result, signal })` supplies the PR number, head, tree,
+ * boolean highRisk and changedFiles. `autoMerge.gates` and `autoMerge.github` provide injected gate and
+ * GitHub operations; `autoMerge.github.getPullRequest` must return { state, draft, head, mergeable, files },
+ * where files is the pull request's changed paths (the merge entry point re-derives the safety-file set
+ * from it and fails closed when it is missing). Gate records are persisted in the issue state; the merge
+ * entry point rechecks the PR and CI. GitHub intake requires `--providers MODULE`, a trusted module exporting the production providers.
  *
  * A failed or timed-out `finalizing` step ends the wake as `interrupted` (decision `ask`, class
  * `finalize_failure`, `recovery.resumePhase = 'finalizing'`): it is not retried from development and
  * spends no developer retry. A `PathEscapeError` thrown by the handler's own `recordArtifacts()` is a
- * scope mismatch (`out-of-scope`), not a developer failure.
+ * scope mismatch (`out-of-scope`), not a developer failure. A gate *hold* in the finalizing auto-merge
+ * step (nothing merged: pending CI, missing recorded safety approval, reviewer unavailable, or a
+ * transient gate/CI error) is not terminal: the wake ends as `waiting_external` (decision `wait`, class
+ * `finalize_hold`) with `recovery` untouched and the persisted gate record kept, so a later wake resumes
+ * at `finalizing` and reuses the gates that already passed.
  *
  * Liveness contract: the single-flight lock has a lease of `lockTtlMs`. It is renewed at the start of
  * every wake and phase, by every `heartbeat()` call, and automatically on an unref'd timer while the
@@ -87,8 +104,10 @@ export async function runQueue({
   leaseTtlMs = 60_000, heartbeatTimeoutMs = 120_000, lockTtlMs = 5 * 60_000, lockRenewMinMs = 1000,
   maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
+  githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
+  if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -100,9 +119,10 @@ export async function runQueue({
   if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
-  const lock = await acquireLock({ lockPath: await store.confinement.resolve('rtd.lock.d'), owner, now, ttlMs: lockTtlMs });
+  const lock = await acquireLock({ lockPath: await store.confinement.resolve('.roundtable/state/rtd.lock.d'), repoRoot: workRoot, owner, now, ttlMs: lockTtlMs });
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
+  store.setFence({ highWater: () => lock.anchorHighWater() }); // and by the anchor high-water mark, not the state file
 
   // Set when a timed-out handler did not settle within graceMs: lock and issue lease stay renewed until it settles.
   let abandonedHandler = false;
@@ -131,6 +151,90 @@ export async function runQueue({
     return async () => { clearInterval(timer); await renewing; };
   };
 
+  // Serialize claim admission and merge/recovery decisions within this lock epoch.
+  let admissionTail = Promise.resolve();
+  const exclusive = async (fn) => {
+    const previous = admissionTail;
+    let release;
+    admissionTail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try { return await fn(); } finally { release(); }
+  };
+  const monitorId = 'rt-main-monitor';
+  const readMonitor = async () => (await store.load(monitorId)).mainMonitor ?? (autoMerge?.pause ? await autoMerge.pause.get({ epoch: lock.epoch }) : null);
+  const writeMonitor = async (value) => {
+    // Keep the built-in hold even if a later pass omits the optional injected backend.
+    if (value === null && autoMerge?.pause) await autoMerge.pause.put(null, { epoch: lock.epoch });
+    await store.update(monitorId, (s) => { s.mainMonitor = value; });
+    if (value !== null && autoMerge?.pause) await autoMerge.pause.put(value, { epoch: lock.epoch });
+  };
+  const gateStore = {
+    get: async (issue) => (await store.load(issue)).gateRecord,
+    put: async (issue, record) => { await store.update(issue, (s) => { s.gateRecord = record; }); },
+  };
+  const validContext = (context) => context && typeof context.highRisk === 'boolean' && Array.isArray(context.changedFiles) && context.changedFiles.every((f) => typeof f === 'string') && context.pr != null;
+  const ensureLive = async (signal = abort.signal) => { if (signal.aborted || !(await refreshLock()) || signal.aborted) throw new Error('phase aborted or lock lost'); };
+  const monitorMain = async (signal = abort.signal) => {
+    let record = await readMonitor();
+    if (!record) return false;
+    if (record.stage === 'merging') return true; // Unknown merge outcome requires intervention.
+    await ensureLive(signal);
+    const status = await autoMerge.github.mainStatus();
+    if (!status || !['green', 'red', 'pending'].includes(status.status) || typeof status.head !== 'string' || !status.head) throw new Error('provider github.mainStatus returned an invalid status');
+    if (status.status === 'green' && (!record.recovery || record.recovery.revertMerged?.done)) {
+      await ensureLive(signal);
+      await writeMonitor(null);
+      return false;
+    }
+    if (status.status !== 'red' || status.head !== record.mergeCommit) return true;
+    // Publish an in-flight marker before every external recovery effect. A crash or error leaves
+    // an explicit hold rather than repeating an action whose outcome is unknown.
+    const once = async (key, effect) => {
+      record = await readMonitor();
+      const step = record.recovery?.[key];
+      if (step?.done) return step.value;
+      if (step?.inFlight) throw new Error(`Recovery ${key} outcome is unknown; main remains paused`);
+      record.recovery ??= {};
+      record.recovery[key] = { inFlight: true };
+      await writeMonitor(record);
+      await ensureLive(signal);
+      const value = await effect();
+      if (value == null) throw new Error(`Recovery ${key} returned no result; main remains paused`);
+      record = await readMonitor();
+      record.recovery[key] = { done: true, value };
+      await writeMonitor(record);
+      return value;
+    };
+    await recoverRedMain({ mergeCommit: record.mergeCommit, mainHead: status.head, mainRed: true,
+      pause: { async claimsAndMerges() {} },
+      git: { createRevert: (args) => once('revert', () => autoMerge.git.createRevert(args)) },
+      github: {
+        openRevertPullRequest: (args) => once('pullRequest', () => autoMerge.github.openRevertPullRequest(args)),
+        createIssue: (args) => once('issue', () => autoMerge.github.createIssue(args)),
+        requiredGreen: (...args) => autoMerge.github.requiredGreen(...args),
+      },
+      merge: { squash: async (pr) => {
+        const current = await readMonitor();
+        if (current.recovery?.revertMerged?.done) return current.recovery.revertMerged.value;
+        const issue = current.recovery?.issue?.value?.number;
+        if (!Number.isSafeInteger(issue) || issue < 1) throw new Error('Recovery issue number is required');
+        const context = await autoMerge.context({ recovery: { pr, issue, mergeCommit: record.mergeCommit } });
+        if (!validContext(context) || context.pr !== pr) throw new Error('Incomplete revert merge context');
+        const mergeGithub = {
+          getPullRequest: (...args) => autoMerge.github.getPullRequest(...args),
+          requiredGreen: (...args) => autoMerge.github.requiredGreen(...args),
+          squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
+        };
+        const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore });
+        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, merge: { squash } });
+        if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
+        return gated.result;
+      } },
+    });
+    return true;
+  };
+
   try {
     let read;
     const stopRenewal = startRenewal();
@@ -149,12 +253,76 @@ export async function runQueue({
     // Lost while the queue was read: another pass may own the state now, so do not start any wake.
     if (lockLost || !(await refreshLock())) return { status: 'lock_lost', outcomes: [], skipped };
     const outcomes = [];
-    for (const item of items) {
-      const outcome = await wakeGuarded(item);
-      outcomes.push(outcome);
-      // An abandoned handler may still be running: wake nothing else, and say so (the caller must not outlive it).
-      if (outcome.status === 'lock_lost') return { status: 'lock_lost', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
-      if (abandonedHandler) break;
+    if (autoMerge?.production) {
+      const stopMonitorRenewal = startRenewal();
+      let paused;
+      try { paused = await exclusive(monitorMain); } finally { await stopMonitorRenewal(); }
+      if (paused) return { status: 'ok', outcomes, skipped: [...skipped, ...items.map((item) => ({ id: item.id, reason: 'main_paused' }))] };
+    } else if (await readMonitor()) {
+      return { status: 'ok', outcomes, skipped: [...skipped, ...items.map((item) => ({ id: item.id, reason: 'main_paused' }))] };
+    }
+    if (githubClient) {
+      const manager = await createWorktreeManager({ workRoot, repoRoot, baseBranch, now });
+      const coordinator = createClaimCoordinator({
+        client: githubClient, stateRoot: await store.confinement.resolve('locks'),
+        loadState: (id) => store.load(id), isStale: async (state) => store.staleness(state).stale,
+        // The scheduler already holds the issue lock. Existing worktrees prevent new claims,
+        // but a stale claimed issue must reuse its durable worktree.
+        isInFlight: async (issue, state) => {
+          const status = await manager.inspect(issue.id);
+          const resumableWorktree = state.attempts.wakes > 0 && ['queued', 'waiting_person', 'out-of-scope'].includes(state.status);
+          return !resumableWorktree && !(issue.labels ?? []).some((l) => (typeof l === 'string' ? l : l.name) === 'rt:running') && status.liveWorktree;
+        },
+        resume: async (issue, state) => {
+          if (!state.claimPending) return;
+          const comments = typeof githubClient.listComments === 'function' ? await githubClient.listComments(issue.number ?? issue.id) : issue.comments ?? [];
+          if (!comments.some((comment) => String(comment.body ?? comment).includes(CLAIM_MARKER))) {
+            await githubClient.createComment(issue.number ?? issue.id, `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`);
+          }
+          await store.update(issue.id, (current) => { current.claimPending = false; });
+        },
+        beforeClaim: async (issue) => { await store.update(issue.id, (state) => { state.claimPending = true; }); },
+        afterClaim: async (issue) => { await store.update(issue.id, (state) => { state.claimPending = false; }); },
+        canResume: (state) => state.status === 'working' || (['queued', 'waiting_external'].includes(state.status) && (state.claimPending === true || state.attempts.wakes > 0)), now,
+      });
+      const stopSchedulingRenewal = startRenewal();
+      let scheduled;
+      try { scheduled = await runWorkers({ issues: items, workRoot, repoRoot, workers, worktreeManager: manager, now,
+        shouldStop: () => lockLost || abandonedHandler,
+        prepare: async (item) => exclusive(async () => {
+          if (await readMonitor()) { skipped.push({ id: item.id, reason: 'main_paused' }); return false; }
+          if (lockLost || abandonedHandler || !(await refreshLock())) return false;
+          let state = await store.load(item.id);
+          if (state.pause && ['waiting_person', 'out-of-scope'].includes(state.status)) {
+            const comments = typeof githubClient.listComments === 'function'
+              ? await githubClient.listComments(item.number ?? item.id)
+              : [];
+            await resumeAfterOwnerReply({ issue: item, comments, store, client: githubClient, now });
+            state = await store.load(item.id);
+          }
+          if (isTerminal(state.status)) { skipped.push({ id: item.id, reason: 'terminal' }); return false; }
+          const claim = await coordinator.tick([item]);
+          if (!claim.claimed && !claim.resumed) { skipped.push(...claim.skipped); return false; }
+          return true;
+        }),
+        run: async (item, worker) => {
+          worker.signal.addEventListener('abort', markLost, { once: true });
+          try { outcomes.push(await wakeGuarded({ ...item, worktree: worker.worktree })); }
+          finally { worker.signal.removeEventListener('abort', markLost); }
+        },
+      });
+      } finally { await stopSchedulingRenewal(); }
+      skipped.push(...scheduled.skipped);
+      if (lockLost) return { status: 'lock_lost', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
+      if (scheduled.failed.length) throw scheduled.failed[0].error;
+    } else {
+      for (const item of items) {
+        if (await readMonitor()) { skipped.push({ id: item.id, reason: 'main_paused' }); continue; }
+        const outcome = await wakeGuarded(item);
+        outcomes.push(outcome);
+        if (outcome.status === 'lock_lost') return { status: 'lock_lost', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
+        if (abandonedHandler) break;
+      }
     }
     return { status: 'ok', outcomes, skipped, ...(abandonedHandler ? { abandonedHandler: true } : {}) };
   } catch (err) {
@@ -262,7 +430,73 @@ export async function runQueue({
         const signal = AbortSignal.any([abort.signal, phaseAbort.signal]);
         const guard = withTimeout(phaseTimeoutMs, () => phaseAbort.abort(new Error('phase timed out')));
         try {
-          running = Promise.resolve().then(() => handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal }));
+          running = Promise.resolve().then(async () => {
+            const result = await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal });
+            if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
+            const executeMerge = async () => {
+              if (await readMonitor()) throw new Error('Main is paused');
+              const context = await autoMerge.context({ item, state, result, signal });
+              if (!validContext(context)) throw new Error('Incomplete merge context');
+              // Whether the provider's squashMerge already resolved. Everything before it stays fail-closed;
+              // everything after it is bookkeeping, and must never turn a real merge into a finalize failure.
+              let mergeHappened = false;
+              const gateState = {
+                get: async (issue) => (await store.load(issue)).gateRecord,
+                put: async (issue, record) => {
+                  if (signal.aborted) throw new Error('phase aborted');
+                  await store.update(issue, (s) => { s.gateRecord = record; });
+                },
+              };
+              const mergeGithub = {
+                getPullRequest: (...args) => autoMerge.github.getPullRequest(...args),
+                requiredGreen: (...args) => autoMerge.github.requiredGreen(...args),
+                squashMerge: async (...args) => {
+                  if (signal.aborted || !(await refreshLock()) || signal.aborted) throw new Error('phase aborted or lock lost');
+                  if (autoMerge.production) await writeMonitor({ stage: 'merging' });
+                  const merged = await autoMerge.github.squashMerge(...args);
+                  // Only after this point has main changed; the caller finishes the merge bookkeeping separately.
+                  mergeHappened = true;
+                  return merged;
+                },
+              };
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState });
+              const guardedSquash = async (...args) => {
+                if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
+                return squash(...args);
+              };
+              const gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, merge: { squash: guardedSquash } });
+              if (gated.status !== 'merged') {
+                // A hold merged nothing and has no side effect to repeat: hand it back to the wake loop so the
+                // issue waits instead of failing closed. The passed gates are already persisted, so the next
+                // wake resumes at finalizing and reuses them (only live CI and the safety approval are rechecked).
+                if (gated.hold === true) return { ...result, mergeHold: { gate: gated.gate, reason: gated.reason } };
+                // A genuine gate failure (an explicit not-pass verdict, or a merge entry point rejection such as
+                // a stale head or a changed safety-file set) stays fail-closed: interrupted, decision ask.
+                throw new Error(`${gated.gate}: ${gated.reason}`);
+              }
+              if (!mergeHappened) throw new Error('Merge entry point reported a merge without a provider squash result');
+              // Post-merge bookkeeping. The squash already happened, so a failure here must not fail this wake:
+              // the issue is delivered and the failure is kept as a non-fatal detail. Main protection is taken
+              // from what was already written and is never weakened: an unusable mergeCommit leaves the
+              // `{stage:'merging'}` record (main stays paused, no invented SHA), and a failed mainStatus leaves
+              // `{stage:'monitoring', mergeCommit}`, so a later pass retries monitoring/recovery instead of
+              // squashing the same pull request again.
+              let mergeMonitorError;
+              if (autoMerge.production) {
+                try {
+                  const mergeCommit = gated.result?.mergeCommit;
+                  if (typeof mergeCommit !== 'string' || !/^[0-9a-f]{7,40}$/i.test(mergeCommit)) throw new Error('provider github.squashMerge must return mergeCommit SHA; main remains paused');
+                  await writeMonitor({ stage: 'monitoring', mergeCommit });
+                  await monitorMain(signal);
+                } catch (err) {
+                  mergeMonitorError = `merge monitor: ${err?.message ?? err}`;
+                }
+              }
+              // a merged step is never a hold, whatever the handler returned
+              return { ...result, mergeHold: null, ...(mergeMonitorError ? { mergeMonitorError } : {}) };
+            };
+            return autoMerge.production ? exclusive(executeMerge) : executeMerge();
+          });
           running.catch(() => {}); // a handler that settles after its timeout must not become an unhandled rejection
           const returned = await Promise.race([running, guard.timeout.then(() => TIMED_OUT)]);
           phaseTimedOut = returned === TIMED_OUT;
@@ -305,9 +539,24 @@ export async function runQueue({
         const verdict = classify({ ...step, stage: STAGE[phase] });
         const { class: cls, reason } = verdict;
 
+        // Checked before the ok/finalize_failure branches: a gate hold is neither success nor failure. Nothing
+        // was merged (so main is not paused and no squash ran), the checkpoint still points at the last
+        // completed phase (finalizing resumes), `recovery` is untouched, no developer retry is spent and the
+        // persisted gateRecord survives for the next wake.
+        if (phase === 'finalizing' && autoMerge && step.mergeHold) {
+          return await finish('waiting_external', 'finalize_hold', `${step.mergeHold.gate}: ${step.mergeHold.reason}`, 'wait');
+        }
+
         if (cls === 'ok' || cls === 'review_passed') {
+          const decision = step.decisionFile ?? step.decision;
+          if (phase === 'finalizing' && decision !== undefined) {
+            if (!githubClient && typeof decision !== 'string' && !['do', 'continue'].includes(decision?.decision)) throw new TypeError('ask and out-of-scope decisions require the injected tracker client');
+            const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, now });
+            return out(decisionResult.status, { class: 'decision', decision: decisionResult.decision });
+          }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
-          if (phase === 'finalizing') return await finish('done', cls, undefined, 'done');
+          // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
+          if (phase === 'finalizing') return await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
@@ -362,13 +611,13 @@ function withTimeout(ms, onTimeout) {
 async function main(argv) {
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
   }
   if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github)) {
-    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO]) --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
     return 2;
   }
   const timeouts = {};
@@ -381,9 +630,15 @@ async function main(argv) {
     }
     timeouts[option] = n;
   }
-  const { default: handler } = await import(pathToFileURL(resolve(args.handler)).href);
-  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo })) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, ...timeouts });
+  const handlerModule = await import(pathToFileURL(resolve(args.handler)).href);
+  const handler = handlerModule.default;
+  const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
+  if (args.github && !args.providers) {
+    console.error('GitHub workers require --providers MODULE with production gate, GitHub and git providers');
+    return 2;
+  }
+  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) result.triage = queue.triage;
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {

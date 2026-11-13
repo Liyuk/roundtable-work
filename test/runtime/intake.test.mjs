@@ -5,6 +5,14 @@ import { createGitHubReader } from '../../scripts/github-read.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
 import { runQueue } from '../../runtime/rtd.mjs';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-intake-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', body: '', ...extra });
 const select = (issues, states = {}) => selectIssues({ issues, owner: 'owner', dependencyStates: states });
@@ -161,4 +169,13 @@ test('runQueue selects tracker fixtures after dependencies close', async () => {
     dependency = 'CLOSED';
     assert.deepEqual((await runQueue({ workRoot: root, queue: provider, handler })).outcomes.map(({ id, status }) => [id, status]), [['10', 'done']]);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('tracker intake includes rt:ask and rt:blocked issues and carries owner identity for resumption', async () => {
+  const paused = issue(32, ['rt:ask'], { title: '[A] paused' });
+  const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [paused] }, { includeRunning: true });
+  const items = await provider();
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].author, paused.author);
+  assert.deepEqual(items[0].labels.map(label => label.name), ['rt:ask']);
 });

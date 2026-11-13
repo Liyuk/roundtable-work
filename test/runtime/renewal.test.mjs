@@ -2,18 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
-import { acquireLock } from '../../runtime/lib/lock.mjs';
+import { acquireLock, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-renewal-'));
-// Lock files live in `rtd.lock.d/epoch-<n>`: a successor process writes the next epoch; the holder is the highest one.
-const lockDirOf = (root) => join(root, 'rtd.lock.d');
+// Runtime lock records live in the private anchor (RTW_STATE_DIR, inherited by child processes), never in the
+// work root: `.roundtable/state/rtd.lock.d` is only the caller-side path whose last component names the lock.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-renewal-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* leaving /tmp behind is harmless */ } });
+const lockPathOf = (root) => join(root, '.roundtable', 'state', 'rtd.lock.d');
+const lockDirOf = (root) => lockDirectoryFor({ lockPath: lockPathOf(root), repoRoot: root, anchorRoot: ANCHOR });
 const epochsIn = (root) => readdirSync(lockDirOf(root)).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
 const plantEpoch = (root, rec) => writeFileSync(join(lockDirOf(root), `epoch-${Math.max(0, ...epochsIn(root)) + 1}`), JSON.stringify(rec));
 const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch-${Math.max(...epochsIn(root))}`), 'utf8'));
@@ -27,7 +32,7 @@ const RENEW = { lockTtlMs: TTL, lockRenewMinMs: 20 };
 test('a quiet handler (no heartbeat) longer than 2x the lock TTL keeps the lock: a second acquireLock and runQueue are refused', async () => {
   const root = await tmp();
   try {
-    const lockPath = lockDirOf(root);
+    const lockPath = lockPathOf(root);
     const attempts = [];
     const phases = [];
     let secondRuns = 0;
@@ -37,7 +42,7 @@ test('a quiet handler (no heartbeat) longer than 2x the lock TTL keeps the lock:
         const end = Date.now() + 3 * TTL;
         while (Date.now() < end) {
           await sleep(150);
-          const other = await acquireLock({ lockPath, owner: 'intruder', ttlMs: TTL });
+          const other = await acquireLock({ lockPath, repoRoot: root, owner: 'intruder', ttlMs: TTL });
           const second = await runQueue({ workRoot: root, queue: ['1'], handler: async () => { secondRuns++; return { exitCode: 0 }; }, ...RENEW });
           attempts.push({ acquired: other.acquired, status: second.status });
           if (other.acquired) await other.release();
@@ -111,7 +116,7 @@ import { join } from 'node:path';
 export default async function ({ phase }) {
   if (process.env.RT_TEST_MODE === 'steal') {
     // A successor takes the lock over: it writes the next epoch file.
-    const dir = join(process.env.RT_TEST_ROOT, 'rtd.lock.d');
+    const dir = process.env.RT_TEST_LOCK_DIR;
     const next = Math.max(0, ...readdirSync(dir).map((n) => /^epoch-(\\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number)) + 1;
     writeFileSync(join(dir, 'epoch-' + next), JSON.stringify({ owner: 'thief', pid: process.pid, token: 't', acquiredAt: Date.now(), expiresAt: Date.now() + 60000 }));
   }
@@ -120,7 +125,7 @@ export default async function ({ phase }) {
 `);
     const cli = (mode) => new Promise((resolve) => {
       const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')],
-        { env: { ...process.env, RT_TEST_ROOT: root, RT_TEST_MODE: mode }, stdio: ['ignore', 'pipe', 'ignore'] });
+        { env: { ...process.env, RT_TEST_ROOT: root, RT_TEST_LOCK_DIR: lockDirOf(root), RT_TEST_MODE: mode }, stdio: ['ignore', 'pipe', 'ignore'] });
       let out = '';
       child.stdout.on('data', (d) => { out += d; });
       child.on('close', (code) => resolve({ code, out }));
@@ -129,7 +134,7 @@ export default async function ({ phase }) {
     assert.equal(lost.code, EXIT_LOCK_LOST);
     assert.equal(JSON.parse(lost.out).status, 'lock_lost');
     await rm(lockDirOf(root), { recursive: true, force: true });
-    const held = await acquireLock({ lockPath: lockDirOf(root), owner: 'someone' });
+    const held = await acquireLock({ lockPath: lockPathOf(root), repoRoot: root, owner: 'someone' });
     assert.equal(held.acquired, true);
     const locked = await cli('plain');
     assert.equal(locked.code, EXIT_LOCKED);
@@ -160,7 +165,7 @@ test('bad lock timing is rejected up front with a TypeError; valid and default t
       await assert.rejects(runQueue({ workRoot: root, queue: ['1'], handler, ...opts }), TypeError, JSON.stringify(opts));
     }
     // Rejected before anything ran: no lock file, no state.
-    await assert.rejects(readFile(join(root, 'rtd.lock.d', 'epoch-1')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(lockDirOf(root), 'epoch-1')), { code: 'ENOENT' });
     await assert.rejects(readFile(join(root, 'state', '1.json')), { code: 'ENOENT' });
     // Exactly half a lease, and the defaults, are valid.
     assert.equal((await runQueue({ workRoot: root, queue: ['1'], handler, lockTtlMs: 1000, lockRenewMinMs: 500 })).status, 'ok');

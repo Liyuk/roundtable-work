@@ -11,7 +11,6 @@ export class PathEscapeError extends Error {
 }
 
 const within = (root, path) => path === root || path.startsWith(root + sep);
-const FD_PATH = '/dev/fd';
 
 /**
  * Create a resolver that confines every path to `workRoot`.
@@ -67,8 +66,11 @@ export async function createConfinement(workRoot) {
     }
   }
 
-  // Pin every directory while it is used. /dev/fd gives Node's pathname-only APIs
-  // an fd-relative anchor on POSIX systems; O_NOFOLLOW prevents a swapped component redirecting traversal.
+  // Linux supports fd-relative pathname traversal through procfs. Node has no
+  // openat or F_GETPATH binding on Darwin: its fallback verifies the pinned
+  // directory against its real pathname before and after each operation. This
+  // detects replacement but cannot prevent a transient pathname swap during an
+  // operation; a native fd-relative primitive is needed to close that race.
   async function withParent(path, fn, { create = false, fs = { mkdir } } = {}) {
     const lexical = await this.resolve(path);
     const components = relative(lexicalRoot, dirname(lexical)).split(sep).filter(Boolean);
@@ -78,19 +80,43 @@ export async function createConfinement(workRoot) {
       handles.push(rootHandle);
       const stat = await rootHandle.stat();
       if (stat.dev !== rootStat.dev || stat.ino !== rootStat.ino) throw new PathEscapeError('Work root changed');
+      let parentPath = realRoot;
+      const verifyParent = async (handle, path) => {
+        const [pinned, actual] = await Promise.all([handle.stat(), lstat(path)]);
+        if (!actual.isDirectory() || pinned.dev !== actual.dev || pinned.ino !== actual.ino) {
+          throw new PathEscapeError('Pinned parent changed');
+        }
+      };
+      const linux = process.platform === 'linux';
       for (const component of components) {
-        const next = `${FD_PATH}/${handles.at(-1).fd}/${component}`;
+        const parent = handles.at(-1);
+        if (!linux) await verifyParent(parent, parentPath);
+        const anchor = linux ? `/proc/self/fd/${parent.fd}` : parentPath;
+        const next = `${anchor}/${component}`;
         if (create) {
           try { await fs.mkdir(next); }
           catch (err) { if (err.code !== 'EEXIST') throw err; }
         }
+        if (!linux) await verifyParent(parent, parentPath);
         try { handles.push(await open(next, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)); }
         catch (err) {
           if (err.code === 'ELOOP' || err.code === 'ENOTDIR') throw new PathEscapeError('Symlink or non-directory in confined path');
           throw err;
         }
+        if (!linux) {
+          await verifyParent(parent, parentPath);
+          parentPath = await realpath(next);
+          if (!within(realRoot, parentPath)) throw new PathEscapeError('Parent escaped work root');
+          await verifyParent(handles.at(-1), parentPath);
+        }
       }
-      return await fn(`${FD_PATH}/${handles.at(-1).fd}`, basename(lexical));
+      const parent = handles.at(-1);
+      if (!linux) await verifyParent(parent, parentPath);
+      try {
+        return await fn(linux ? `/proc/self/fd/${parent.fd}` : parentPath, basename(lexical));
+      } finally {
+        if (!linux) await verifyParent(parent, parentPath);
+      }
     } finally {
       for (const handle of handles.reverse()) await handle.close();
     }
