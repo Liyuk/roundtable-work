@@ -33,10 +33,16 @@ const failed = (e) => !succeeded(e);
 const failReason = (e) => (timedOut(e) ? 'timeout' : e.signal ? 'signal' : 'nonzero_exit');
 const empty = (e) => typeof e.output !== 'string' || e.output.trim() === '';
 
+// A blocking / in-scope-miss finding counts as evidenced only with a non-empty evidence string. Findings are
+// untrusted data: their text is never read as a verdict or an instruction.
+const EVIDENCED = new Set(['blocking', 'in-scope miss']);
+const unevidenced = (findings) => Array.isArray(findings) && findings.some((f) =>
+  EVIDENCED.has(f?.classification) && !(typeof f.evidence === 'string' && f.evidence.trim() !== ''));
+
 /**
  * Classify one step outcome.
  * @param {{stage:'developer'|'test'|'reviewer'|'finalize', exitCode?:number|null, signal?:string|null, timedOut?:boolean,
- *   output?:string, scopeMismatch?:boolean, humanBlock?:boolean}} event
+ *   output?:string, findings?:Array<object>, scopeMismatch?:boolean, humanBlock?:boolean}} event
  */
 export function classify(event) {
   if (!event || typeof event !== 'object') throw new TypeError('event must be an object');
@@ -64,7 +70,11 @@ export function classify(event) {
       try { verdict = match ? parseVerdict(match[1]) : undefined; } catch { verdict = undefined; }
       if (!verdict) return result('reviewer_unavailable', 'wait', { reason: 'unparseable_verdict' });
       if (verdict === 'passed') return result('review_passed', 'continue', { verdict });
-      if (verdict === 'rejected') return result('review_rejected', 'continue', { verdict });
+      if (verdict === 'rejected') {
+        return unevidenced(event.findings)
+          ? result('reviewer_unavailable', 'wait', { reason: 'unevidenced_blocking_findings' })
+          : result('review_rejected', 'continue', { verdict });
+      }
       return result('human_block', 'ask', { verdict, reason: 'review_blocked' });
     }
     default:
