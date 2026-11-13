@@ -39,6 +39,6 @@ export function createMergeEntryPoint({ github, gateState }) {
     }
     const checks = await github.requiredGreen(pr);
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
-    return github.squashMerge(pr, { method: 'squash', sha: live.head });
+    return github.squashMerge(pr, { method: 'squash' });
   };
 }
