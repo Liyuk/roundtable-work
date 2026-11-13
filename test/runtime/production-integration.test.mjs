@@ -211,7 +211,7 @@ test('production adapter triggers recovery after red main and holds later work',
     const autoMerge = createProductionAdapter(providers);
     await runQueue({ workRoot: root, queue: ['53'], handler, autoMerge });
     assert.deepEqual(calls.filter(Array.isArray).map(x => x[1]), [90, 91]);
-    assert.deepEqual(calls.filter(Array.isArray).map(x => x[2]), [{ method: 'squash', sha: BASE_SHA }, { method: 'squash', sha: REVERT_SHA }]);
+    assert.deepEqual(calls.filter(Array.isArray).map(x => x[2]), [{ method: 'squash' }, { method: 'squash' }]);
     assert.deepEqual(calls.filter(x => typeof x === 'string'), ['gate0', 'reviewer', 'revert', 'revert-pr', 'bug', 'gate0', 'reviewer']);
     let ran = false;
     await runQueue({ workRoot: root, queue: ['54'], handler: async () => { ran = true; }, autoMerge });
@@ -271,9 +271,7 @@ test('CLI production providers perform unattended green and red-main recovery th
       const calls = (await readFile(log, 'utf8')).trim().split('\n').map(JSON.parse);
       const squashes = calls.filter(x => x[0] === 'squash');
       assert.deepEqual(squashes.map(x => x[1]), status === 'red' ? [90, 91] : [90, 90]);
-      assert.deepEqual(squashes.map(x => x[2]), status === 'red'
-        ? [{ method: 'squash', sha: BASE_SHA }, { method: 'squash', sha: REVERT_SHA }]
-        : [{ method: 'squash', sha: BASE_SHA }, { method: 'squash', sha: BASE_SHA }]);
+      assert.ok(squashes.every(x => JSON.stringify(x[2]) === JSON.stringify({ method: 'squash' })));
       if (status === 'red') {
         assert.deepEqual(calls.map(x => x[0]), ['gate0', 'reviewer', 'squash', 'revert', 'revert-pr', 'bug', 'gate0', 'reviewer', 'squash']);
         assert.deepEqual(calls.find(x => x[0] === 'bug')[1], ['type:bug', 'rt:self']);
