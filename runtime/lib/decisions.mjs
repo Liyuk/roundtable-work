@@ -134,7 +134,7 @@ export async function resumeDecomposition({ number, store, client, now = Date.no
       || decomposition.closedPullRequests.some(pull => !Number.isSafeInteger(pull) || pull < 1)
       || new Set(decomposition.closedPullRequests).size !== decomposition.closedPullRequests.length))) return null;
   await client.addLabel(number, 'rt:hold');
-  for (const child of decomposition.childIds) await client.addLabel(child, 'rt:self');
+  for (const child of decomposition.childIds) for (const label of ['rt:self', 'rt:go']) await client.addLabel(child, label);
   // A failed or interrupted create may have succeeded remotely. Never retry it blindly.
   if (decomposition.inFlight !== false) return null;
   while (decomposition.childIds.length < decomposition.drafts.length) {
@@ -145,7 +145,7 @@ export async function resumeDecomposition({ number, store, client, now = Date.no
     if (!Number.isSafeInteger(child) || child < 1 || decomposition.childIds.includes(child)) throw new TypeError('tracker did not return a valid child issue number');
     await store.update(id, state => { state.decomposition.childIds.push(child); state.decomposition.inFlight = false; });
     decomposition = (await store.load(id)).decomposition;
-    await client.addLabel(child, 'rt:self');
+    for (const label of ['rt:self', 'rt:go']) await client.addLabel(child, label);
   }
   const childIds = decomposition.childIds;
   const closedPullRequests = decomposition.closedPullRequests ?? [];

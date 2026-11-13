@@ -6,13 +6,14 @@
 
 - Can accept work from (user, specific issue labels, CI events...): the user themselves
 - Can execute without confirmation: read workspace; modify code in feature branch or isolated working tree; commit locally to feature branch after review passes; run local tests and checks
-- Must ask user first: merge to main branch, release or deploy, send external messages or comments, delete data, install global dependencies or third-party skills
+- Merge to main branch: mechanical after the deterministic check, independent review, and required CI; safety-file changes still need recorded approval
+- Must ask user first: credentials; destructive actions such as deleting data, releasing or deploying, sending external messages or comments, and installing global dependencies or third-party skills
 - Forbidden: <deployer fill in>
 
 ## Budget and Stop Conditions
 
 - Maximum attempts per assignment: 2
-- Review rejection maximum: 2 rounds, after which escalate to user judgment
+- Review rejection maximum: 2 rounds; after that, unresolved non-blocking findings are listed in the PR body and the work continues when the deterministic check passes, while only a missed acceptance criterion or a high-risk defect with a concrete trigger blocks
 - Consecutive no-progress round limit: 2 (no new facts, no new artifacts count as no progress) → `stop`
 - Concurrent writers to same file: 1
 - Single goal time or cost limit: <not set>

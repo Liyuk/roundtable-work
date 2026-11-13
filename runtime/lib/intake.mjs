@@ -84,7 +84,8 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
     const recovering = includeRunning && labels.some(label => ['rt:running', 'rt:ask', 'rt:blocked'].includes(label));
     if (!recovering && labels.includes('rt:proposed') && !labels.includes('rt:approved')) continue;
     if (!labels.length) { triage.push(issue); continue; }
-    if (!recovering && !labels.includes('type:bug') && !labels.includes('type:feature') && !labels.includes('rt:self')) continue;
+    const loopCreated = labels.includes('rt:self') || labels.includes('rt:followup');
+    if (!recovering && (loopCreated ? !labels.includes('rt:go') : !labels.includes('type:bug') && !labels.includes('type:feature'))) continue;
     if (!recovering && !dependencies(admissionText(issue)).every(n => String(dependencyStates[n] ?? '').toUpperCase() === 'CLOSED')) continue;
     if (!recovering) {
       const result = admission(issue);
@@ -94,7 +95,7 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
       }
     }
     const rank = ['priority:p0', 'priority:p1', 'priority:p2'].findIndex(label => labels.includes(label));
-    candidates.push({ issue, bug: labels.includes('type:bug') ? 0 : 1, rank: rank < 0 ? 3 : rank, self: labels.includes('rt:self') ? 0 : 1 });
+    candidates.push({ issue, bug: labels.includes('type:bug') ? 0 : 1, rank: rank < 0 ? 3 : rank, self: loopCreated ? 0 : 1 });
   }
   candidates.sort((a, b) => a.bug - b.bug || a.rank - b.rank || a.self - b.self || String(a.issue.createdAt).localeCompare(String(b.issue.createdAt)) || a.issue.number - b.issue.number);
   return { issues: candidates.map(({ issue }) => ({ id: String(issue.number), priority: 0, state: 'queued', title: issue.title, series: /^\[([^\]]+)\]/.exec(issue.title ?? '')?.[1] ?? null, number: issue.number, url: issue.url, ...(includeRunning ? { labels: issue.labels, body: issue.body, author: issue.author } : {}) })), triage, admission: admissionResults };

@@ -14,12 +14,12 @@ Applicable to "setting up the team in this project / configure team / adjust pol
 Already-existing facts do not need to be asked again. If missing and affecting authorization or acceptance, ask users for each item:
 
 1. Which workspace does the team serve; what are the long-term goals and acceptance criteria?
-2. Which actions require no confirmation, which ones require asking first (merge, release, external messaging, delete)?
+2. Which actions require no confirmation, which ones require asking first (credentials, release, external messaging, delete)? Merging to main is mechanical after the deterministic check, independent review, and required CI.
 3. What roles are needed; how many temporary sessions can Chief autonomously open?
 4. Should budget and stop conditions follow default values?
 5. Should external events or periodic health checks be enabled? Default is no for both.
 
-Do not request credentials in the conversation. By default, do not auto-merge, deploy, or send messages externally.
+Do not request credentials in the conversation. Merging to main is mechanical after the deterministic check, independent review, and required CI; safety-file changes still need recorded approval. Deploying, releasing, and sending messages externally go to the owner.
 
 ## 3. Write Configuration
 

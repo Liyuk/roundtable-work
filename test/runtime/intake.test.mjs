@@ -134,7 +134,7 @@ test('GitHub adapter uses the selected repository for each read', async () => {
   ]);
 });
 test('orders by bug, priority, self, age and extracts series', () => {
-  const result = select([issue(1), issue(2, ['type:feature', 'priority:p2']), issue(3, ['type:feature', 'priority:p1']), issue(4, ['type:feature', 'priority:p0']), issue(5, ['type:bug']), issue(6, ['type:bug', 'priority:p2']), issue(7, ['type:bug', 'priority:p2', 'rt:self']), issue(8, ['type:bug', 'priority:p2', 'rt:self'], { createdAt: '2020-01-01T00:00:00Z', title: '[Pages] build' })]);
+  const result = select([issue(1), issue(2, ['type:feature', 'priority:p2']), issue(3, ['type:feature', 'priority:p1']), issue(4, ['type:feature', 'priority:p0']), issue(5, ['type:bug']), issue(6, ['type:bug', 'priority:p2']), issue(7, ['type:bug', 'priority:p2', 'rt:self', 'rt:go']), issue(8, ['type:bug', 'priority:p2', 'rt:self', 'rt:go'], { createdAt: '2020-01-01T00:00:00Z', title: '[Pages] build' })]);
   assert.deepEqual(result.issues.map(i => i.id), ['8','7','6','5','4','3','2','1']);
   assert.equal(result.issues[0].series, 'Pages');
   assert.equal(select([issue(9, ['type:bug'], { title: '[I18N] text' }), issue(10, ['type:bug'], { title: '[RT] text' })]).issues[1].series, 'RT');
@@ -253,6 +253,7 @@ test('recovers a held parent after child labeling fails without duplicating its 
     assert.deepEqual(await provider({ store, client }), []);
     assert.equal(labels.has('rt:hold'), true);
     assert.equal(childLabels.has('rt:self'), true);
+    assert.equal(childLabels.has('rt:go'), true);
     childState = 'CLOSED';
     assert.deepEqual((await provider({ store, client })).map(item => item.number), [90]);
     assert.equal(creations, 1);
@@ -323,6 +324,16 @@ test('does not retry an ambiguous later creation or release its parent', async (
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('loop-created issues are eligible only with rt:go', () => {
+  assert.deepEqual(select([issue(1, ['rt:self'])]).issues, [], 'rt:self without rt:go');
+  assert.deepEqual(select([issue(2, ['rt:followup'])]).issues, [], 'rt:followup without rt:go');
+  assert.deepEqual(select([issue(3, ['rt:self', 'rt:go'])]).issues.map(i => i.number), [3]);
+  assert.deepEqual(select([issue(4, ['rt:followup', 'rt:go'])]).issues.map(i => i.number), [4]);
+  assert.deepEqual(select([issue(5, ['type:bug'])]).issues.map(i => i.number), [5], 'ordinary bug');
+  assert.deepEqual(select([issue(6, ['type:feature'])]).issues.map(i => i.number), [6], 'ordinary feature');
+  assert.deepEqual(select([issue(7, ['type:feature']), issue(8, ['rt:followup', 'rt:go'])]).issues.map(i => i.number), [8, 7], 'rt:followup applies the self ordering flag');
+});
+
 const terminalCase = async (prefix, fn) => {
   const base = new URL('../../.roundtable/scratch/193-dev-1/', import.meta.url);
   await mkdir(base, { recursive: true });
@@ -387,9 +398,9 @@ test('state ids read the state directory, prefer the newest epoch and tolerate a
 }));
 
 test('rt:self children without a type label are intake-eligible and sort after type:bug', () => {
-  assert.deepEqual(select([issue(1, ['rt:self']), issue(2, ['type:bug']), issue(3, ['type:feature'])]).issues.map(i => i.number), [2, 1, 3]);
-  for (const labels of [['rt:self', 'rt:hold'], ['rt:self', 'rt:owner'], ['rt:self', 'rt:proposed'], ['rt:self', 'type:epic']]) assert.deepEqual(select([issue(4, labels)]).issues, [], labels.join());
-  assert.deepEqual(select([issue(5, ['rt:self'], { body: 'Depends on #9' })]).issues, []);
+  assert.deepEqual(select([issue(1, ['rt:self', 'rt:go']), issue(2, ['type:bug']), issue(3, ['type:feature'])]).issues.map(i => i.number), [2, 1, 3]);
+  for (const labels of [['rt:self', 'rt:go', 'rt:hold'], ['rt:self', 'rt:go', 'rt:owner'], ['rt:self', 'rt:go', 'rt:proposed'], ['rt:self', 'rt:go', 'type:epic']]) assert.deepEqual(select([issue(4, labels)]).issues, [], labels.join());
+  assert.deepEqual(select([issue(5, ['rt:self', 'rt:go'], { body: 'Depends on #9' })]).issues, []);
 });
 
 test('child intake schedules rt:self children and releases the parent only after all close', async () => {
