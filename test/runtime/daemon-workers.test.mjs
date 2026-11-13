@@ -162,14 +162,21 @@ test('daemon intake selects and releases a held parent when its recorded childre
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('tracker writer exposes only claim-related operations and selects the repository', async () => {
+test('tracker writer exposes claim and decomposition operations and selects the repository', async () => {
   const { createGitHubWriter } = await import('../../scripts/github-read.mjs');
   const calls = [];
-  const writer = createGitHubWriter({ repo: 'owner/repo', run: async args => { calls.push(args); return '{"comments":[]}'; } });
+  const writer = createGitHubWriter({ repo: 'owner/repo', run: async args => { calls.push(args); return args[0] === 'pr' && args[1] === 'list' ? JSON.stringify([{ number: 55, headRefName: 'rt/90-pi', state: 'OPEN' }, { number: 56, headRefName: 'other-branch', state: 'OPEN' }]) : '{"comments":[]}'; } });
   await writer.addLabel(31, 'rt:running'); await writer.createComment(31, '<!-- rt:claim -->'); await writer.listComments(31); await writer.removeLabel(31, 'rt:running');
   assert.deepEqual(calls.map(args => args.slice(0, 2)), [['issue', 'edit'], ['issue', 'comment'], ['issue', 'view'], ['issue', 'edit']]);
   assert.ok(calls.every(args => args.includes('owner/repo')));
   assert.throws(() => writer.addLabel('../31', 'rt:running'), /Invalid issue number/);
+  assert.deepEqual(await writer.listOpenPullRequests({ headPrefix: 'rt/90-' }), [{ number: 55, headRefName: 'rt/90-pi', state: 'OPEN' }]);
+  assert.deepEqual(calls.at(-1).slice(0, 6), ['pr', 'list', '--repo', 'owner/repo', '--state', 'open']);
+  await writer.closePullRequest(55, '<!-- rt:decompose-parent -->\nParent #90 was decomposed.');
+  assert.deepEqual(calls.at(-1), ['pr', 'close', '55', '--repo', 'owner/repo', '--comment', '<!-- rt:decompose-parent -->\nParent #90 was decomposed.']);
+  assert.equal(calls.some(args => args.includes('--delete-branch')), false);
+  assert.throws(() => writer.closePullRequest('../55', 'body'), /Invalid issue number/);
+  await assert.rejects(writer.listOpenPullRequests({ headPrefix: '../90-' }), /Invalid head branch prefix/);
 });
 
 test('running label without durable state does not start an unknown orphan', async () => {

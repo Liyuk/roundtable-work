@@ -233,6 +233,30 @@ export async function createStateStore({
     save,
     update,
 
+    /**
+     * The ids tracked under `state/`. A successor's epoch file wins over the legacy file for the same id;
+     * anything else (temp files, unsafe names) is ignored. A missing `state/` directory tracks nothing.
+     */
+    async ids() {
+      let names;
+      try {
+        names = await confinement.withParent('state/ids.json', (dir) => (fs.readdir ?? fsPromises.readdir)(dir));
+      } catch (err) {
+        if (err.code === 'ENOENT') return [];
+        throw err;
+      }
+      const found = new Map();
+      for (const name of names) {
+        const epoch = /^~((?:[0-9a-f]{2})+)\.epoch-(\d+)\.json$/.exec(name);
+        if (!epoch && !name.endsWith('.json')) continue;
+        const id = epoch ? Buffer.from(epoch[1], 'hex').toString() : name.slice(0, -5);
+        try { assertSafeId(id); } catch { continue; }
+        const n = epoch ? Number(epoch[2]) : -1;
+        if (!(found.get(id) >= n)) found.set(id, n);
+      }
+      return [...found.keys()];
+    },
+
     /** Mark a phase as started. */
     beginPhase: (id, phase) => update(id, (s) => {
       if (!PHASES.includes(phase)) throw new TypeError(`Unknown phase: ${phase}`);
