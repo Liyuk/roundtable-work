@@ -174,10 +174,20 @@ test('persisted gates resume for same head/tree and stale head invalidates every
   assert.ok(f.calls.indexOf('gate0') < f.calls.indexOf('reviewer:1'));
 });
 
-test('red or pending CI never reaches squash merge', async () => {
-  const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'pending' }; } } });
-  assert.equal((await runGates(f.input)).gate, 'ci');
-  assert.equal(f.calls.includes('merge'), false);
+test('only pending required CI is a resumable hold; every other not-green answer fails closed before squash', async () => {
+  const cases = [
+    ['pending', { green: false, status: 'pending' }, true],
+    ['false', false, false],
+    ['failure', { green: false, status: 'failure' }, false],
+    ['red', { green: false, status: 'red' }, false],
+    ['no status', { green: false }, false],
+  ];
+  for (const [name, checks, hold] of cases) {
+    const f = fixture({ ci: { async requiredGreen() { return checks; } } });
+    const result = await runGates(f.input);
+    assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', hold], name);
+    assert.equal(f.calls.includes('merge'), false, name);
+  }
 });
 
 test('safety-file diff requires recorded escalation-model approval for current head', async () => {
