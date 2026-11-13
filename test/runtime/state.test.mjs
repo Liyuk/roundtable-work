@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createStateStore, freshState } from '../../runtime/lib/state.mjs';
+import { CorruptStateError, createStateStore, freshState, normalizeState } from '../../runtime/lib/state.mjs';
 import { acquireLock } from '../../runtime/lib/lock.mjs';
 import { PathEscapeError } from '../../runtime/lib/paths.mjs';
 
@@ -25,6 +25,10 @@ test('fresh state has zeroed counters; updates persist across store instances', 
     assert.equal(again.changedFiles, 3);
     assert.equal(again.lastEvent.type, 'checkpoint');
   } finally { await cleanup(); }
+});
+
+test('malformed pending decisions are treated as corrupt state', () => {
+  assert.throws(() => normalizeState('1', { ...freshState('1'), pendingDecision: { decision: { decision: 'ask' }, attempts: -1 } }), CorruptStateError);
 });
 
 test('writes are atomic: valid JSON on disk and no temp files left behind', async () => {

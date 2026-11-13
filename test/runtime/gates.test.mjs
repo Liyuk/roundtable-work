@@ -55,6 +55,19 @@ test('runs deterministic gates, CI, then single squash entry point without a hum
   assert.equal(f.calls.filter((x) => x === 'merge').length, 1);
 });
 
+test('review and cross-check gates use their configured work-type routes', async () => {
+  const f = fixture({ modelRouter: type => ({ review: 'review-config', 'cross-check': 'audit-config' })[type] });
+  let reviewModel; let crossCheckModel;
+  f.input.gates = {
+    async gate0() { return true; },
+    async reviewer(args) { reviewModel = args.model; return { passed: true, head: args.head }; },
+    async crossCheck(args) { crossCheckModel = args.model; return true; },
+  };
+  await runGates(f.input);
+  assert.equal(reviewModel, 'review-config');
+  assert.equal(crossCheckModel, 'audit-config');
+});
+
 test('gate failure blocks subsequent gates and merge', async () => {
   const f = fixture({ gates: { ...fixture().input.gates, async gate0() { f.calls.push('gate0'); return { passed: false }; } } });
   const result = await runGates(f.input);
@@ -183,6 +196,15 @@ test('safety-file diff requires recorded escalation-model approval for current h
   const result = await runGates(f.input);
   assert.equal(result.gate, 'safety-approval');
   assert.ok(f.calls.includes('label:rt:ready-to-merge'));
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('cross-check model approval cannot authorize a safety-file merge', async () => {
+  const f = fixture({ changedFiles: ['.github/workflows/check.yml'],
+    modelRouter: type => ({ review: 'review-model', escalation: 'escalation-model', 'cross-check': 'cross-check-model' })[type],
+    github: { async recordedEscalationApproval() { return { approved: true, model: 'cross-check-model', head: 'abc1234' }; }, async addLabel() {} },
+  });
+  assert.equal((await runGates(f.input)).gate, 'safety-approval');
   assert.equal(f.calls.includes('merge'), false);
 });
 

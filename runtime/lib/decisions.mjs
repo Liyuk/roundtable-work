@@ -34,14 +34,51 @@ export function parseDecisionFile(source) {
 }
 
 /** Apply one validated decision using durable state and the caller's injected tracker client. */
-export async function applyDecision({ decision: raw, issue, store, client, repoRoot, now = Date.now }) {
-  const decision = typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw);
+export async function applyDecision({ decision: raw, issue, store, client, repoRoot, now = Date.now,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2 }) {
+  let decision = typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw);
   const number = issue?.number ?? issue?.id;
   if (!Number.isSafeInteger(Number(number)) || Number(number) < 1) throw new TypeError('issue number is required');
   if (!store || typeof store.update !== 'function') throw new TypeError('state store is required');
-  const queueNext = ['do', 'continue'].includes(decision.decision);
-  if (!queueNext && (!client || typeof client.createComment !== 'function' || typeof client.addLabel !== 'function' || typeof client.removeLabel !== 'function')) throw new TypeError('injected tracker client is required');
+  let queueNext = ['do', 'continue'].includes(decision.decision);
+  if (!queueNext && decision.decision !== 'ask' && (!client || typeof client.createComment !== 'function' || typeof client.addLabel !== 'function' || typeof client.removeLabel !== 'function')) throw new TypeError('injected tracker client is required');
   const id = String(number);
+
+  if (decision.decision === 'ask' && ['scope', 'direction'].includes(decision.category)) {
+    if (!Number.isSafeInteger(maxEscalationAttempts) || maxEscalationAttempts < 1) throw new TypeError('maxEscalationAttempts must be a positive integer');
+    const pending = (await store.load(id)).pendingDecision;
+    const attempts = pending?.decision?.decision === 'ask' ? pending.attempts : 0;
+    if (attempts >= maxEscalationAttempts) {
+      await store.update(id, state => { state.pendingDecision = undefined; });
+    } else {
+      const waitForRetry = async detail => {
+        await store.update(id, state => {
+          state.status = 'waiting_external';
+          state.lastEvent = { type: 'decision_escalation_failed', at: now(), detail };
+        });
+        return { status: 'waiting_external', decision: 'wait', escalation: 'pending' };
+      };
+      if (typeof escalationAdapter !== 'function') {
+        await store.update(id, state => { state.pendingDecision = { decision, attempts }; });
+        return await waitForRetry('escalation adapter unavailable');
+      }
+      const attempt = attempts + 1;
+      await store.update(id, state => { state.pendingDecision = { decision, attempts: attempt }; });
+      let resolved;
+      try {
+        if (typeof modelRouter !== 'function') throw new TypeError('model router is required for escalation');
+        resolved = await escalationAdapter({ decision, issue, model: modelRouter('escalation'), attempt });
+        if (resolved !== null && resolved !== undefined) decision = validateDecision(resolved);
+      } catch (error) {
+        return await waitForRetry(error?.message ?? String(error));
+      }
+      if (resolved === null || resolved === undefined) return await waitForRetry('adapter returned no resolution');
+      queueNext = ['do', 'continue'].includes(decision.decision);
+      await store.update(id, state => { state.pendingDecision = undefined; });
+    }
+  }
+  if (!['do', 'continue'].includes(decision.decision)
+    && (!client || typeof client.createComment !== 'function' || typeof client.addLabel !== 'function' || typeof client.removeLabel !== 'function')) throw new TypeError('injected tracker client is required');
 
   if (decision.decision === 'decompose') {
     if (typeof repoRoot !== 'string' || typeof client.createIssue !== 'function') throw new TypeError('repoRoot and injected tracker createIssue are required for decompose');

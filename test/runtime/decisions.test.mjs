@@ -24,13 +24,14 @@ function client() {
   const events = [];
   return { events, addLabel: async (id, label) => events.push(['addLabel', id, label]), removeLabel: async (id, label) => events.push(['removeLabel', id, label]), createComment: async (id, body) => { events.push(['createComment', id, body]); return { id: 9, createdAt: '2026-01-01T00:00:00Z' }; }, listComments: async () => [] };
 }
+const deferToOwner = { escalationAdapter: async ({ decision }) => decision, modelRouter: () => 'escalation' };
 
 test('validates the decision object and the closed ask category list', async () => {
   for (const decision of [null, {}, { decision: 'ask', category: 'merge', question: 'May I?' }, { decision: 'ask', category: 'scope' }]) {
     await assert.rejects(applyDecision({ decision, issue: { number: 7 }, store: {}, client: client() }), TypeError);
   }
   for (const category of ['scope', 'credentials', 'destructive', 'direction']) {
-    assert.equal((await applyDecision({ decision: { decision: 'ask', category, question: 'Question?' }, issue: { number: 7 }, store: { update: async () => ({}) }, client: client() })).status, 'waiting_person');
+    assert.equal((await applyDecision({ decision: { decision: 'ask', category, question: 'Question?' }, issue: { number: 7 }, store: { load: async () => ({}), update: async () => ({}) }, client: client(), ...deferToOwner })).status, 'waiting_person');
   }
 });
 
@@ -96,7 +97,7 @@ test('daemon rejects an invalid decision file without applying it', async () => 
 
 test('ask writes the exact comment and rt:ask through the injected client, then resumes on owner reply', async () => fixture(async root => {
   const store = await createStateStore({ workRoot: root }); const tracker = client();
-  await applyDecision({ decision: { decision: 'ask', category: 'scope', question: 'Expand scope?' }, issue: { number: 8, author: { login: 'owner' } }, store, client: tracker, now: () => 123 });
+  await applyDecision({ decision: { decision: 'ask', category: 'scope', question: 'Expand scope?' }, issue: { number: 8, author: { login: 'owner' } }, store, client: tracker, now: () => 123, ...deferToOwner });
   assert.deepEqual(tracker.events, [
     ['createComment', 8, '<!-- rt:ask -->\nDECISION=ask\nscope\nExpand scope?'],
     ['addLabel', 8, 'rt:ask'],
@@ -107,6 +108,55 @@ test('ask writes the exact comment and rt:ask through the injected client, then 
   assert.equal(await resumeAfterOwnerReply({ issue: { number: 8, author: { login: 'owner' } }, comments: [reply], store, client: tracker, now: () => 456 }), true);
   assert.equal((await store.load('8')).status, 'queued');
   assert.deepEqual(tracker.events.slice(-2), [['removeLabel', 8, 'rt:ask'], ['removeLabel', 8, 'rt:blocked']]);
+}));
+
+test('failed escalation is durable and a later invocation can resolve before an owner comment', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const decision = { decision: 'ask', category: 'scope', question: 'Expand scope?' };
+  const first = await applyDecision({ decision, issue: { number: 42 }, store, client: tracker,
+    escalationAdapter: async () => { throw new Error('adapter unavailable'); }, modelRouter: () => 'configured-escalation-model', maxEscalationAttempts: 2 });
+  assert.equal(first.status, 'waiting_external');
+  assert.deepEqual((await store.load('42')).pendingDecision, { decision, attempts: 1 });
+  assert.deepEqual(tracker.events, []);
+
+  const reopened = await createStateStore({ workRoot: root });
+  const second = await applyDecision({ decision, issue: { number: 42 }, store: reopened, client: tracker,
+    escalationAdapter: async ({ decision: pending, model, attempt }) => {
+      assert.deepEqual(pending, decision); assert.equal(model, 'configured-escalation-model'); assert.equal(attempt, 2);
+      return { decision: 'do', reason: 'Escalation resolved the question.' };
+    }, modelRouter: () => 'configured-escalation-model', maxEscalationAttempts: 2 });
+  assert.equal(second.status, 'queued');
+  assert.equal((await reopened.load('42')).pendingDecision, undefined);
+  assert.deepEqual(tracker.events, [['removeLabel', 42, 'rt:ask'], ['removeLabel', 42, 'rt:blocked']]);
+}));
+
+test('missing escalation adapter preserves a disputed decision without interrupting the owner', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const decision = { decision: 'ask', category: 'scope', question: 'Expand scope?' };
+  const result = await applyDecision({ decision, issue: { number: 44 }, store, client: tracker });
+  assert.equal(result.status, 'waiting_external');
+  assert.deepEqual((await store.load('44')).pendingDecision, { decision, attempts: 0 });
+  assert.deepEqual(tracker.events, []);
+  const reopened = await createStateStore({ workRoot: root });
+  const retried = await applyDecision({ decision, issue: { number: 44 }, store: reopened, client: tracker,
+    modelRouter: () => 'escalation', escalationAdapter: async ({ attempt }) => {
+      assert.equal(attempt, 1); return { decision: 'do', reason: 'Resolved.' };
+    } });
+  assert.equal(retried.status, 'queued');
+  assert.equal((await reopened.load('44')).pendingDecision, undefined);
+}));
+
+test('owner ask proceeds after the durable escalation attempt budget is exhausted', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const decision = { decision: 'ask', category: 'direction', question: 'Which direction?' };
+  await store.update('43', state => { state.pendingDecision = { decision, attempts: 2 }; });
+  let calls = 0;
+  const result = await applyDecision({ decision, issue: { number: 43 }, store, client: tracker,
+    escalationAdapter: async () => { calls++; }, modelRouter: () => 'configured-escalation-model', maxEscalationAttempts: 2 });
+  assert.equal(result.status, 'waiting_person');
+  assert.equal(calls, 0);
+  assert.equal((await store.load('43')).pendingDecision, undefined);
+  assert.ok(tracker.events.some(([type]) => type === 'createComment'));
 }));
 
 test('metadata-free pause accepts an owner reply in the same tracker timestamp second only', async () => fixture(async root => {
@@ -145,13 +195,13 @@ test('a second ask waits for a reply to its own comment', async () => fixture(as
     listComments: async () => comments,
   };
   const issue = { number: 20, author: { login: 'owner' } };
-  await applyDecision({ decision: { decision: 'ask', category: 'scope', question: 'First?' }, issue, store, client: tracker, now: () => Date.parse('2026-01-01T00:00:00Z') });
+  await applyDecision({ decision: { decision: 'ask', category: 'scope', question: 'First?' }, issue, store, client: tracker, now: () => Date.parse('2026-01-01T00:00:00Z'), ...deferToOwner });
   const oldReply = { id: 15, author: issue.author, createdAt: '2026-01-02T00:00:00Z', body: 'Proceed' };
   comments.push(oldReply);
   assert.equal(await resumeAfterOwnerReply({ issue, comments, store, client: tracker }), true);
 
   commentTime = '2026-01-05T00:00:00Z';
-  await applyDecision({ decision: { decision: 'ask', category: 'direction', question: 'Second?' }, issue, store, client: tracker, now: () => Date.parse(commentTime) });
+  await applyDecision({ decision: { decision: 'ask', category: 'direction', question: 'Second?' }, issue, store, client: tracker, now: () => Date.parse(commentTime), ...deferToOwner });
   assert.equal(comments.filter(comment => comment.body?.includes('<!-- rt:ask -->')).length, 2);
   assert.equal(await resumeAfterOwnerReply({ issue, comments: [comments[0], oldReply], store, client: tracker }), false);
   assert.equal((await store.load('20')).status, 'waiting_person');
