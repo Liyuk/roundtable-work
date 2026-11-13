@@ -4,7 +4,9 @@ import { selectIssues, createIntakeProvider } from '../../runtime/lib/intake.mjs
 import { createGitHubReader } from '../../scripts/github-read.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
 import { runQueue } from '../../runtime/rtd.mjs';
-import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 
 const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', body: '', ...extra });
 const select = (issues, states = {}) => selectIssues({ issues, owner: 'owner', dependencyStates: states });
@@ -15,6 +17,11 @@ test('eligibility and triage rules', () => {
   for (const extra of [{ title: '[Owner] thing' }, { state: 'CLOSED' }, { author: { login: 'other' } }, { title: '[Epic] thing' }]) assert.deepEqual(select([issue(1, ['type:feature'], extra)]).issues, []);
   assert.equal(select([issue(1, ['type:feature', 'rt:proposed', 'rt:approved'])]).issues.length, 1);
   assert.deepEqual(select([issue(2, []), issue(3, [], { author: { login: 'other' } })]).triage.map(i => i.number), [2]);
+});
+test('includeRunning admits ask/blocked pauses for owner-reply resumption', () => {
+  const result = selectIssues({ issues: [issue(33, ['type:feature', 'rt:ask'])], owner: 'owner', includeRunning: true });
+  assert.deepEqual(result.issues.map(item => item.id), ['33']);
+  assert.equal(result.issues[0].author.login, 'owner');
 });
 test('excludes series-prefixed epic titles without excluding ordinary series issues', () => {
   const title = '[RT] Epic: in-repo daemon, layered decisions, external supervision, optional Jev';
@@ -160,5 +167,54 @@ test('runQueue selects tracker fixtures after dependencies close', async () => {
     assert.deepEqual((await runQueue({ workRoot: root, queue: provider, handler })).outcomes, []);
     dependency = 'CLOSED';
     assert.deepEqual((await runQueue({ workRoot: root, queue: provider, handler })).outcomes.map(({ id, status }) => [id, status]), [['10', 'done']]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('held decomposed parent is revisited only with durable child IDs and releases after every child closes', async () => {
+  const scratch = new URL('../../.roundtable/scratch/RT52-DEV-03/', import.meta.url);
+  await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(new URL('held-parent-', scratch).pathname);
+  const repo = join(root, 'repo'), workRoot = join(root, 'work');
+  await mkdir(repo); await mkdir(workRoot);
+  const git = (...args) => { const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }); assert.equal(result.status, 0, result.stderr); };
+  git('init', '-b', 'main'); await writeFile(join(repo, 'file'), 'fixture'); git('add', 'file'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture');
+  try {
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot });
+    await store.update('40', state => { state.status = 'waiting_external'; state.childIssues = [41, 42]; state.attempts.wakes = 1; });
+    await store.update('43', state => { state.status = 'waiting_external'; });
+    const parent = issue(40, ['type:feature', 'rt:hold']);
+    const openParent = issue(44, ['type:feature', 'rt:hold']);
+    const unrelated = issue(43, ['type:feature', 'rt:hold']);
+    const trackerIssues = [parent, unrelated];
+    const childStates = new Map([[41, 'CLOSED'], [42, 'CLOSED']]);
+    const events = [];
+    const client = {
+      getIssue: async number => ({ number, state: childStates.get(number) ?? 'OPEN' }),
+      addLabel: async (number, label) => { events.push(['add', number, label]); const target = trackerIssues.find(entry => entry.number === number); if (target) target.labels.push(label); },
+      removeLabel: async (number, label) => { events.push(['remove', number, label]); const target = trackerIssues.find(entry => entry.number === number); if (target) target.labels = target.labels.filter(value => (typeof value === 'string' ? value : value.name) !== label); },
+      listComments: async () => [], createComment: async (number, body) => events.push(['comment', number, body]),
+    };
+    const provider = createIntakeProvider({
+      getOwner: async () => 'owner', listIssues: async () => trackerIssues, getIssue: async number => client.getIssue(number),
+    }, { includeRunning: true, getDurableState: id => store.load(id) });
+    const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+
+    const selected = await readQueue(provider);
+    assert.deepEqual(selected.items.map(item => item.id), ['40']);
+    const closed = await runQueue({ workRoot, repoRoot: repo, queue: provider, handler, githubClient: client });
+    assert.deepEqual(closed.outcomes.map(({ id, status, nextTurn }) => [id, status, nextTurn]), [['40', 'queued', true]]);
+    assert.ok(events.some(([action, number, label]) => action === 'remove' && number === 40 && label === 'rt:hold'));
+    let state = await store.load('40');
+    assert.equal(state.status, 'queued'); assert.equal(state.nextTurn, true);
+
+    await store.update('44', current => { current.status = 'waiting_external'; current.childIssues = [45, 46]; current.attempts.wakes = 1; current.nextTurn = false; });
+    trackerIssues.splice(0, trackerIssues.length, openParent, unrelated);
+    childStates.set(45, 'CLOSED'); childStates.set(46, 'OPEN'); events.length = 0;
+    const open = await runQueue({ workRoot, repoRoot: repo, queue: provider, handler, githubClient: client });
+    assert.deepEqual(open.outcomes.map(({ id, status, reason }) => [id, status, reason]), [['44', 'waiting_external', 'children_open']]);
+    assert.deepEqual(events.filter(([action]) => action === 'remove'), []);
+    state = await store.load('44'); assert.equal(state.status, 'waiting_external'); assert.equal(state.nextTurn, false);
+    assert.deepEqual((await readQueue(provider)).items.map(item => item.id), ['44']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

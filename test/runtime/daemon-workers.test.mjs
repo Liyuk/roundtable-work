@@ -138,3 +138,73 @@ test('daemon finishes a claim interrupted after adding the label', async () => {
     assert.equal(result.outcomes[0].status, 'done'); assert.equal(issue.comments.length, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('daemon applies a finalizer do decision and leaves durable work queued for the next invocation', async () => {
+  const { root, repo, workRoot } = await fixture();
+  try {
+    const issue = { id: '53', number: 53, state: 'OPEN', author: { login: 'owner' }, title: 'continue', body: '', createdAt: '2020-01-01', labels: [], comments: [] };
+    const client = clientFor(issue);
+    client.removeLabel = async (n, label) => { client.events.push(['remove', label]); };
+    const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], handler: async ({ phase, item }) => {
+      if (phase === 'finalizing') {
+        await mkdir(join(item.worktree, '.roundtable'), { recursive: true });
+        await writeFile(join(item.worktree, '.roundtable/DECISION.json'), JSON.stringify({ outcome: 'do' }));
+      }
+      return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' };
+    } });
+    assert.deepEqual([result.outcomes[0].status, result.outcomes[0].decision, result.outcomes[0].nextTurn], ['queued', 'continue', true]);
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const state = await (await createStateStore({ workRoot })).load('53');
+    assert.equal(state.status, 'queued'); assert.equal(state.nextTurn, true); assert.equal(state.checkpoint.phase, 'finalizing');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('CLI forwards a handler module escalation export to a pending decision', async () => {
+  const { root, workRoot } = await fixture();
+  try {
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot });
+    const decision = { outcome: 'ask', category: 'scope', reason: 'uncertain' };
+    await store.update('54', s => { s.status = 'waiting_external'; s.escalationPending = true; s.pendingDecision = decision; });
+    await writeFile(join(workRoot, 'queue.json'), JSON.stringify(['54']));
+    const marker = join(root, 'escalation.json');
+    const modulePath = join(root, 'handler.mjs');
+    await writeFile(modulePath, `import { writeFile } from 'node:fs/promises';\nexport default async () => ({ exitCode: 0 });\nexport async function escalateDecision(input) { await writeFile(${JSON.stringify(marker)}, JSON.stringify(input)); throw new Error('offline'); }\n`);
+    const result = spawnSync(process.execPath, [new URL('../../runtime/rtd.mjs', import.meta.url).pathname, '--work-root', workRoot, '--queue', 'queue.json', '--handler', modulePath], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const { readFile } = await import('node:fs/promises');
+    const input = JSON.parse(await readFile(marker, 'utf8'));
+    const { routeModel } = await import('../../runtime/lib/decision.mjs');
+    assert.deepEqual(input.decision, decision); assert.equal(input.model, routeModel('escalation'));
+    const state = await store.load('54');
+    assert.equal(state.escalationPending, true); assert.deepEqual(state.pendingDecision, decision);
+    assert.equal(state.attempts.decisions, 1);
+
+    // A new CLI process retries from durable state, rather than losing the original decision.
+    const retry = spawnSync(process.execPath, [new URL('../../runtime/rtd.mjs', import.meta.url).pathname, '--work-root', workRoot, '--queue', 'queue.json', '--handler', modulePath], { encoding: 'utf8' });
+    assert.equal(retry.status, 0, retry.stderr);
+    const afterRetry = await store.load('54');
+    assert.equal(afterRetry.attempts.decisions, 2);
+    assert.equal(afterRetry.escalationPending, true);
+    assert.deepEqual(afterRetry.pendingDecision, decision);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('unavailable escalation survives restart and a successful retry clears the pending decision', async () => {
+  const { root, repo, workRoot } = await fixture();
+  try {
+    const issue = { id: '55', number: 55, labels: [], comments: [] }, client = clientFor(issue);
+    client.removeLabel = async () => {};
+    const decision = { outcome: 'ask', category: 'direction', reason: 'uncertain' };
+    const opts = { workRoot, repoRoot: repo, githubClient: client, queue: [issue], handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', ...(phase === 'finalizing' ? { decision } : {}) }) };
+    const first = await runQueue(opts);
+    assert.equal(first.outcomes[0].status, 'waiting_external');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot });
+    assert.deepEqual((await store.load('55')).pendingDecision, decision);
+    const second = await runQueue({ ...opts, escalateDecision: async () => ({ outcome: 'do' }) });
+    assert.equal(second.outcomes[0].status, 'queued');
+    const state = await store.load('55');
+    assert.equal(state.escalationPending, false); assert.equal(state.pendingDecision, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

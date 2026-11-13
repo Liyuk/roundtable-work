@@ -37,6 +37,17 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
     addLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--add-label', label]),
     removeLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--remove-label', label]),
     createComment: (number, body) => run(['issue', 'comment', id(number), ...repository, '--body', body]),
+    async createIssue({ title, body }) {
+      if (typeof title !== 'string' || !title.trim() || typeof body !== 'string') throw new TypeError('Issue title and body are required');
+      const output = await run(['issue', 'create', ...repository, '--title', title, '--body', body]);
+      const match = String(output).match(/\/issues\/(\d+)(?:\s|$)/);
+      if (!match) throw new TypeError('GitHub did not return a created issue URL');
+      return { number: Number(match[1]) };
+    },
+    async getIssue(number) {
+      const output = await run(['issue', 'view', id(number), ...repository, '--json', 'state']);
+      return typeof output === 'string' ? JSON.parse(output) : output;
+    },
     listComments: async (number) => JSON.parse(await run(['issue', 'view', id(number), ...repository, '--json', 'comments'])).comments,
   };
 }

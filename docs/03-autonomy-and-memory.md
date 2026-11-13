@@ -4,6 +4,8 @@
 
 Whenever a session turn ends, a subtask completes, external state changes, or the user revises the goal, the runtime delivers the facts to the responsible party. The Chief, or a delegated owner, performs one **continuation decision** and records: target version, remaining acceptance criteria, current tasks and evidence, paths that can continue, what is being waited on, the next action, and the wake-up condition.
 
+The daemon accepts a finalizer decision object (`outcome`: `do`, `decompose`, `ask`, or `out-of-scope`) or reads `.roundtable/DECISION.json` from the issue worktree. Decomposition lists relative JSON draft paths containing `title` and `body`. `do` durably queues another invocation; `ask` accepts only `scope`, `credentials`, `destructive`, or `direction`, and resumes when the issue author posts a new comment. Disputed `scope` and `direction` decisions use the configured escalation attempt budget before asking the owner. Runtime work-type routing is explicit: Chief, development, review and verification use the Sonnet tier; escalation uses the Opus tier; cross-checks use `gpt-6.1-terra`.
+
 | Situation | Action |
 | --- | --- |
 | Goal not satisfied; there is work within authorization that can move forward | Create or claim the next piece of work; the executor can continue it or delegate it |
@@ -39,3 +41,5 @@ When accepting a goal, creating a delegation, preparing execution, diagnosing a 
 | Raw events and artifacts | Traceable records of inputs, execution, delivery, and changes | Source of fact; requires access and retention policies |
 
 Candidate memories are first written to a to-be-verified area, recording which parts are facts, inferences, and user decisions. They enter shared experience only after confirmation by a person or an authorized maintainer role. High-risk permission and safety rules are managed by configuration, and are not rewritten by retrieved memory or the model. Support expiry, revocation, deletion, and source-lost marking; old information already injected into a session cannot be pretended to have been taken back, so send a revision and track whether it was read.
+
+The trusted `rtd.mjs --handler` module may export `escalateDecision({ decision, issue, model })`; the runtime passes it through the decision path using the validated escalation route. Adapter errors leave the original decision pending in durable state for a later daemon invocation, subject to `RT_DECIDE_MAX` / `--max-decision-attempts`.

@@ -15,6 +15,7 @@ import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.m
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
 import { createWorktreeManager } from './lib/worktree.mjs';
+import { applyDecision, readDecisionFile, releaseParentWhenChildrenClose, resumeOnOwnerReply } from './lib/decision.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 export const EXIT_LOCKED = 75;
@@ -80,7 +81,7 @@ export function exitCodeFor(result) {
  * Abandoned handlers retain the queue lock and issue lease with background renewal until they settle.
  * No further work starts in the pass. The CLI exits after recording the recoverable state.
  *
- * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N]`. `--handler` is trusted operator code,
+ * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N]`. The handler module may export `escalateDecision` alongside its default handler; it receives { decision, issue, model }. `--handler` is trusted operator code,
  * deliberately outside work-root confinement (only paths under the work root are confined).
  *
  * @returns {Promise<{status:'locked', holder:object} | {status:'lock_lost', outcomes:object[], skipped:object[], abandonedHandler?:true} | {status:'ok', outcomes:object[], skipped:object[], abandonedHandler?:true}>}
@@ -91,6 +92,7 @@ export async function runQueue({
   maxWakesPerIssue = 5, maxDeveloperAttempts = 3, maxReviewerUnavailable = 5,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main',
+  maxDecisionAttempts = 2, escalateDecision,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
@@ -161,7 +163,11 @@ export async function runQueue({
         loadState: (id) => store.load(id), isStale: async (state) => store.staleness(state).stale,
         // The scheduler already holds the issue lock. Existing worktrees prevent new claims,
         // but a stale claimed issue must reuse its durable worktree.
-        isInFlight: async (issue) => !(issue.labels ?? []).some((l) => (typeof l === 'string' ? l : l.name) === 'rt:running') && (await manager.inspect(issue.id)).liveWorktree,
+        isInFlight: async (issue) => {
+          const state = await store.load(issue.id);
+          if (['waiting_person', 'out-of-scope'].includes(state.status)) return false;
+          return !(issue.labels ?? []).some((l) => (typeof l === 'string' ? l : l.name) === 'rt:running') && (await manager.inspect(issue.id)).liveWorktree;
+        },
         resume: async (issue, state) => {
           if (!state.claimPending) return;
           const comments = typeof githubClient.listComments === 'function' ? await githubClient.listComments(issue.number ?? issue.id) : issue.comments ?? [];
@@ -181,6 +187,11 @@ export async function runQueue({
         prepare: async (item) => {
           if (lockLost || abandonedHandler || !(await refreshLock())) return false;
           const state = await store.load(item.id);
+          if (['waiting_person', 'out-of-scope'].includes(state.status)) {
+            const resumed = await resumeOnOwnerReply({ state, issue: item, client: githubClient });
+            if (!resumed) { skipped.push({ id: item.id, reason: 'awaiting_owner_reply' }); return false; }
+            await store.update(item.id, (current) => { current.status = state.status; current.nextTurn = true; current.pauseReason = null; current.pauseCommentCount = null; });
+          }
           if (isTerminal(state.status)) { skipped.push({ id: item.id, reason: 'terminal' }); return false; }
           const claim = await coordinator.tick([item]);
           if (!claim.claimed && !claim.resumed) { skipped.push(...claim.skipped); return false; }
@@ -245,6 +256,26 @@ export async function runQueue({
     if (recovery.action === 'held') return out('held', { owner: recovery.owner });
     if (recovery.action === 'interrupted') return out('interrupted', { phase: recovery.resumePhase });
     let state = await store.load(id);
+    if (state.escalationPending && state.pendingDecision) {
+      if (typeof escalateDecision !== 'function') return out('waiting_external', { decision: 'wait', reason: 'escalation_unavailable' });
+      const applied = await applyDecision({ decision: state.pendingDecision, issue: item, client: githubClient, state, maxDecisions: maxDecisionAttempts, escalate: escalateDecision, worktreeRoot: item.worktree });
+      if (applied.reason !== 'escalation_failed' && applied.reason !== 'escalation_unavailable') {
+        state.escalationPending = false; state.pendingDecision = null;
+      }
+      await store.update(id, (s) => {
+        s.status = state.status; s.nextTurn = state.nextTurn ?? false; s.pauseReason = state.pauseReason ?? null;
+        s.pauseCommentCount = state.pauseCommentCount ?? null; s.childIssues = state.childIssues ?? s.childIssues;
+        s.attempts.decisions = state.attempts.decisions; s.escalationPending = state.escalationPending ?? false;
+        s.pendingDecision = state.pendingDecision ?? null;
+      });
+      return out(applied.status, { decision: applied.decision ?? 'ask', reason: applied.reason, childIssues: applied.childIssues, nextTurn: applied.nextTurn });
+    }
+    if (githubClient && Array.isArray(state.childIssues) && state.childIssues.length && typeof githubClient.getIssue === 'function') {
+      const released = await releaseParentWhenChildrenClose({ state, getIssue: (child) => githubClient.getIssue(child), client: githubClient, parentNumber: Number(item.number ?? id) });
+      if (!released) return out('waiting_external', { decision: 'wait', reason: 'children_open' });
+      await store.update(id, (s) => { Object.assign(s, state); });
+      return out('queued', { decision: 'continue', nextTurn: true });
+    }
     if (isTerminal(state.status)) return out(state.status, { skipped: true });
 
     if (state.attempts.wakes >= maxWakesPerIssue) {
@@ -350,6 +381,25 @@ export async function runQueue({
           step.scopeMismatch = true;
         }
 
+        // A finalizer may return a decision directly or persist the Chief's JSON decision file in the issue worktree.
+        if (phase === 'finalizing' && githubClient) {
+          if (!step.decision && item.worktree) {
+            try { step.decision = await readDecisionFile(resolve(item.worktree, '.roundtable/DECISION.json')); }
+            catch (err) { if (err.code !== 'ENOENT') throw err; }
+          }
+          if (step.decision) {
+            const durable = await store.load(id);
+            const applied = await applyDecision({ decision: step.decision, issue: item, client: githubClient, state: durable, maxDecisions: maxDecisionAttempts, escalate: escalateDecision, worktreeRoot: item.worktree });
+            await store.update(id, (s) => {
+              s.status = durable.status; s.nextTurn = durable.nextTurn ?? false; s.pauseReason = durable.pauseReason ?? null;
+              s.childIssues = durable.childIssues ?? s.childIssues; s.attempts.decisions = durable.attempts.decisions;
+              s.escalationPending = durable.escalationPending ?? false; s.pendingDecision = durable.pendingDecision ?? null;
+              s.checkpoint = { phase, at: now() };
+            });
+            return out(applied.status, { decision: applied.decision ?? (applied.status === 'queued' ? 'continue' : 'ask'), childIssues: applied.childIssues, nextTurn: applied.nextTurn });
+          }
+        }
+
         const verdict = classify({ ...step, stage: STAGE[phase] });
         const { class: cls, reason } = verdict;
 
@@ -410,13 +460,13 @@ function withTimeout(ms, onTimeout) {
 async function main(argv) {
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'max-decision-attempts': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
   }
   if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github)) {
-    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--max-decision-attempts N] (MODULE is trusted operator code, not confined to the work root)');
     return 2;
   }
   const timeouts = {};
@@ -429,9 +479,15 @@ async function main(argv) {
     }
     timeouts[option] = n;
   }
-  const { default: handler } = await import(pathToFileURL(resolve(args.handler)).href);
-  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const maxDecisionAttempts = args['max-decision-attempts'] === undefined ? Number(process.env.RT_DECIDE_MAX ?? 2) : Number(args['max-decision-attempts']);
+  if (!Number.isSafeInteger(maxDecisionAttempts) || maxDecisionAttempts < 1) {
+    console.error('--max-decision-attempts must be a positive integer');
+    return 2;
+  }
+  const { default: handler, escalateDecision } = await import(pathToFileURL(resolve(args.handler)).href);
+  const intakeState = args.github ? await createStateStore({ workRoot: args['work-root'] }) : null;
+  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true, getDurableState: (id) => intakeState.load(id) }) : args.queue;
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, escalateDecision, maxDecisionAttempts, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) result.triage = queue.triage;
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {
