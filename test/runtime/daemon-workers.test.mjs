@@ -5,7 +5,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
 
 const scratch = join(process.cwd(), '.roundtable/scratch/rt51-fix2/tmp');
