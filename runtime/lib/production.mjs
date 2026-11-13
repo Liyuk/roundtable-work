@@ -7,7 +7,8 @@
  * for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where
  * files is the pull request's changed paths: the merge entry point derives the safety-file set from it
  * and fails closed when it is absent; the monitor uses `state: 'merged'`/`merged: true` with an optional
- * `mergeCommit` SHA to resolve a merge whose outcome was unknown. github.squashMerge resolves only after a successful squash and returns
+ * `mergeCommit` SHA to resolve a merge whose outcome was unknown, and a closed pull request must report
+ * `merged: false` to be treated as unmerged. github.squashMerge resolves only after a successful squash and returns
  * { mergeCommit: <SHA> }; github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
  * Recovery providers return the revert result, { number, head } for the PR, and { number } for the
  * bug issue. GitHub and git effects are owned by the supplied providers.
