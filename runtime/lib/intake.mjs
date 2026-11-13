@@ -120,6 +120,25 @@ export function createIntakeProvider(reader, { includeRunning = false } = {}) {
     const released = new Map();
     const recovering = new Set();
     if (includeRunning && store && client) {
+      // A closed issue cannot be resumed: drop its pause labels before marking it done, so a failed label
+      // write is retried next pass and the local row never claims a person is still being waited on.
+      for (const id of await store.ids()) {
+        const number = Number(id);
+        if (!Number.isSafeInteger(number) || number < 1) continue;
+        let local;
+        try { local = await store.load(id); }
+        catch (error) { if (signal?.aborted || !(error instanceof CorruptStateError)) throw error; continue; }
+        if (!local.pause && !['waiting_person', 'out-of-scope'].includes(local.status)) continue;
+        let remote;
+        try { remote = await reader.getIssue(number, { signal }); }
+        catch (error) { if (signal?.aborted) throw error; continue; }
+        if (remote?.state?.toUpperCase() !== 'CLOSED') continue;
+        for (const label of ['rt:ask', 'rt:blocked']) if (labelsOf(remote).includes(label)) await client.removeLabel(number, label);
+        await store.update(id, s => {
+          s.status = 'done'; s.phase = null; s.checkpoint = null; s.pause = undefined;
+          s.lastEvent = { type: 'terminal_closed', at: Date.now(), detail: 'CLOSED' };
+        });
+      }
       for (const issue of issues) {
         const number = Number(issue.number);
         if (!Number.isSafeInteger(number) || number < 1) continue;

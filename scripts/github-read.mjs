@@ -55,7 +55,7 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
     },
     async getIssue(number, options) {
       if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
-      return run(['issue', 'view', String(number), ...repository, '--json', 'state'], options);
+      return run(['issue', 'view', String(number), ...repository, '--json', 'state,labels'], options);
     },
     async listComments(number, options) {
       if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
