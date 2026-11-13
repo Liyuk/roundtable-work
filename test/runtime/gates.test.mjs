@@ -203,6 +203,44 @@ test('only pending required CI is a resumable hold; every other not-green answer
   }
 });
 
+test('cancelled-only required CI requests one re-run and holds instead of failing into the fixer path', async () => {
+  let reruns = 0;
+  const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'cancelled' }; }, async rerunCancelled(pr) { reruns++; assert.equal(pr, 90); } } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', true]);
+  assert.equal(reruns, 1);
+  assert.equal(f.calls.includes('merge'), false);
+  assert.equal(f.records.get('53').ciReruns, 1);
+});
+
+test('a real CI failure never requests a re-run and stays fail-closed', async () => {
+  let reruns = 0;
+  const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'failure' }; }, async rerunCancelled() { reruns++; } } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', false]);
+  assert.equal(reruns, 0);
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('a cancelled CI after two re-runs falls back to the fail-closed path without a third request', async () => {
+  let reruns = 0;
+  const f = fixture({ ci: { async requiredGreen() { f.calls.push('ci'); return { green: false, status: 'cancelled' }; }, async rerunCancelled() { reruns++; } } });
+  f.records.set('53', gatedRecord({ ciReruns: 2 }));
+  const result = await runGates(f.input);
+  assert.equal(result.hold, false);
+  assert.equal(reruns, 0);
+  assert.ok(f.calls.includes('ci'));
+  assert.equal(f.calls.includes('merge'), false);
+  assert.equal(f.records.get('53').ciReruns, 2);
+});
+
+test('a provider without a re-run capability keeps the cancelled-CI behaviour of today', async () => {
+  const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'cancelled' }; } } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', false]);
+  assert.equal(f.calls.includes('merge'), false);
+});
+
 test('safety-file diff requires recorded escalation-model approval for current head', async () => {
   const f = fixture({ changedFiles: ['.github/workflows/check.yml'] });
   const result = await runGates(f.input);

@@ -28,6 +28,10 @@ Events, state updates, and side-effect intents should be persisted atomically; s
 
 Parallelism is limited jointly by the actual number of processes, CPU, memory, disk, inodes, workspace conflicts, and task dependencies; occupying a ticket is not the same as an executing process. Review and rework take priority, and concrete thresholds are configured by the deployment environment. A worktree can be cleaned up only after confirming it has finished and has no uncommitted work; the permissions to clean up, close, delete, and merge are each made explicit.
 
+## Cancelled-Only Required CI
+
+A required CI answer is cancelled-only when the CI provider returns `{ green: false, status: 'cancelled' }`: the provider decides that no required job concluded `failure` or `timed_out`, and the runtime never infers that from partial data. When the provider also exposes the optional `ci.rerunCancelled(pr)` capability, `runGates` requests one re-run and holds the issue as `waiting_external` instead of failing into the fixer chain. The budget is two re-runs per issue + head (`MAX_CI_RERUNS`), persisted as `ciReruns` on the gate record before the side effect is requested; a new head or tree resets it. Once the budget is used up, or when the provider exposes no re-run capability, a cancelled answer keeps today's behaviour: a genuine failure that fails closed. A real `failure` or `timed_out` status is never retried this way. Changing required check names or CI runner labels is out of scope unless the issue explicitly asks for it.
+
 ## Recovering a Paused Auto-Merge Monitor
 
 The runtime auto-merge monitor (`runtime/rtd.mjs`, `monitorMain`) pauses new claims and merges while `state/rt-main-monitor*.json` holds a record. The record is written by the runtime itself; operators never write it by hand.
