@@ -195,7 +195,7 @@ test('a current-head owner APPROVE-MERGE comment resumes the gated squash path',
         assert.equal(w.squashes().length, 0);
       } else {
         assert.equal(result.outcomes[0].status, 'done');
-        assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
+        assert.deepEqual(w.squashes(), [['squash', { method: 'squash', sha: BASE_SHA }]]);
         assert.ok(w.calls.indexOf('ci') < w.calls.findIndex((call) => Array.isArray(call) && call[0] === 'squash'));
         assert.equal((await createStateStore({ workRoot: root }).then((store) => store.load('53'))).gateRecord.safetyApproved, true);
       }
@@ -227,7 +227,7 @@ test('an actionable in-scope safety reject starts another worker attempt within 
       90,
       '<!-- rt:safety-finding -->\nReason: The validation condition rejects valid input.\nFix: Correct the validation condition',
     ]);
-    assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
+    assert.deepEqual(w.squashes(), [['squash', { method: 'squash', sha: BASE_SHA }]]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
