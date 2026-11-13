@@ -9,6 +9,7 @@ Runtime instructions are governed by the [skill directory](../.agents/skills/rou
 | Continuation decisions, trigger sources, memory layers | [03 Autonomy Loop and Memory](03-autonomy-and-memory.md) | [11 Chief Continuous Loop](11-chief-continuous-loop.md) (human-machine division of labor, multi-session trade-offs) · [12 Events and Memory](12-events-and-memory.md) (external event format, write and recall timing) |
 | Status vocabulary, delegation and handoff | [Shared behavior](../.agents/skills/roundtable-work/prompts/shared.md) | [04 Collaboration and Tickets](04-collaboration-and-tickets.md) (group chat vs. point-to-point, reclaiming, multi-level reporting) |
 | Runners, permissions, idempotency and recovery | [05 Execution and Safety](05-execution-and-safety.md) | — |
+| Role-to-model routing table, validation, prompt facts, gate models | [17 Model Routing](17-model-routing.md) | [05 Execution and Safety](05-execution-and-safety.md) · [14 Prompt to Runtime](14-prompt-to-runtime.md) |
 | Organization scaling and multi-level reporting | [08 Organization Adjustment](08-organization.md) | [10 Evolving Studio Case](10-evolving-studio.md) |
 | Prompt assembly, host gaps, engineering roadmap | [14 Prompt to Runtime](14-prompt-to-runtime.md) | [15 Single Harness First](15-single-harness-communication.md) · [Host mapping](../.agents/skills/roundtable-work/references/harnesses.md) |
 | Installation and configuration | [SETUP](../SETUP.md) | [Setup flow](../.agents/skills/roundtable-work/references/setup.md) |
