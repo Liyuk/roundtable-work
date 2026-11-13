@@ -41,7 +41,7 @@ const isCount = (v) => Number.isSafeInteger(v) && v >= 0;
  * type are rejected (`CorruptStateError`) rather than coerced, so a budget counter can never turn into NaN and
  * silently bypass a limit. The id always comes from the file name, never from the file content.
  */
-function normalizeState(id, raw) {
+export function normalizeState(id, raw) {
   if (!isPlainObject(raw)) throw new CorruptStateError(`State for ${id} is not an object`);
   const fresh = freshState(id);
   const state = { ...fresh, ...raw, id };
