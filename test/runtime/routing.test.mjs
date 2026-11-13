@@ -127,3 +127,32 @@ test('loadRouting reads and validates a JSON table', async () => {
     assert.equal((await loadRouting(file)).windows[0].id, '2026-11');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('CLI rejects missing routing before loading the handler', async () => {
+  const root = await mkdtemp(join(process.cwd(), 'rt174-routing-'));
+  try {
+    const result = spawnSync(process.execPath, ['runtime/rtd.mjs', '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'missing.mjs')], { encoding: 'utf8' });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /routing: .*--routing/);
+    assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('CLI delivers active role configurations and rendered chief prompt to the handler', async () => {
+  const root = await mkdtemp(join(process.cwd(), 'rt174-routing-'));
+  try {
+    const config = table();
+    config.windows[0].from = '2000-01-01T00:00:00Z';
+    config.windows[0].to = '2100-01-01T00:00:00Z';
+    await writeFile(join(root, 'routing.json'), JSON.stringify(config));
+    await writeFile(join(root, 'queue.json'), JSON.stringify(['1']));
+    await writeFile(join(root, 'handler.mjs'), `import { writeFileSync } from 'node:fs';
+export default async ({ routing }) => { writeFileSync(${JSON.stringify(join(root, 'received.json'))}, JSON.stringify(routing)); return { exitCode: 0, output: 'ok' }; };`);
+    const result = spawnSync(process.execPath, ['runtime/rtd.mjs', '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--routing', join(root, 'routing.json')], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const received = JSON.parse(await readFile(join(root, 'received.json'), 'utf8'));
+    assert.deepEqual(received.facts.roles, config.windows[0].roles);
+    assert.match(received.prompts.chief, /- reviewer: harness=pi model=model-review-strong tier=strong/);
+    assert.match(received.prompts.chief, /expected and allowed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

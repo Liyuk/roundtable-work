@@ -258,7 +258,7 @@ export default {
 
 function runCli(root, providers = 'providers.mjs') {
   const cli = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
-  return spawnSync(process.execPath, [cli, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--providers', join(root, providers)], { encoding: 'utf8' });
+  return spawnSync(process.execPath, [cli, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs'), '--providers', join(root, providers)], { encoding: 'utf8' });
 }
 
 test('CLI production providers perform unattended green and red-main recovery through guarded gates', async () => {
