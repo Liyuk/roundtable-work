@@ -89,7 +89,7 @@ test('single merge entry point rechecks persisted gates, live head, mergeability
     },
   });
   assert.equal(await entry(90, { issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true, passed: ['gate0', 'gate1', 'gate2', 'ci'], ciGreen: true, safetyApproved: false }), 'merged');
-  assert.deepEqual(calls, ['pr', 'ci', ['merge', { method: 'squash' }]]);
+  assert.deepEqual(calls, ['pr', 'ci', ['merge', { method: 'squash', sha: 'abc1234' }]]);
 });
 
 test('single merge entry point refuses stale heads and red CI without invoking merge', async () => {
@@ -159,7 +159,7 @@ test('approved safety-file set merges without provider safety fields', async () 
     live: livePullRequest(['.github/workflows/check.yml', 'runtime/lib/gates.mjs']),
   });
   assert.equal(await f.entry(90, f.evidence), 'merged');
-  assert.deepEqual(f.calls, ['pr', 'ci', ['merge', { method: 'squash' }]]);
+  assert.deepEqual(f.calls, ['pr', 'ci', ['merge', { method: 'squash', sha: 'abc1234' }]]);
 });
 
 test('persisted gates resume for same head/tree and stale head invalidates every gate', async () => {
@@ -210,7 +210,7 @@ test('approved safety-file change records approval at gate time and merges throu
       async squashMerge(_pr, options) { return { merged: options }; },
     },
   });
-  assert.deepEqual(await entry(90, { issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true, passed: ['gate0', 'gate1', 'gate2', 'ci'], ciGreen: true }), { merged: { method: 'squash' } });
+  assert.deepEqual(await entry(90, { issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true, passed: ['gate0', 'gate1', 'gate2', 'ci'], ciGreen: true }), { merged: { method: 'squash', sha: 'abc1234' } });
 });
 
 test('runGates passes the routed reviewer and cross-check models to the gates', async () => {

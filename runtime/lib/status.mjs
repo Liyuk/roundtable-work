@@ -2,6 +2,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dependencies, selectIssues } from './intake.mjs';
 import { normalizeState } from './state.mjs';
+import { homedir, hostname, userInfo } from 'node:os';
+import { RULES } from '../../scripts/validate-site.mjs';
 
 export const RUNTIME_DEFAULTS = Object.freeze({ maxWakesPerIssue: 5, maxDeveloperAttempts: 3, maxReviewerUnavailable: 5, heartbeatTimeoutMs: 120000 });
 
@@ -175,9 +177,10 @@ ${quota}<section><h2>Recent merges</h2>${list(snapshot.recentMerges, (merge) => 
 export async function runStatus({ argv = [], cwd = process.cwd(), sources, now } = {}) {
   const { parseArgs } = await import('node:util');
   const { values } = parseArgs({ args: argv, options: {
-    json: { type: 'boolean' }, html: { type: 'boolean' }, output: { type: 'string', short: 'o' }, 'work-root': { type: 'string' }, queue: { type: 'string' }, repo: { type: 'string' }, providers: { type: 'string' },
+    json: { type: 'boolean' }, html: { type: 'boolean' }, output: { type: 'string', short: 'o' }, publish: { type: 'string' }, 'work-root': { type: 'string' }, queue: { type: 'string' }, repo: { type: 'string' }, providers: { type: 'string' },
   } });
-  if (values.html && !values.output) throw new Error('status --html requires -o FILE');
+  if (values.html && !values.output && !values.publish) throw new Error('status --html requires -o FILE or --publish FILE');
+  if (values.publish && values.output) throw new Error('status --publish cannot be combined with -o');
   let selectedSources = sources;
   if (!selectedSources && values.providers) {
     const { pathToFileURL } = await import('node:url');
@@ -207,5 +210,16 @@ export async function runStatus({ argv = [], cwd = process.cwd(), sources, now }
     };
   }
   const snapshot = await collectStatus({ workRoot: values['work-root'] ?? cwd, sources: selectedSources, now, budgets: RUNTIME_DEFAULTS, heartbeatTimeoutMs: RUNTIME_DEFAULTS.heartbeatTimeoutMs });
-  return { snapshot, output: values.html ? renderStatusHtml(snapshot) : values.json ? JSON.stringify(snapshot, null, 2) : formatStatus(snapshot), outputPath: values.html ? values.output : null };
+  const output = values.html ? renderStatusHtml(snapshot) : values.json ? JSON.stringify(snapshot, null, 2) : formatStatus(snapshot);
+  const outputPath = values.publish ?? (values.html ? values.output : null);
+  if (outputPath) {
+    const privateValues = [homedir(), hostname(), userInfo().username].filter((value) => value && value.length >= 3);
+    const problems = [];
+    for (const [label, rule] of RULES) if (rule.test(output)) problems.push(label);
+    if (/(?:\b[A-Za-z0-9-]+\.)+(?:example|test|invalid|localhost|local|internal)\b/i.test(output)) problems.push('hostname');
+    if (/\b[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.[A-Za-z]{2,}\b/i.test(output)) problems.push('hostname');
+    if (privateValues.some((value) => output.includes(value))) problems.push('local host identifier');
+    if (problems.length) throw new Error(`status publication failed privacy scan: ${[...new Set(problems)].join(', ')}`);
+  }
+  return { snapshot, output, outputPath };
 }
