@@ -269,10 +269,11 @@ export async function createStateStore({
      * With `suspendPhase` (a phase that timed out while its handler may still run) the same write also leaves
      * the issue `queued` with a recovery record that resumes from the first phase, so the next wake retries.
      */
-    retryDeveloper: (id, type, detail, { suspendPhase } = {}) => update(id, (s) => {
+    retryDeveloper: (id, type, detail, { suspendPhase, retryFinding } = {}) => update(id, (s) => {
       const lastCheckpoint = s.checkpoint?.phase ?? null;
       s.attempts.developer += 1;
       s.checkpoint = null;
+      s.retryFinding = retryFinding ?? null;
       if (suspendPhase !== undefined) {
         if (!PHASES.includes(suspendPhase)) throw new TypeError(`Unknown phase: ${suspendPhase}`);
         s.status = 'queued';

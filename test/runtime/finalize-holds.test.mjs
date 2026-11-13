@@ -33,15 +33,16 @@ function world(overrides = {}) {
   w.state = {
     ci: true, ciThrow: false, gate0: true, gate0Throw: false,
     review: true, reviewUnavailable: false, reviewHead: BASE_SHA,
-    gate2: true, gate2Throw: false, approval: null,
+    gate2: true, gate2Throw: false, approval: null, ownerLogin: 'owner', comments: [],
     head: BASE_SHA, tree: 'tree1', changedFiles: ['runtime/rtd.mjs'], highRisk: false,
     ...overrides,
   };
   const log = (value) => { w.calls.push(value); return value; };
   w.github = {
     async addLabel(_pr, label) { log(`label:${label}`); },
+    async createComment(pr, body) { log(['comment', pr, body]); },
     async recordedEscalationApproval() { log('approval'); return w.state.approval; },
-    async getPullRequest() { log('pr'); return { state: 'open', draft: false, mergeable: true, head: w.state.head, files: w.state.changedFiles }; },
+    async getPullRequest() { log('pr'); return { state: 'open', draft: false, mergeable: true, head: w.state.head, files: w.state.changedFiles, ownerLogin: w.state.ownerLogin, comments: w.state.comments }; },
     async requiredGreen() {
       log('ci');
       if (w.state.ciThrow) throw new Error('checks provider offline');
@@ -150,6 +151,71 @@ test('a safety-approval hold resumes after the approval is recorded for the same
     const done = await store.load('53');
     assert.deepEqual(done.gateRecord.passed, ['gate0', 'gate1', 'gate2', 'ci']);
     assert.equal(done.gateRecord.safetyApproved, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a current-head owner APPROVE-MERGE comment resumes the gated squash path', async () => {
+  for (const comment of [
+    { author: { login: 'owner' }, body: `APPROVE-MERGE ${BASE_SHA}` },
+    { author: { login: 'other' }, body: `APPROVE-MERGE ${BASE_SHA}` },
+    { author: { login: 'owner' }, body: 'APPROVE-MERGE stale-head' },
+  ]) {
+    const root = await tmp();
+    try {
+      const w = world({ changedFiles: [SAFETY] });
+      assert.equal((await wake(root, w)).outcomes[0].status, 'waiting_external');
+      w.state.comments = [comment];
+      w.calls.length = 0;
+      const result = await wake(root, w);
+      if (comment.author.login !== 'owner' || !comment.body.includes(BASE_SHA)) {
+        assert.equal(result.outcomes[0].status, 'waiting_external');
+        assert.equal(w.squashes().length, 0);
+      } else {
+        assert.equal(result.outcomes[0].status, 'done');
+        assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
+        assert.ok(w.calls.indexOf('ci') < w.calls.findIndex((call) => Array.isArray(call) && call[0] === 'squash'));
+        assert.equal((await createStateStore({ workRoot: root }).then((store) => store.load('53'))).gateRecord.safetyApproved, true);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('an actionable in-scope safety reject starts another worker attempt within budget', async () => {
+  const root = await tmp();
+  try {
+    const w = world({ changedFiles: [SAFETY], approval: { reject: true, inScope: true, fix: 'Correct the validation condition', reason: 'The validation condition rejects valid input.' } });
+    let developerAttempts = 0;
+    let retryDetail;
+    const result = await runQueue({
+      workRoot: root, queue: ['53'], autoMerge: w.autoMerge,
+      handler: async ({ phase, state }) => {
+        if (phase === 'developing' && ++developerAttempts === 2) {
+          retryDetail = state.retryFinding;
+          w.state.approval = { approved: true, model: 'gpt-6.1-terra', head: BASE_SHA };
+        }
+        return { exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' };
+      },
+    });
+    assert.equal(result.outcomes[0].status, 'done');
+    assert.equal(developerAttempts, 2);
+    const comment = w.calls.find((call) => Array.isArray(call) && call[0] === 'comment');
+    assert.deepEqual([retryDetail, comment?.[1], comment?.[2]], [
+      { reason: 'The validation condition rejects valid input.', fix: 'Correct the validation condition' },
+      90,
+      '<!-- rt:safety-finding -->\nReason: The validation condition rejects valid input.\nFix: Correct the validation condition',
+    ]);
+    assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a safety-decider reject alleging guard weakening remains held for owner action', async () => {
+  const root = await tmp();
+  try {
+    const w = world({ changedFiles: [SAFETY], approval: { reject: true, inScope: true, fix: 'Relax the branch protection check', reason: 'This weakens branch protection.', safetyGuardWeakening: true } });
+    const result = await wake(root, w);
+    assert.equal(result.outcomes[0].status, 'waiting_external');
+    assert.equal(w.squashes().length, 0);
+    assert.ok(w.calls.includes('label:rt:ready-to-merge'));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

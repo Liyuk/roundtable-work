@@ -58,6 +58,7 @@ export function classify(event) {
       if (failed(event)) return result('test_failure', 'continue', { reason: failReason(event) });
       return result('ok', 'continue');
     case 'finalize':
+      if (event.retryableGateFailure === true && failed(event)) return result('test_failure', 'continue', { reason: 'actionable_safety_reject' });
       // Finalizing may have had external side effects, so a failure is never retried from development.
       if (failed(event)) return result('finalize_failure', 'ask', { reason: failReason(event) });
       return result('ok', 'done');
