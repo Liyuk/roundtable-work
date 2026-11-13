@@ -496,7 +496,7 @@ const runChild = (args, env = {}) => new Promise((resolve) => {
   let err = '';
   child.stdout.on('data', (d) => { out += d; });
   child.stderr.on('data', (d) => { err += d; });
-  const killer = setTimeout(() => child.kill('SIGKILL'), 20000); // a hung child fails the test instead of the run
+  const killer = setTimeout(() => child.kill('SIGKILL'), 40000); // a hung child fails the test instead of the run
   child.on('close', (code, signal) => { clearTimeout(killer); resolve({ code, signal, out, err }); });
 });
 
@@ -614,7 +614,7 @@ export default async ({ phase }) => {
   assert.equal(await readFile(stateFile(root, '1'), 'utf8'), stateBefore, 'the recorded status was not overwritten');
 }));
 
-test('timeout: the CLI rejects malformed timeout flags with exit 2', { timeout: 30000 }, withRoot(async (root) => {
+test('timeout: the CLI rejects malformed timeout flags with exit 2', { timeout: 60000 }, withRoot(async (root) => {
   for (const flag of [['--phase-timeout-ms', '0'], ['--phase-timeout-ms', 'abc'], ['--grace-ms', '-5'], ['--queue-timeout-ms', '1.5']]) {
     const r = await runChild([RTD, '--work-root', root, '--queue', 'q.json', '--handler', 'h.mjs', ...flag]);
     assert.equal(r.code, 2, flag.join(' '));

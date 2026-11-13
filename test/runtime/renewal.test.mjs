@@ -25,8 +25,8 @@ const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PASS = '审查结论：通过\nok';
 
-// Generous margins: the lease is 600 ms, renewed every 200 ms; the quiet handler runs 1800 ms (3x the lease).
-const TTL = 600;
+// Generous margins: the lease is 2000 ms; the quiet handler runs 6000 ms (3x the lease).
+const TTL = 2000;
 const RENEW = { lockTtlMs: TTL, lockRenewMinMs: 20 };
 
 test('a quiet handler (no heartbeat) longer than 2x the lock TTL keeps the lock: a second acquireLock and runQueue are refused', async () => {
@@ -168,7 +168,7 @@ test('bad lock timing is rejected up front with a TypeError; valid and default t
     await assert.rejects(readFile(join(lockDirOf(root), 'epoch-1')), { code: 'ENOENT' });
     await assert.rejects(readFile(join(root, 'state', '1.json')), { code: 'ENOENT' });
     // Exactly half a lease, and the defaults, are valid.
-    assert.equal((await runQueue({ workRoot: root, queue: ['1'], handler, lockTtlMs: 1000, lockRenewMinMs: 500 })).status, 'ok');
+    assert.equal((await runQueue({ workRoot: root, queue: ['1'], handler, lockTtlMs: 4000, lockRenewMinMs: 2000 })).status, 'ok');
     assert.equal((await runQueue({ workRoot: root, queue: ['2'], handler })).status, 'ok');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

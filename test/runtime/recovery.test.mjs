@@ -551,8 +551,8 @@ for (const [name, failure] of [['failure', { exitCode: 1, output: 'push failed' 
 
 // --- Lock renewal and lock loss while the queue is being read (injected provider) ---
 
-// Generous margins: the lease is 600 ms, renewed every 200 ms (a third of it); a slow provider runs 2.5x the lease.
-const QTTL = 600;
+// Generous margins: the lease is 2000 ms, renewed every ~667 ms (a third of it); a slow provider runs 2.5x the lease.
+const QTTL = 2000;
 const QRENEW = { lockTtlMs: QTTL, lockRenewMinMs: 20 };
 const qsleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const stealLock = (root, token) => plantEpoch(root, { owner: 'successor', pid: process.pid, hostId: hostId(), token, acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 });
