@@ -5,7 +5,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
 
 const scratch = join(process.cwd(), '.roundtable/scratch/rt51-fix2/tmp');
@@ -22,6 +22,7 @@ async function fixture() {
   return { root, repo, workRoot };
 }
 const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/daemon-workers.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 function clientFor(issue) {
   const events = [];
   return { events, addLabel: async (_n, label) => { events.push('label'); issue.labels.push(label); }, createComment: async (_n, body) => { events.push('comment'); issue.comments.push({ body }); }, listComments: async () => issue.comments };
@@ -141,6 +142,26 @@ test('tracker intake includes stale running issues for durable recovery', async 
   assert.equal(items.length, 1); assert.deepEqual(items[0].labels, ['rt:running']); assert.equal(items[0].body, issue.body);
 });
 
+test('daemon intake selects and releases a held parent when its recorded children close', async () => {
+  const { root, repo, workRoot } = await fixture();
+  try {
+    const held = { id: '70', number: 70, state: 'OPEN', author: { login: 'owner' }, title: '[A] parent', body: ADMISSIBLE, createdAt: '2020-01-01', labels: ['type:feature', 'rt:hold'] };
+    const events = [];
+    const client = { removeLabel: async (n, label) => { events.push(['removeLabel', n, label]); held.labels = held.labels.filter(x => x !== label); }, addLabel: async () => {}, createComment: async () => {}, listComments: async () => [] };
+    const { createIntakeProvider } = await import('../../runtime/lib/intake.mjs');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot });
+    await store.update('70', s => { s.status = 'waiting_external'; s.decomposition = { status: 'waiting', childIds: [701] }; });
+    const queue = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [held], getIssue: async () => ({ state: 'CLOSED' }) }, { includeRunning: true });
+    const phases = [];
+    const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue, handler: async ctx => { phases.push(ctx.phase); return handler(ctx); } });
+    assert.deepEqual(events, [['removeLabel', 70, 'rt:hold']]);
+    assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
+    assert.equal(result.outcomes[0].id, '70');
+    assert.equal(result.outcomes[0].status, 'done');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('tracker writer exposes only claim-related operations and selects the repository', async () => {
   const { createGitHubWriter } = await import('../../scripts/github-read.mjs');
   const calls = [];
@@ -170,5 +191,26 @@ test('daemon finishes a claim interrupted after adding the label', async () => {
     await assert.rejects(runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], handler }), /interrupted/);
     const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], handler });
     assert.equal(result.outcomes[0].status, 'done'); assert.equal(issue.comments.length, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('daemon reads decompose drafts from the worker worktree, not the repository root', async () => {
+  const { root, repo, workRoot } = await fixture();
+  try {
+    await writeFile(join(repo, 'child.json'), JSON.stringify({ title: 'Repository decoy', body: 'Decoy' }));
+    const issue = { id: '50', number: 50, title: '[A] decompose', labels: [], comments: [] };
+    const created = [];
+    const client = {
+      addLabel: async (n, label) => { if (n === 50) issue.labels.push(label); },
+      removeLabel: async () => {},
+      createComment: async (n, body) => { issue.comments.push({ body }); },
+      listComments: async () => issue.comments,
+      createIssue: async title => { created.push(title); return { number: 501 }; },
+    };
+    await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], handler: async ({ phase, item }) => {
+      if (phase === 'developing') await writeFile(join(item.worktree, 'child.json'), JSON.stringify({ title: 'Worktree child', body: 'Work' }));
+      return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', ...(phase === 'finalizing' ? { decision: { decision: 'decompose', drafts: ['child.json'] } } : {}) };
+    } });
+    assert.deepEqual(created, ['Worktree child']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

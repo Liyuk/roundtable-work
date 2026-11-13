@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { selectIssues, createIntakeProvider } from '../../runtime/lib/intake.mjs';
 import { createGitHubReader } from '../../scripts/github-read.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +14,8 @@ const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-intake-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
 process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
-const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', body: '', ...extra });
+const admissibleBody = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/intake.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 20\nFiles: 2';
+const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', ...extra, body: `${admissibleBody}\n${extra.body ?? ''}` });
 const select = (issues, states = {}) => selectIssues({ issues, owner: 'owner', dependencyStates: states });
 test('eligibility and triage rules', () => {
   for (const label of ['rt:owner', 'rt:deferred', 'rt:running', 'rt:ask', 'rt:blocked', 'rt:hold', 'rt:ready-to-merge', 'rt:proposed', 'type:epic']) {
@@ -128,7 +129,7 @@ test('GitHub adapter uses the selected repository for each read', async () => {
   await reader.getIssue(42);
   assert.deepEqual(calls, [
     ['repo', 'view', 'selected-owner/selected-repo', '--json', 'owner'],
-    ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,body,url'],
+    ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,updatedAt,body,url'],
     ['issue', 'view', '42', '--repo', 'selected-owner/selected-repo', '--json', 'state'],
   ]);
 });
@@ -178,4 +179,183 @@ test('tracker intake includes rt:ask and rt:blocked issues and carries owner ide
   assert.equal(items.length, 1);
   assert.deepEqual(items[0].author, paused.author);
   assert.deepEqual(items[0].labels.map(label => label.name), ['rt:ask']);
+});
+
+test('corrupt state for an unrelated issue does not abort intake', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('corrupt-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot: root });
+    await mkdir(join(root, 'state'), { recursive: true });
+    await writeFile(join(root, 'state', '99.json'), '{invalid');
+    const entries = [issue(1, ['type:bug']), issue(99, ['type:feature'], { author: { login: 'other' } }), issue(2)];
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => entries }, { includeRunning: true });
+    assert.deepEqual((await provider({ store, client: {} })).map(item => item.number), [1, 2]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('held parents release only with valid durable child IDs after every child closes', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('held-', base).pathname);
+  try {
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const store = await createStateStore({ workRoot: root });
+    const held = issue(90, ['type:feature', 'rt:hold']);
+    const unrelated = issue(91, ['type:feature', 'rt:hold']);
+    await store.update('90', s => { s.status = 'waiting_external'; s.decomposition = { status: 'waiting', childIds: [101, 102] }; });
+    await store.update('91', s => { s.status = 'waiting_external'; });
+    let statuses = { 101: 'CLOSED', 102: 'OPEN' };
+    const events = [];
+    const client = { removeLabel: async (id, label) => events.push(['removeLabel', id, label]) };
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [held, unrelated], getIssue: async id => ({ state: statuses[id] }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.deepEqual(events, []);
+    statuses[102] = 'CLOSED';
+    const items = await provider({ store, client });
+    assert.deepEqual(items.map(item => item.number), [90]);
+    assert.deepEqual(events, [['removeLabel', 90, 'rt:hold']]);
+    assert.equal((await store.load('90')).status, 'queued');
+    assert.equal((await store.load('90')).decomposition.status, 'released');
+    assert.equal((await store.load('91')).status, 'waiting_external');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('recovers a held parent after child labeling fails without duplicating its child', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('interrupted-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const { applyDecision } = await import('../../runtime/lib/decisions.mjs');
+    await writeFile(`${root}/child.json`, JSON.stringify({ title: 'Child', body: 'Work' }));
+    const store = await createStateStore({ workRoot: root });
+    const labels = new Set(['type:feature']);
+    let childState = 'OPEN', creations = 0, failLabel = true;
+    const childLabels = new Set();
+    const client = {
+      createComment: async () => {},
+      createIssue: async () => { creations++; return { number: 101 }; },
+      addLabel: async (id, label) => {
+        if (id === 101 && failLabel) { failLabel = false; throw new Error('label failed'); }
+        if (id === 90) labels.add(label);
+        if (id === 101) childLabels.add(label);
+      },
+      removeLabel: async (id, label) => { if (id === 90) labels.delete(label); },
+    };
+    await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['child.json'] }, issue: { number: 90 }, store, client, repoRoot: root }), /label failed/);
+    assert.deepEqual((await store.load('90')).decomposition.childIds, [101]);
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(90, [...labels])], getIssue: async () => ({ state: childState }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.equal(labels.has('rt:hold'), true);
+    assert.equal(childLabels.has('rt:self'), true);
+    childState = 'CLOSED';
+    assert.deepEqual((await provider({ store, client })).map(item => item.number), [90]);
+    assert.equal(creations, 1);
+    assert.deepEqual((await store.load('90')).decomposition.childIds, [101]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('recovers remaining drafts after an early label interruption without duplicating children', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('remaining-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const { applyDecision } = await import('../../runtime/lib/decisions.mjs');
+    for (const n of [1, 2]) await writeFile(`${root}/${n}.json`, JSON.stringify({ title: `Child ${n}`, body: 'Work' }));
+    const store = await createStateStore({ workRoot: root });
+    const labels = new Set(['type:feature']);
+    const childLabels = new Set();
+    const created = [];
+    let fail = true, closed = false;
+    const client = {
+      createComment: async () => {},
+      createIssue: async title => { created.push(title); return { number: 100 + created.length }; },
+      addLabel: async (id, label) => {
+        if (id === 101 && fail) { fail = false; throw new Error('label failed'); }
+        if (id === 90) labels.add(label); else childLabels.add(id);
+      },
+      removeLabel: async (id, label) => { if (id === 90) labels.delete(label); },
+    };
+    await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['1.json', '2.json'] }, issue: { number: 90 }, store, client, repoRoot: root }), /label failed/);
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(90, [...labels])], getIssue: async () => ({ state: closed ? 'CLOSED' : 'OPEN' }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.deepEqual(created, ['Child 1', 'Child 2']);
+    assert.deepEqual([...childLabels], [101, 102]);
+    assert.equal(labels.has('rt:hold'), true);
+    closed = true;
+    assert.deepEqual((await provider({ store, client })).map(item => item.number), [90]);
+    assert.deepEqual(created, ['Child 1', 'Child 2']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('does not retry an ambiguous later creation or release its parent', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('ambiguous-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const { applyDecision } = await import('../../runtime/lib/decisions.mjs');
+    for (const n of [1, 2]) await writeFile(`${root}/${n}.json`, JSON.stringify({ title: `Child ${n}`, body: 'Work' }));
+    const store = await createStateStore({ workRoot: root });
+    const labels = new Set(['type:feature']);
+    let calls = 0;
+    const client = {
+      createComment: async () => {},
+      createIssue: async () => { if (++calls === 2) throw new Error('response lost'); return { number: 101 }; },
+      addLabel: async (id, label) => { if (id === 90) labels.add(label); },
+      removeLabel: async (id, label) => { if (id === 90) labels.delete(label); },
+    };
+    await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['1.json', '2.json'] }, issue: { number: 90 }, store, client, repoRoot: root }), /response lost/);
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(90, [...labels])], getIssue: async () => ({ state: 'CLOSED' }) }, { includeRunning: true });
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.deepEqual(await provider({ store, client }), []);
+    assert.equal(calls, 2);
+    assert.equal(labels.has('rt:hold'), true);
+    assert.equal((await store.load('90')).decomposition.inFlight, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('rt:self children without a type label are intake-eligible and sort after type:bug', () => {
+  assert.deepEqual(select([issue(1, ['rt:self']), issue(2, ['type:bug']), issue(3, ['type:feature'])]).issues.map(i => i.number), [2, 1, 3]);
+  for (const labels of [['rt:self', 'rt:hold'], ['rt:self', 'rt:owner'], ['rt:self', 'rt:proposed'], ['rt:self', 'type:epic']]) assert.deepEqual(select([issue(4, labels)]).issues, [], labels.join());
+  assert.deepEqual(select([issue(5, ['rt:self'], { body: 'Depends on #9' })]).issues, []);
+});
+
+test('child intake schedules rt:self children and releases the parent only after all close', async () => {
+  const base = new URL('../../.roundtable/scratch/97-implementation/', import.meta.url);
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(new URL('cycle-', base).pathname);
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const { createStateStore } = await import('../../runtime/lib/state.mjs');
+    const { applyDecision } = await import('../../runtime/lib/decisions.mjs');
+    await writeFile(`${root}/child.json`, JSON.stringify({ title: 'Child', body: 'Work' }));
+    const store = await createStateStore({ workRoot: root });
+    const tracker = new Map([[90, issue(90, ['type:feature'])]]);
+    const client = {
+      createComment: async () => {},
+      createIssue: async (title, body) => {
+        const number = 100 + tracker.size;
+        tracker.set(number, issue(number, ['rt:self'], { title, body }));
+        return { number };
+      },
+      addLabel: async (number, label) => { tracker.get(number).labels.push({ name: label }); },
+      removeLabel: async (number, label) => { const entry = tracker.get(number); entry.labels = entry.labels.filter(({ name }) => name !== label); },
+    };
+    await applyDecision({ decision: { decision: 'decompose', drafts: ['child.json'] }, issue: { number: 90 }, store, client, repoRoot: root });
+    assert.deepEqual((await store.load('90')).decomposition.childIds, [101]);
+    const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [...tracker.values()], getIssue: async number => ({ state: tracker.get(number)?.state ?? 'OPEN' }) }, { includeRunning: true });
+    assert.deepEqual((await provider({ store, client })).map(item => item.number), [101]);
+    tracker.get(101).state = 'CLOSED';
+    assert.deepEqual((await provider({ store, client })).map(item => item.number), [90]);
+    assert.equal((await store.load('90')).decomposition.status, 'released');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
