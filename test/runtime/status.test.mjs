@@ -191,14 +191,17 @@ test('production GitHub reader separates intake queue and reports dependency fai
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'state')); await mkdir(join(root, 'bin'));
   const gh = join(root, 'bin', 'gh');
+  const body = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/status.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 20\nFiles: 2';
+  const withDependency = body.replace('Dependencies\nNone.', 'Dependencies\nDepends on #99');
   await writeFile(gh, `#!/usr/bin/env node
 const args = process.argv.slice(2);
+const body = ${JSON.stringify(body)}; const withDependency = ${JSON.stringify(withDependency)};
 if (args[0] === 'repo' && args[1] === 'view') console.log(JSON.stringify({owner:{login:'owner'},name:'repo'}));
 else if (args[0] === 'issue' && args[1] === 'list') console.log(JSON.stringify([
- {number:1,title:'Pending',state:'OPEN',author:{login:'owner'},labels:['type:bug'],body:'',createdAt:'2026-01-01'},
+ {number:1,title:'Pending',state:'OPEN',author:{login:'owner'},labels:['type:bug'],body,createdAt:'2026-01-01'},
  {number:2,title:'Running',state:'OPEN',author:{login:'owner'},labels:['rt:running'],body:'',createdAt:'2026-01-02'},
  {number:3,title:'Waiting',state:'OPEN',author:{login:'owner'},labels:['rt:ask'],body:'',createdAt:'2026-01-03'},
- {number:4,title:'Dependency',state:'OPEN',author:{login:'owner'},labels:['type:bug'],body:'Depends on #99',createdAt:'2026-01-04'}]));
+ {number:4,title:'Dependency',state:'OPEN',author:{login:'owner'},labels:['type:bug'],body:withDependency,createdAt:'2026-01-04'}]));
 else if (args[0] === 'issue' && args[1] === 'view' && args[2] === '99') { if (process.env.TEST_DEP_FAIL === '1') process.exit(1); console.log(JSON.stringify({state:'CLOSED'})); }
 else process.exit(88);
 `); await chmod(gh, 0o755);

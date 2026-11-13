@@ -57,6 +57,12 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
       if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
       return run(['issue', 'view', String(number), ...repository, '--json', 'state'], options);
     },
+    async listComments(number, options) {
+      if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
+      const result = await run(['issue', 'view', String(number), ...repository, '--json', 'comments'], options);
+      if (!Array.isArray(result?.comments)) throw new TypeError('Issue comments are invalid');
+      return result.comments;
+    },
   };
 }
 
