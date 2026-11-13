@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { runGate0 } from '../../runtime/lib/accept.mjs';
+import { rulePatchErrors, runGate0 } from '../../runtime/lib/accept.mjs';
 
 // Gate 0 composition seams: real synthetic Git repositories provide the evidence, a fixture
 // denylist outside the repository holds only fake names, and the injected sandbox writes
@@ -168,4 +168,30 @@ test('sandbox and runner failures never pass and never throw', async (t) => {
   const second = await runGate0(options(fx, { ...list, sandbox: failing }));
   assert.equal(second.verdict, 'reject');
   assert.ok(second.errors.some((error) => error.rule === 'runner'));
+});
+
+const RULE_SCOPES = { allowedPaths: ['runtime/lib/**', 'test/**'] };
+const RULE = { rule: 'rule_patch:test_missing', path: '<diff>', line: 0 };
+
+test('a rule patch with no changed test file is rejected; adding a test file clears it', async (t) => {
+  const bare = await repo(t, { 'runtime/lib/rule.mjs': 'export const rule = 2;\n' });
+  const rejected = await runGate0(options(bare, { ...(await denylist(bare)), issue: RULE_SCOPES, sandbox: fakeSandbox() }));
+  assert.notEqual(rejected.verdict, 'pass');
+  assert.ok(rejected.errors.some((error) => error.rule === RULE.rule));
+
+  const tested = await repo(t, { 'runtime/lib/rule.mjs': 'export const rule = 2;\n', 'test/rule.test.mjs': "import test from 'node:test';\n" });
+  const cleared = await runGate0(options(tested, { ...(await denylist(tested)), issue: RULE_SCOPES, sandbox: fakeSandbox() }));
+  assert.ok(!cleared.errors.some((error) => error.rule === RULE.rule));
+});
+
+test('rulePatchErrors detects rule patches by metadata, commit trailer or rule-only paths', () => {
+  const CITE = { rule: 'rule_patch:no_citation', path: '<diff>', line: 0 };
+  const CITED = { prBody: 'Stall-Evidence: log line 12' };
+  assert.deepEqual(rulePatchErrors({ changedPaths: ['docs/a.md'], metadata: { rulePatch: true } }), [RULE, CITE]);
+  assert.deepEqual(rulePatchErrors({ changedPaths: ['docs/a.md'], commitMessages: ['fix\n\nRule-Patch: yes'] }), [RULE, CITE]);
+  assert.deepEqual(rulePatchErrors({ changedPaths: ['runtime/lib/a.mjs', '.roundtable/policy.md'] }), [RULE, CITE]);
+  assert.deepEqual(rulePatchErrors({ changedPaths: ['runtime/lib/a.mjs', 'test/a.test.mjs'], metadata: { rulePatch: true } }), [CITE]);
+  assert.deepEqual(rulePatchErrors({ changedPaths: ['runtime/lib/a.mjs', 'test/a.test.mjs'], metadata: { rulePatch: true, ...CITED } }), []);
+  assert.deepEqual(rulePatchErrors({ changedPaths: ['docs/a.md'], metadata: { rulePatch: true, prBody: 'Stall-Evidence:' } }), [RULE, CITE]);
+  assert.deepEqual(rulePatchErrors({ changedPaths: ['docs/a.md'] }), []);
 });
