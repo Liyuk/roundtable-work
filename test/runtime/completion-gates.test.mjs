@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 
 async function runCase(failure) {
   const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
@@ -11,15 +11,15 @@ async function runCase(failure) {
   const github = {
     async addLabel(_pr, label) { calls.push(label); },
     async recordedEscalationApproval() { return null; },
-    async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, mergeable: true, head: 'head', files: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
+    async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, mergeable: true, head: 'a'.repeat(40), files: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
     async requiredGreen() { calls.push('ci'); ciCalls++; if (failure === 'ci-error') throw new Error('offline'); if (failure === 'pending') return { green: false, status: 'pending' }; return !(failure === 'ci' || (failure === 'recheck' && ciCalls === 2)); },
     async squashMerge(_pr, options) { calls.push(['squash', options]); },
   };
   const autoMerge = {
-    async context() { return { head: 'head', tree: 'tree', pr: 90, highRisk: true, changedFiles: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
+    async context() { return { head: 'a'.repeat(40), tree: 'tree', pr: 90, highRisk: true, changedFiles: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
     gates: {
       async gate0() { calls.push('gate0'); return failure !== 'gate0'; },
-      async reviewer() { calls.push('gate1'); if (failure === 'unavailable') throw Object.assign(new Error('offline'), { code: 'REVIEWER_UNAVAILABLE' }); return { passed: failure !== 'gate1', head: 'head' }; },
+      async reviewer() { calls.push('gate1'); if (failure === 'unavailable') throw Object.assign(new Error('offline'), { code: 'REVIEWER_UNAVAILABLE' }); return { passed: failure !== 'gate1', head: 'a'.repeat(40) }; },
       async crossCheck() { calls.push('gate2'); return failure !== 'gate2'; },
     }, github,
   };
