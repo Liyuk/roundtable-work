@@ -4,6 +4,8 @@ import { safetyFiles } from './safety.mjs';
 const PASS = (result) => result === true || result?.passed === true || result?.status === 'pass';
 const UNAVAILABLE = (error) => error?.code === 'REVIEWER_UNAVAILABLE' || error?.unavailable === true;
 const required = (value, name) => { if (!value || typeof value !== 'object') throw new TypeError(`${name} is required`); return value; };
+/** How many cancelled-only CI re-runs one issue+head may request before a cancelled answer fails closed. */
+const MAX_CI_RERUNS = 2;
 
 /** A small durable gate record store. The host can inject a transactional state backend instead. */
 export function createGateStateStore({ load, save }) {
@@ -24,8 +26,11 @@ export function createGateStateStore({ load, save }) {
  *   provider that threw (a transient error).
  * - `hold: false` — an explicit gate verdict that did not pass, or a configuration error that will not
  *   clear by waiting (gate0/gate2 not-pass, reviewer rejection or stale-head evidence, missing cross-check).
- *   Required CI is a hold only while the provider reports `status: 'pending'`; red CI, or a not-green answer
- *   without an explicit pending status, is a genuine failure that escalates instead of waiting.
+ *   Required CI is a hold while the provider reports `status: 'pending'`; red CI, or a not-green answer
+ *   without an explicit pending status, is a genuine failure that escalates instead of waiting. A cancelled-only
+ *   answer is also a hold while an optional `ci.rerunCancelled(pr)` capability exists and the persisted budget
+ *   (`MAX_CI_RERUNS` per issue+head, stored as `ciReruns` on the gate record) is not used up; otherwise it is
+ *   red and fails closed as before.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
 export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, github, models = {}, routing, modelRouter }) {
@@ -39,13 +44,14 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   let record = await state.get(id);
   if (record && (record.issue !== id || record.head !== head || record.tree !== tree)) record = null;
   const passed = new Set(record?.passed ?? []);
+  let ciReruns = record?.ciReruns ?? 0;
   // The gated safety set is written on every persist so the merge entry point can compare it with the
   // live pull request. Approval is only proven once the escalation check has passed, which happens
   // before the `ci` persist; earlier persists keep it explicitly false.
   const gatedSafetyFiles = safetyFiles(changedFiles);
   const persist = async (gate) => {
-    passed.add(gate);
-    record = { issue: id, head, tree, passed: [...passed], safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
+    if (gate) passed.add(gate);
+    record = { issue: id, head, tree, passed: [...passed], ciReruns, safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
     await state.put(id, record);
   };
   // `hold` separates a resumable wait from a genuine failure; see the runGates contract above. Default is
@@ -116,6 +122,13 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   // Required CI is only reported as green/not green plus an optional status. Pending is resumable; a not-green
   // answer without an explicit pending status is red, which must escalate rather than silently wait.
   if (checks !== true && checks?.green !== true) {
+    if (checks?.status === 'cancelled' && ciReruns < MAX_CI_RERUNS && typeof ci.rerunCancelled === 'function') {
+      ciReruns += 1;
+      // Persist the budget before the side effect, so a throwing provider cannot cause unbounded re-runs.
+      await persist();
+      await ci.rerunCancelled(pr);
+      return failed('ci', `Required CI was cancelled by the runner; re-run requested (${ciReruns}/${MAX_CI_RERUNS})`, true);
+    }
     const pending = checks?.status === 'pending';
     return failed('ci', pending ? 'Required CI is pending' : 'Required CI is red', pending);
   }
