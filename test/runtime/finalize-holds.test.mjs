@@ -47,7 +47,7 @@ function world(overrides = {}) {
     async requiredGreen() {
       log('ci');
       if (w.state.ciThrow) throw new Error('checks provider offline');
-      return w.state.ci === true ? true : { green: false, status: 'pending' };
+      return w.state.ci === true ? true : { green: false, status: w.state.ci };
     },
     async squashMerge(_pr, options) { log(['squash', options]); return { mergeCommit: 'abcdef0123456789' }; },
     async mainStatus() { log('mainStatus'); return { head: 'abcdef0123456789', status: 'green' }; },
@@ -87,7 +87,7 @@ function wake(root, w, phases = []) {
 test('a CI hold waits: waiting_external/wait, recovery untouched, gate record kept, no squash', async () => {
   const root = await tmp();
   try {
-    const w = world({ ci: false });
+    const w = world({ ci: 'pending' });
     const phases = [];
     const result = await wake(root, w, phases);
     assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
@@ -108,10 +108,29 @@ test('a CI hold waits: waiting_external/wait, recovery untouched, gate record ke
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('red CI is a genuine gate failure: interrupted/finalize_failure/ask, never merged or resumed', async () => {
+  const root = await tmp();
+  try {
+    const w = world({ ci: 'failure' });
+    const first = await wake(root, w);
+    assert.deepEqual([first.outcomes[0].status, first.outcomes[0].class, first.outcomes[0].decision, first.outcomes[0].phase], ['interrupted', 'finalize_failure', 'ask', 'finalizing']);
+    assert.equal(w.squashes().length, 0, 'red CI never reaches the merge entry point');
+    const store = await createStateStore({ workRoot: root });
+    const s = await store.load('53');
+    assert.equal(s.status, 'interrupted', 'not waiting_external: red CI escalates instead of waiting');
+    assert.deepEqual(s.gateRecord.passed, ['gate0', 'gate1'], 'CI never passed');
+    // A later wake does not pick it up again, so red CI is never silently re-run into a merge.
+    const phases = [];
+    assert.equal((await wake(root, w, phases)).outcomes[0].status, 'interrupted');
+    assert.deepEqual(phases, []);
+    assert.equal(w.squashes().length, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('a later wake resumes at finalizing and merges after the hold cleared without re-running passed gates', async () => {
   const root = await tmp();
   try {
-    const w = world({ ci: false });
+    const w = world({ ci: 'pending' });
     assert.equal((await wake(root, w)).outcomes[0].status, 'waiting_external');
     w.state.ci = true;
     w.calls.length = 0;
@@ -131,7 +150,7 @@ test('a later wake resumes at finalizing and merges after the hold cleared witho
 test('a prompt change invalidates persisted gate evidence before the hold resumes', async () => {
   const root = await tmp();
   try {
-    const w = world({ ci: false });
+    const w = world({ ci: 'pending' });
     assert.equal((await wake(root, w)).outcomes[0].status, 'waiting_external');
     w.state.ci = true;
     const reviewerPrompt = join(root, '.agents/skills/roundtable-work/prompts/roles/reviewer.md');
@@ -315,7 +334,7 @@ test('a genuine gate failure stays fail-closed: interrupted/ask, merge never att
 test('a gate hold never pauses main and writes no monitor record', async () => {
   const root = await tmp();
   try {
-    const w = world({ ci: false });
+    const w = world({ ci: 'pending' });
     const pause = { writes: [], value: null, async get() { return this.value; }, async put(value) { this.writes.push(value); this.value = value; } };
     const autoMerge = createProductionAdapter({
       pause, github: w.github, gates: w.gates, context: w.context,

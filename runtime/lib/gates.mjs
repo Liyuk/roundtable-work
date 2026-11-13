@@ -21,11 +21,11 @@ export function createGateStateStore({ load, save }) {
  * `hold` discriminator, so the caller can tell a resumable hold from a genuine failure:
  * - `hold: true` — nothing was merged and the same head/tree may be retried once the condition clears:
  *   pending CI, missing/stale recorded safety approval, reviewer unavailable after the retry, or a gate/CI
- *   provider that threw (a transient error). Required CI is only reported as green/not green, so red and
- *   pending are indistinguishable here; that is safe because the merge entry point rechecks live CI
- *   immediately before squash, so red CI can never merge.
+ *   provider that threw (a transient error).
  * - `hold: false` — an explicit gate verdict that did not pass, or a configuration error that will not
  *   clear by waiting (gate0/gate2 not-pass, reviewer rejection or stale-head evidence, missing cross-check).
+ *   Required CI is a hold only while the provider reports `status: 'pending'`; red CI, or a not-green answer
+ *   without an explicit pending status, is a genuine failure that escalates instead of waiting.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
 export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, github, models = {}, routing }) {
@@ -109,9 +109,12 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   }
   let checks;
   try { checks = await ci.requiredGreen(pr); } catch (error) { return failed('ci', error.message, true); }
-  // Pending and red CI share one provider answer here, so both are resumable states: the merge entry
-  // point rechecks live CI immediately before squash, which is what keeps a red CI from ever merging.
-  if (checks !== true && checks?.green !== true) return failed('ci', 'Required CI is red or pending', true);
+  // Required CI is only reported as green/not green plus an optional status. Pending is resumable; a not-green
+  // answer without an explicit pending status is red, which must escalate rather than silently wait.
+  if (checks !== true && checks?.green !== true) {
+    const pending = checks?.status === 'pending';
+    return failed('ci', pending ? 'Required CI is pending' : 'Required CI is red', pending);
+  }
   await persist('ci');
   // The adapter is the single merge entry point and must revalidate live PR/head/CI immediately before squash.
   const evidence = { issue: id, head, tree, highRisk, passed: [...passed], ciGreen: true, safetyFiles: gatedSafetyFiles, safetyApproved: gatedSafetyFiles.length > 0 };
