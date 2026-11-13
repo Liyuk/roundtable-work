@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../runtime/rtd.mjs';
+import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { acquireLock, hostId, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 
@@ -51,6 +51,15 @@ import { join } from 'node:path';
 const root = process.env.RT_TEST_ROOT;
 const mode = process.env.RT_TEST_MODE;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sha = 'a'.repeat(40);
+// The trusted handler module exports the read-only observation clients used by the real CLI path.
+export const observationClients = {
+  expectedSha: () => sha,
+  issue: { async get() { return { state: 'open', labels: ['rt:running'] }; } },
+  worktree: { async inspect() { return { dirty: false }; } },
+  git: { async head() { return sha; }, async commit() { return { sha }; } },
+  evidence: { async checks() { return { sha, conclusion: 'success' }; }, async review() { return { sha, conclusion: 'approved' }; } },
+};
 export default async function handler({ item, phase }) {
   if (mode === 'hold') {
     writeFileSync(join(root, 'started'), String(process.pid));

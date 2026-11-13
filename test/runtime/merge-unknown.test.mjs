@@ -18,6 +18,7 @@ process.env.RTW_STATE_DIR = ANCHOR;
 process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* leaving /tmp behind is harmless */ } });
 const exists = (path) => access(path).then(() => true, () => false);
 const PASSOUT = '审查结论：通过';
+const OBSERVED_SHA = 'a'.repeat(40);
 const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASSOUT : 'ok' });
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 
@@ -43,6 +44,13 @@ function providers(overrides = {}) {
         : { pr: 90, head: 'head', tree: 'tree', highRisk: false, changedFiles: ['x'] };
     }, ...overrides.context },
     gates: { async gate0() { return true; }, async reviewer({ head }) { return { passed: true, head }; }, async crossCheck() { return true; }, ...overrides.gates },
+    observation: {
+      expectedSha: ({ expectedSha }) => expectedSha ?? OBSERVED_SHA,
+      issue: { async get() { return { state: 'open', labels: ['rt:running'] }; } },
+      worktree: { async inspect() { return { dirty: false }; } },
+      git: { async head() { return OBSERVED_SHA; }, async commit() { return { sha: OBSERVED_SHA }; } },
+      evidence: { async checks() { return { sha: OBSERVED_SHA, conclusion: 'success' }; }, async review() { return { sha: OBSERVED_SHA, conclusion: 'approved' }; } },
+    },
     ...(overrides.pause ? { pause: overrides.pause } : {}),
   });
 }

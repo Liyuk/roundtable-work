@@ -2,14 +2,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { createProductionAdapter } from '../../runtime/lib/production.mjs';
 import { runGates } from '../../runtime/lib/gates.mjs';
 
 const PASS = '审查结论：通过';
 const SAFETY = '.github/workflows/check.yml';
+const BASE_SHA = 'a'.repeat(40);
+const REVERT_SHA = 'b'.repeat(40);
 const tmp = () => mkdtemp(join(process.cwd(), 'rt118-hold-'));
+function observationProvider() {
+  let sha;
+  return {
+    expectedSha({ expectedSha }) { sha = expectedSha ?? BASE_SHA; return sha; },
+    issue: { async get() { return { state: 'open', labels: ['rt:running'] }; } },
+    worktree: { async inspect() { return { dirty: false }; } },
+    git: { async head() { return sha; }, async commit() { return { sha }; } },
+    evidence: { async checks() { return { sha, conclusion: 'success' }; }, async review() { return { sha, conclusion: 'approved' }; } },
+  };
+}
 
 /**
  * One worktree/GitHub/gate world for the auto-merge step. `w.state` is mutable so a test can clear a hold
@@ -20,9 +32,9 @@ function world(overrides = {}) {
   const w = { calls: [] };
   w.state = {
     ci: true, ciThrow: false, gate0: true, gate0Throw: false,
-    review: true, reviewUnavailable: false, reviewHead: 'head1',
+    review: true, reviewUnavailable: false, reviewHead: BASE_SHA,
     gate2: true, gate2Throw: false, approval: null,
-    head: 'head1', tree: 'tree1', changedFiles: ['runtime/rtd.mjs'], highRisk: false,
+    head: BASE_SHA, tree: 'tree1', changedFiles: ['runtime/rtd.mjs'], highRisk: false,
     ...overrides,
   };
   const log = (value) => { w.calls.push(value); return value; };
@@ -88,7 +100,7 @@ test('a CI hold waits: waiting_external/wait, recovery untouched, gate record ke
     assert.equal(s.checkpoint.phase, 'reviewing', 'the next wake resumes at finalizing');
     assert.equal(s.lastEvent.type, 'finalize_hold');
     assert.deepEqual(s.gateRecord.passed, ['gate0', 'gate1']);
-    assert.deepEqual([s.gateRecord.head, s.gateRecord.tree], ['head1', 'tree1']);
+    assert.deepEqual([s.gateRecord.head, s.gateRecord.tree], [BASE_SHA, 'tree1']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -127,7 +139,7 @@ test('a safety-approval hold resumes after the approval is recorded for the same
     assert.equal(held.gateRecord.safetyApproved, false);
     assert.equal(held.attempts.developer, 0);
 
-    w.state.approval = { approved: true, model: 'gpt-6.1-terra', head: 'head1' };
+    w.state.approval = { approved: true, model: 'gpt-6.1-terra', head: BASE_SHA };
     w.calls.length = 0;
     const phases = [];
     const second = await wake(root, w, phases);
@@ -219,6 +231,7 @@ test('a gate hold never pauses main and writes no monitor record', async () => {
     const autoMerge = createProductionAdapter({
       pause, github: w.github, gates: w.gates, context: w.context,
       git: { async createRevert() { throw new Error('unexpected revert'); } },
+      observation: observationProvider(),
     });
     const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }) });
     assert.deepEqual([result.outcomes[0].status, result.outcomes[0].class], ['waiting_external', 'finalize_hold']);
@@ -252,7 +265,7 @@ test('a handler-supplied mergeHold field never turns a successful merge into a h
  * provider and controllable merge result / main status, so a failure *after* the squash can be driven.
  */
 function productionWorld(overrides = {}) {
-  const w = world(overrides);
+  const w = world({ head: BASE_SHA, reviewHead: BASE_SHA, ...overrides });
   w.state.squashResult = { mergeCommit: 'abcdef0123456789' };
   w.state.main = { head: 'abcdef0123456789', status: 'green' };
   w.state.mainThrows = false;
@@ -265,7 +278,7 @@ function productionWorld(overrides = {}) {
     ...w.github,
     async getPullRequest(pr) {
       w.calls.push(`pr:${pr}`);
-      return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : 'reverthead', files: w.state.changedFiles };
+      return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : REVERT_SHA, files: w.state.changedFiles };
     },
     async squashMerge(pr, options) { w.calls.push(['squash', pr, options]); return structuredClone(w.state.squashResult); },
     async mainStatus() {
@@ -279,12 +292,13 @@ function productionWorld(overrides = {}) {
   w.context = { async get({ recovery } = {}) {
     w.calls.push('context');
     return recovery
-      ? { pr: 91, head: 'reverthead', tree: 'reverttree', highRisk: false, changedFiles: ['runtime/rtd.mjs'] }
+      ? { pr: 91, head: REVERT_SHA, tree: 'reverttree', highRisk: false, changedFiles: ['runtime/rtd.mjs'] }
       : { pr: 90, head: w.state.head, tree: w.state.tree, highRisk: w.state.highRisk, changedFiles: w.state.changedFiles };
   } };
   w.autoMerge = createProductionAdapter({
     pause: w.pause, github: w.github, gates: w.gates, context: w.context,
     git: { async createRevert() { w.calls.push('revert'); return { sha: '1234567' }; } },
+    observation: observationProvider(),
   });
   return w;
 }
@@ -308,7 +322,7 @@ test('a post-merge invalid mergeCommit ends done with main paused and never squa
       assert.match(s.lastEvent.detail, /^merge monitor: /, 'the bookkeeping failure is kept, not dropped');
       const marker = (await store.load('rt-main-monitor')).mainMonitor;
       assert.equal(marker.stage, 'merging', 'main stays paused, no invented SHA');
-      assert.deepEqual({ pr: marker.pr, head: marker.head, tree: marker.tree }, { pr: 90, head: 'head1', tree: 'tree1' });
+      assert.deepEqual({ pr: marker.pr, head: marker.head, tree: marker.tree }, { pr: 90, head: BASE_SHA, tree: 'tree1' });
       assert.equal(typeof marker.since, 'number');
       assert.deepEqual(w.pause.value, marker, 'the pause backend keeps the same self-describing hold');
       assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash' }]], 'the pull request is squashed once');
@@ -379,7 +393,7 @@ test('a red main after a post-merge mainStatus failure runs the revert path on t
 
     w.state.mainThrows = false;
     w.state.main = { head: 'abcdef0123456789', status: 'red' };
-    w.state.reviewHead = 'reverthead'; // the recovery gates review the revert head
+    w.state.reviewHead = REVERT_SHA; // the recovery gates review the revert head
     const phases = [];
     const second = await wake(root, w, phases);
     assert.deepEqual(phases, [], 'main is recovered before new work starts');
@@ -401,11 +415,11 @@ function gateFixture(overrides = {}) {
   const records = new Map();
   const gates = {
     async gate0() { calls.push('gate0'); return true; },
-    async reviewer(arg) { calls.push(`gate1:${arg.attempt}`); return { passed: true, head: 'head1' }; },
+    async reviewer(arg) { calls.push(`gate1:${arg.attempt}`); return { passed: true, head: BASE_SHA }; },
     async crossCheck() { calls.push('gate2'); return true; },
   };
   const input = {
-    issue: '53', head: 'head1', tree: 'tree1', highRisk: false, changedFiles: ['runtime/rtd.mjs'], pr: 90,
+    issue: '53', head: BASE_SHA, tree: 'tree1', highRisk: false, changedFiles: ['runtime/rtd.mjs'], pr: 90,
     state: {
       async get(id) { return records.get(id); },
       async put(id, value) { records.set(id, structuredClone(value)); },
@@ -423,11 +437,11 @@ test('runGates separates a resumable hold from a genuine failure and never merge
   const cases = [
     ['gate0 not-pass', false, 'gate0', () => ({ gates: { async gate0() { return { passed: false }; } } })],
     ['gate0 throws (transient)', true, 'gate0', () => ({ gates: { async gate0() { throw new Error('offline'); } } })],
-    ['reviewer rejection', false, 'gate1', () => ({ gates: { async gate0() { return true; }, async reviewer() { return { passed: false, head: 'head1' }; } } })],
+    ['reviewer rejection', false, 'gate1', () => ({ gates: { async gate0() { return true; }, async reviewer() { return { passed: false, head: BASE_SHA }; } } })],
     ['stale reviewer head', false, 'gate1', () => ({ gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'oldhead' }; } } })],
     ['reviewer unavailable', true, 'gate1', () => ({ gates: { async gate0() { return true; }, async reviewer() { throw Object.assign(new Error('offline'), { code: 'REVIEWER_UNAVAILABLE' }); } } })],
-    ['gate2 not-pass', false, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'head1' }; }, async crossCheck() { return false; } } })],
-    ['gate2 throws (transient)', true, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'head1' }; }, async crossCheck() { throw new Error('offline'); } } })],
+    ['gate2 not-pass', false, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: BASE_SHA }; }, async crossCheck() { return false; } } })],
+    ['gate2 throws (transient)', true, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: BASE_SHA }; }, async crossCheck() { throw new Error('offline'); } } })],
     ['safety approval missing', true, 'safety-approval', () => ({ changedFiles: [SAFETY] })],
     ['CI pending', true, 'ci', () => ({ ci: { async requiredGreen() { return { green: false, status: 'pending' }; } } })],
     ['CI throws', true, 'ci', () => ({ ci: { async requiredGreen() { throw new Error('offline'); } } })],
@@ -440,5 +454,40 @@ test('runGates separates a resumable hold from a genuine failure and never merge
     assert.equal(result.hold, hold, `${name}: hold discriminator`);
     assert.equal(f.calls.includes('squash'), false, name);
     assert.equal(typeof result.reason, 'string', name);
+  }
+});
+
+test('a mismatch before gates cannot add the ready label or squash', async () => {
+  const root = await tmp();
+  try {
+    const w = productionWorld({ changedFiles: [SAFETY] });
+    const c = observationProvider();
+    c.git = { async head() { return REVERT_SHA; }, async commit() { return { sha: REVERT_SHA }; } };
+    w.autoMerge.observationClients = c;
+    await (await createStateStore({ workRoot: root })).checkpoint('53', 'reviewing');
+    const result = await wake(root, w);
+    assert.equal(result.outcomes[0].status, 'waiting_external');
+    assert.equal(w.calls.includes('label:rt:ready-to-merge'), false);
+    assert.equal(w.squashes().length, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a successful merge remains done when issue closes or reads fail afterward', async () => {
+  for (const failure of ['closed', 'throws']) {
+    const root = await tmp();
+    try {
+      const w = productionWorld();
+      let merged = false;
+      const c = observationProvider();
+      c.issue = { async get() { if (merged && failure === 'throws') throw new Error('offline'); return { state: merged ? 'closed' : 'open', labels: ['rt:running'] }; } };
+      w.autoMerge.observationClients = c;
+      const original = w.github.squashMerge;
+      w.github.squashMerge = async (...args) => { const result = await original(...args); merged = true; return result; };
+      const result = await wake(root, w);
+      assert.equal(result.outcomes[0].status, 'done', failure);
+      assert.equal(w.squashes().length, 1, failure);
+      await wake(root, w);
+      assert.equal(w.squashes().length, 1, failure);
+    } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
