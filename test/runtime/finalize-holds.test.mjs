@@ -118,7 +118,7 @@ test('a later wake resumes at finalizing and merges after the hold cleared witho
     assert.deepEqual(phases, ['finalizing'], 'the resume starts at the interrupted auto-merge phase');
     assert.equal(w.count('gate0'), 0, 'the passed gate0 is reused from the persisted record');
     assert.equal(w.count('gate1'), 0, 'the passed gate1 is reused from the persisted record');
-    assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]], 'merged once through the single entry point');
+    assert.deepEqual(w.squashes(), [['squash', { method: 'squash', sha: BASE_SHA }]], 'merged once through the single entry point');
     const s = await createStateStore({ workRoot: root }).then((store) => store.load('53'));
     assert.equal(s.status, 'done');
     assert.deepEqual(s.gateRecord.passed, ['gate0', 'gate1', 'ci']);
@@ -167,7 +167,7 @@ test('a safety-approval hold resumes after the approval is recorded for the same
     assert.equal(second.outcomes[0].status, 'done');
     assert.deepEqual(phases, ['finalizing']);
     assert.deepEqual([w.count('gate0'), w.count('gate1'), w.count('gate2')], [0, 0, 0], 'no re-run of the passed gates');
-    assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
+    assert.deepEqual(w.squashes(), [['squash', { method: 'squash', sha: BASE_SHA }]]);
     const done = await store.load('53');
     assert.deepEqual(done.gateRecord.passed, ['gate0', 'gate1', 'gate2', 'ci']);
     assert.equal(done.gateRecord.safetyApproved, true);
@@ -191,7 +191,7 @@ test('a throw from the reviewer gate is a resumable hold, not a terminal failure
     assert.equal(second.outcomes[0].status, 'done');
     assert.equal(w.count('gate0'), 0, 'the gate that passed is reused');
     assert.equal(w.count('gate1'), 1, 'the gate that never passed is re-run');
-    assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
+    assert.deepEqual(w.squashes(), [['squash', { method: 'squash', sha: BASE_SHA }]]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -211,7 +211,7 @@ test('a transiently thrown gate or CI provider error is a hold and clears on the
       w.calls.length = 0;
       const second = await wake(root, w);
       assert.equal(second.outcomes[0].status, 'done', kind);
-      assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]], kind);
+      assert.deepEqual(w.squashes(), [['squash', { method: 'squash', sha: BASE_SHA }]], kind);
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
@@ -277,7 +277,7 @@ test('a handler-supplied mergeHold field never turns a successful merge into a h
       handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok', ...(phase === 'finalizing' ? { mergeHold: { gate: 'ci', reason: 'stale field' } } : {}) }),
     });
     assert.equal(result.outcomes[0].status, 'done', 'only the auto-merge step may report a hold');
-    assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
+    assert.deepEqual(w.squashes(), [['squash', { method: 'squash', sha: BASE_SHA }]]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -346,7 +346,7 @@ test('a post-merge invalid mergeCommit ends done with main paused and never squa
       assert.deepEqual({ pr: marker.pr, head: marker.head, tree: marker.tree }, { pr: 90, head: BASE_SHA, tree: 'tree1' });
       assert.equal(typeof marker.since, 'number');
       assert.deepEqual(w.pause.value, marker, 'the pause backend keeps the same self-describing hold');
-      assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash' }]], 'the pull request is squashed once');
+      assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash', sha: BASE_SHA }]], 'the pull request is squashed once');
 
       // A later pass starts no new work while main is paused and never re-squashes that pull request.
       w.calls.length = 0;
@@ -386,7 +386,7 @@ test('a post-merge mainStatus failure ends done and keeps the monitoring record 
       const monitor = { stage: 'monitoring', mergeCommit: 'abcdef0123456789' };
       assert.deepEqual((await store.load('rt-main-monitor')).mainMonitor, monitor, name);
       assert.deepEqual(w.pause.value, monitor, name);
-      assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash' }]], name);
+      assert.deepEqual(w.squashes(), [['squash', 90, { method: 'squash', sha: BASE_SHA }]], name);
 
       // A later pass with a good provider still runs monitoring: green clears the monitor, nothing is re-squashed.
       w.state.mainThrows = false;
