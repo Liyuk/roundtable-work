@@ -62,14 +62,14 @@ test('runtime reuses lib/verdict.mjs instead of forking a verdict parser', async
   for (const { file, text } of await runtimeOnly()) assert.doesNotMatch(text, /===\s*'通过'|===\s*'打回'/, file);
 });
 
-async function withDenylist(callback) {
+async function withRawDenylist(names, callback) {
   const root = await mkdtemp(join(repo, '.hygiene-fixture-'));
   const outside = join(root, 'external');
   const repository = join(root, 'repository');
   await mkdir(outside);
   await mkdir(repository);
   const denylistPath = join(outside, 'names.json');
-  const bytes = Buffer.from(JSON.stringify(['distinctive-node', 'common']));
+  const bytes = Buffer.from(JSON.stringify(names));
   await writeFile(denylistPath, bytes);
   try {
     return await callback({
@@ -81,6 +81,50 @@ async function withDenylist(callback) {
     await rm(root, { recursive: true, force: true });
   }
 }
+
+const withDenylist = (callback) => withRawDenylist(['distinctive-node', { name: 'common', common: true }, { name: 'common-host', common: true }], callback);
+
+const kindsOf = async (config, value) => (await scanHygiene({ ...config, entries: [{ source: 'probe', value }] })).map((item) => item.kind);
+
+test('hygiene scanner matches common denylisted names only in host context', async () => {
+  await withDenylist(async (config) => {
+    assert.deepEqual(await kindsOf(config, 'the common approach works well'), []);
+    for (const value of ['user@common-host', 'https://common-host/example', 'common-host.internal', 'ssh common-host', 'scp backup.tgz common-host:/srv']) {
+      assert.ok((await kindsOf(config, value)).includes('denylisted-name'), value);
+    }
+    assert.ok((await kindsOf(config, 'Deploy DISTINCTIVE-NODE now')).includes('denylisted-name'));
+  });
+});
+
+test('hygiene scanner fails closed on unsupported denylist entry shapes', async () => {
+  for (const names of [['ok', { name: 'common' }], [{ common: true }], [42], [{ name: 'x', common: 'yes' }], 'ok']) {
+    await withRawDenylist(names, async (config) => {
+      await assert.rejects(scanHygiene({ ...config, entries: [] }), { code: 'RT_HYGIENE_CONFIG' });
+    });
+  }
+});
+
+test('hygiene scanner allows loopback addresses and version-like IPs', async () => {
+  await withDenylist(async (config) => {
+    assert.deepEqual(await kindsOf(config, 'listen on 127.0.0.1 and 127.1.2.3'), []);
+    assert.deepEqual(await kindsOf(config, 'release v192.168.1.1 and commit @10.1.2.3'), []);
+  });
+});
+
+test('hygiene scanner covers home path variants and skips angle-bracket placeholders', async () => {
+  await withDenylist(async (config) => {
+    for (const value of ['see /root/.ssh/config', 'C:\\Users\\EXAMPLE\\.gitconfig', '~EXAMPLE/cache', '~/cache']) {
+      assert.deepEqual(await kindsOf(config, value), ['home-path'], value);
+    }
+    for (const value of ['/home/<vps>', 'C:\\Users\\<vps>', '/root/<vps>']) assert.deepEqual(await kindsOf(config, value), [], value);
+  });
+});
+
+test('hygiene scanner does not treat .corp as a private host suffix', async () => {
+  await withDenylist(async (config) => {
+    assert.deepEqual(await kindsOf(config, 'see app.corp/docs'), []);
+  });
+});
 
 test('hygiene scanner distinguishes private/public IPs and safe versions', async () => {
   await withDenylist(async (config) => {
@@ -119,6 +163,25 @@ test('hygiene scanner detects credentials, URL/base64 encodings, long lines, and
     const serialized = JSON.stringify(findings);
     for (const value of [credential, 'SAFE_42_UPPER', 'OTHER_73_VALUE', 'BIN_99_SECRET']) assert.ok(!serialized.includes(value));
     assert.ok(findings.every((item) => Object.keys(item).sort().join(',') === 'kind,offset,source'));
+  });
+});
+
+test('hygiene scanner decodes encoded credentials despite isolated percent signs', async () => {
+  await withDenylist(async (config) => {
+    const findings = await scanHygiene({ ...config, entries: [{ source: 'probe', value: 'progress 100% then token%3DSAFE_42_UPPER' }] });
+    assert.deepEqual(findings.map((item) => item.kind), ['credential']);
+    assert.ok(!JSON.stringify(findings).includes('SAFE_42_UPPER'));
+  });
+});
+
+test('hygiene scanner handles invalid UTF-8 percent encodings and still detects credentials', async () => {
+  await withDenylist(async (config) => {
+    for (const value of ['%FF', '%C3', '%E0%A4%A', Buffer.from([0x25, 0x46, 0x46])]) {
+      assert.deepEqual(await kindsOf(config, value), []);
+    }
+    const findings = await scanHygiene({ ...config, entries: [{ source: 'probe', value: '%FF then token%3DSAFE_42_UPPER' }] });
+    assert.deepEqual(findings.map((item) => item.kind), ['credential']);
+    assert.ok(!JSON.stringify(findings).includes('SAFE_42_UPPER'));
   });
 });
 

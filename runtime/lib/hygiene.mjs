@@ -2,10 +2,19 @@ import { createHash } from 'node:crypto';
 import { lstat, realpath, readFile } from 'node:fs/promises';
 import { isAbsolute, sep } from 'node:path';
 
-const PRIVATE_HOST_SUFFIXES = ['.internal', '.local', '.lan', '.corp', '.home'];
+const PRIVATE_HOST_SUFFIXES = ['.internal', '.local', '.lan', '.home'];
+const COMMON_HOST_SUFFIX = /^\.(?:local|lan|internal|home)(?![a-z0-9-])/;
+const COMMON_HOST_PREFIX = /(?:@|\/\/)$/;
+const SSH_TARGET = /\b(?:ssh|scp)\s+(?:-\S+\s+)*(?:\S+\s+)?$/;
+const NAME_EDGE = /[a-z0-9._-]/;
 const CREDENTIAL_KEY = /(?:^|[\s"'`;,])(?:password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret)(?:\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/ig;
-const HOME_PATH = new RegExp("(?:^|[\\s=:\"'])(?:" + ['/', 'home/'].join('') + "[^/\\s]+|" + ['/', 'Users/'].join('') + "[^/\\s]+|~/[^\\s]+)", 'gi');
-const IPV4 = /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g;
+const HOME_PATH = new RegExp('(?:^|[\\s=:"\'])(?:' + [
+  '/(?:home|Users|root)/[^/\\s<][^/\\s]*',
+  '~/[^\\s]+',
+  '~[\\w.-]+/',
+  '[A-Za-z]:\\\\Users\\\\[^\\\\\\s<][^\\\\\\s]*',
+].join('|') + ')', 'gi');
+const IPV4 = /(?<![\w.@])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g;
 
 export class HygieneConfigError extends Error {
   constructor() {
@@ -22,16 +31,15 @@ function ipv4Kind(address) {
   const octets = address.split('.').map(Number);
   if (octets.some((n) => n > 255)) return null;
   const [a, b] = octets;
-  if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return 'private-ip';
+  if (a === 127) return 'loopback';
+  if (a === 10 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return 'private-ip';
   return 'public-ip';
 }
 
 function decodeLayers(text) {
   const variants = [text];
-  try {
-    const decoded = decodeURIComponent(text.replace(/\+/g, '%20'));
-    if (decoded !== text) variants.push(decoded);
-  } catch { /* malformed percent encoding is not a scanner error */ }
+  const decoded = text.replace(/\+/g, ' ').replace(/(?:%[0-9a-f]{2})+/gi, (bytes) => Buffer.from(bytes.replace(/%/g, ''), 'hex').toString('utf8'));
+  if (decoded !== text) variants.push(decoded);
   const candidates = [...variants];
   for (const value of candidates) {
     for (const token of value.match(/[A-Za-z0-9+/]{20,}={0,2}/g) ?? []) {
@@ -65,8 +73,14 @@ async function trustedDenylist({ denylistPath, repoRoot, expectedSha256 }) {
     const digest = createHash('sha256').update(bytes).digest('hex');
     if (digest !== expectedSha256.toLowerCase()) failClosed();
     const names = JSON.parse(bytes.toString('utf8'));
-    if (!Array.isArray(names) || names.some((name) => typeof name !== 'string' || !name || name.length > 253)) failClosed();
-    return [...new Set(names.map((name) => name.toLowerCase()))];
+    if (!Array.isArray(names)) failClosed();
+    const entries = new Map();
+    for (const item of names) {
+      const name = typeof item === 'string' ? item : item?.common === true ? item.name : null;
+      if (typeof name !== 'string' || !name || name.length > 253) failClosed();
+      entries.set(name.toLowerCase(), typeof item !== 'string');
+    }
+    return [...entries].map(([name, common]) => ({ name, common }));
   } catch {
     failClosed();
   }
@@ -101,12 +115,14 @@ export async function scanHygiene({ entries, denylistPath, repoRoot, expectedSha
         const pattern = new RegExp(`(?<![a-z0-9-])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?${suffix.replace('.', '\\.')}\\b`, 'g');
         for (const match of lower.matchAll(pattern)) emit('private-hostname', match.index);
       }
-      for (const name of denylist) {
+      for (const { name, common } of denylist) {
         let from = 0;
         while ((from = lower.indexOf(name, from)) !== -1) {
-          const before = lower[from - 1];
-          const after = lower[from + name.length];
-          if ((!before || !/[a-z0-9._-]/.test(before)) && (!after || !/[a-z0-9._-]/.test(after))) emit('denylisted-name', from);
+          const before = lower.slice(0, from);
+          const after = lower.slice(from + name.length);
+          const bounded = (!before || !NAME_EDGE.test(before.at(-1))) && (!after[0] || !NAME_EDGE.test(after[0]));
+          const hostContext = COMMON_HOST_PREFIX.test(before) || SSH_TARGET.test(before) || COMMON_HOST_SUFFIX.test(after);
+          if (common ? hostContext : bounded) emit('denylisted-name', from);
           from += Math.max(1, name.length);
         }
       }
