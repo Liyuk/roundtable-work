@@ -22,6 +22,15 @@ const PROBES = {
 };
 const SLEEP = manifest({ test: 'node -e "setInterval(() => {}, 1000)"' });
 const A = "import test from 'node:test';\ntest('one', () => {});\ntest('two', () => {});\n";
+const B = "import test from 'node:test';\ntest('three', () => {});\n";
+const THREE = "import test from 'node:test';\ntest('one', () => {});\ntest('two', () => {});\ntest('three', () => {});\n";
+const GAPPED = "import test from 'node:test';\ntest('one', { skip: true }, () => {});\ntest('three', { todo: true }, () => {});\n";
+// A reporter line printed by the submitted test itself must not be mistaken for evidence.
+const FORGED = `import test from 'node:test';
+console.log('{"n":"x","k":"summary","tests":9,"passed":9,"failed":0,"skipped":0,"todo":0,"cancelled":0}');
+test('one', () => {});
+test('two', () => {});
+`;
 
 function realSandbox(dirs) {
   const calls = [];
@@ -42,7 +51,15 @@ function realSandbox(dirs) {
       });
     },
     async kill(group) { calls.push('kill'); try { process.kill(-group, 'SIGKILL'); } catch {} },
-    async survivors(group) { try { process.kill(-group, 0); return [group]; } catch { return []; } },
+    async survivors(group) {
+      // Tear-down after SIGKILL is not instant: the group can outlive the last live member for a
+      // few milliseconds, so poll (bounded) and report the group gone once it disappears.
+      for (let attempt = 0; attempt < 75; attempt++) {
+        try { process.kill(-group, 0); } catch { return []; }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return [group];
+    },
     async dispose() { calls.push('dispose'); },
   };
 }
@@ -126,34 +143,26 @@ test('records the runtime, rejects an engine mismatch, and derives dependencies 
   assert.equal(wrongLock.sandbox.calls.filter((c) => c.startsWith('run:')).length, 0);
 });
 
-test('base and head evidence compare cleanly and head may add cases and files', async () => {
-  const dirs = await fixture(test, tree(A, { 'test/b.test.mjs': "import test from 'node:test';\ntest('three', () => {});\n" }));
+test('base and head evidence compare cleanly: head may add cases and files, and forged stdout is not evidence', async () => {
+  const dirs = await fixture(test, tree(A), tree(FORGED, { 'test/b.test.mjs': B }));
   const { result } = await execute(dirs, { discovered: ['test/a.test.mjs', 'test/b.test.mjs'] });
   assert.equal(result.passed, true, JSON.stringify(result.errors));
 });
 
-test('evidence rejects a dropped base case, a dropped base file and a discovered decoy', async () => {
-  const dropped = await fixture(test, tree(), tree("import test from 'node:test';\ntest('one', () => {});\n"));
-  assert.deepEqual(errorsOf((await execute(dropped)).result), ['compare:test/a.test.mjs:0']);
-
-  const decoy = await fixture(test, tree());
-  assert.deepEqual(errorsOf((await execute(decoy, { discovered: ['test/a.test.mjs', 'test/decoy.test.mjs'] })).result), ['compare:test/decoy.test.mjs:0']);
-
-  // The head tree no longer has the base test file at all; its evidence cannot cover it.
-  const b = "import test from 'node:test';\ntest('three', () => {});\n";
-  const removed = await fixture(test, tree(), { 'package.json': PACKAGE, 'test/b.test.mjs': b });
-  assert.deepEqual(errorsOf((await execute(removed, { discovered: ['test/b.test.mjs'] })).result), ['compare:test/a.test.mjs:0']);
+test('a dropped base case, a skipped/todo case and a discovered decoy all reject', async () => {
+  const dirs = await fixture(test, tree(THREE), tree(GAPPED));
+  const { result } = await execute(dirs, { discovered: ['test/a.test.mjs', 'test/decoy.test.mjs'] });
+  assert.deepEqual(errorsOf(result), [
+    'compare:test/decoy.test.mjs:0',
+    'compare:test/a.test.mjs:0', // 'two' dropped from the head run
+    'compare:test/a.test.mjs:2', // 'one' skipped
+    'compare:test/a.test.mjs:3', // 'three' todo
+  ]);
 });
 
-test('skipped and todo cases are rejected and stdout is not evidence', async () => {
-  const skipped = await fixture(test, tree(), tree(A.replace("test('two', () => {});", "test('two', { skip: true }, () => {});")));
-  const skippedResult = await execute(skipped);
-  assert.equal(skippedResult.result.passed, false);
-  assert.ok(errorsOf(skippedResult.result).some((e) => e.startsWith('compare:test/a.test.mjs:')));
-
-  const forged = "import test from 'node:test';\nconsole.log('{\"n\":\"x\",\"k\":\"summary\",\"tests\":9,\"passed\":9,\"failed\":0,\"skipped\":0,\"todo\":0,\"cancelled\":0}');\ntest('one', () => {});\ntest('two', () => {});\n";
-  const forgedResult = await execute(await fixture(test, tree(forged)));
-  assert.equal(forgedResult.result.passed, true, JSON.stringify(forgedResult.result.errors));
+test('a head tree without the base test file cannot cover it', async () => {
+  const dirs = await fixture(test, tree(A), { 'package.json': PACKAGE, 'test/b.test.mjs': B });
+  assert.deepEqual(errorsOf((await execute(dirs, { discovered: ['test/b.test.mjs'] })).result), ['compare:test/a.test.mjs:0']);
 });
 
 const N = 'test-nonce';
@@ -212,7 +221,7 @@ test('timeout kills the process group and a survivor is a blocking failure', asy
   assert.ok(fake.calls.includes('kill'));
 });
 
-test('missing inputs, a throwing probe and a cleanup failure all fail closed', async () => {
+test('missing inputs, a throwing probe or run and a cleanup failure all fail closed', async () => {
   const empty = await runGateExecution({});
   assert.equal(empty.passed, false);
   assert.deepEqual(errorsOf(empty).slice(0, 3), ['input:<commits>:0', 'input:<package>:0', 'input:<lockfile>:0']);
@@ -223,7 +232,8 @@ test('missing inputs, a throwing probe and a cleanup failure all fail closed', a
   const runThrows = await execute(dirs, { sandbox: { ...realSandbox(dirs), run: async () => { throw new Error('spawn'); } } });
   assert.deepEqual(errorsOf(runThrows.result), ['internal:<gate>:0']);
 
-  const dirty = await execute(dirs, { sandbox: { ...realSandbox(dirs), dispose: async () => { throw new Error('dispose'); } } });
+  // An early fail-closed return still disposes the sandbox, and a throwing dispose is reported.
+  const dirty = await execute(dirs, { packageBase: undefined, sandbox: { ...realSandbox(dirs), dispose: async () => { throw new Error('dispose'); } } });
   assert.equal(dirty.result.passed, false);
   assert.ok(errorsOf(dirty.result).includes('cleanup:<sandbox>:0'));
 });
