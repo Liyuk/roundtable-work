@@ -16,6 +16,7 @@ test('classifyProbeResult distinguishes host outcomes and preserves successful s
   assert.deepEqual(classifyProbeResult({ status: null, error: { code: 'ENOENT' } }), { status: 'not-found', available: false, reason: 'not found on PATH' });
   assert.deepEqual(classifyProbeResult({ status: 3 }), { status: 'failed', available: false, reason: 'exited with code 3' });
   assert.deepEqual(classifyProbeResult({ status: null, error: { code: 'ETIMEDOUT' } }), { status: 'timeout', available: false, reason: 'timed out after 5s' });
+  assert.deepEqual(classifyProbeResult({ status: 0, error: { code: 'ETIMEDOUT' } }), { status: 'timeout', available: false, reason: 'timed out after 5s' });
   assert.deepEqual(classifyProbeResult({ status: 0, stdout: 'v1\n', error: { code: 'EPERM' } }), { status: 'ok', available: true, reason: null });
 });
 
