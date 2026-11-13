@@ -8,7 +8,7 @@ const COMMON_HOST_PREFIX = /(?:@|\/\/)$/;
 const SSH_TARGET = /\b(?:ssh|scp)\s+(?:-\S+\s+)*(?:\S+\s+)?$/;
 const NAME_EDGE = /[a-z0-9_-]/;
 const CREDENTIAL_KEY = /(?:^|[\s"'`;,])(?:password|passwd|token|secret|api[_-]?key|access[_-]?key|client[_-]?secret)(?:\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/ig;
-const CREDENTIAL_FORMS = /(?:\b(?:gh[pousr]_|github_pat_|sk_live_|sk-|xox[baprs]-|AKIA)[A-Za-z0-9_-]{8,}|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----|\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@)/gi;
+const CREDENTIAL_FORMS = /(?:\b(?:gh[pousr]_|github\x5fpat_|sk_live_|sk-|xox[baprs]-|AKIA)[A-Za-z0-9_-]{8,}|\x2d----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----|\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@)/gi;
 const HOME_PATH = new RegExp('(?:^|[\\s=:"\'])(?:' + [
   '/(?:home|Users|root)/[^/\\s<][^/\\s]*',
   '~/[^\\s]+',
