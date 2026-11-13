@@ -11,6 +11,7 @@ const PASS = '审查结论：通过';
 const SAFETY = '.github/workflows/check.yml';
 const BASE_SHA = 'a'.repeat(40);
 const REVERT_SHA = 'b'.repeat(40);
+const MODELS = { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' };
 const tmp = () => mkdtemp(join(process.cwd(), 'rt118-hold-'));
 function observationProvider() {
   let sha;
@@ -74,6 +75,7 @@ function wake(root, w, phases = []) {
     workRoot: root,
     queue: ['53'],
     autoMerge: w.autoMerge,
+    models: MODELS,
     handler: async ({ phase }) => {
       phases.push(phase);
       return { exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' };
@@ -139,7 +141,7 @@ test('a safety-approval hold resumes after the approval is recorded for the same
     assert.equal(held.gateRecord.safetyApproved, false);
     assert.equal(held.attempts.developer, 0);
 
-    w.state.approval = { approved: true, model: 'gpt-6.1-terra', head: BASE_SHA };
+    w.state.approval = { approved: true, model: MODELS.crossCheck, head: BASE_SHA };
     w.calls.length = 0;
     const phases = [];
     const second = await wake(root, w, phases);
@@ -233,7 +235,7 @@ test('a gate hold never pauses main and writes no monitor record', async () => {
       git: { async createRevert() { throw new Error('unexpected revert'); } },
       observation: observationProvider(),
     });
-    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }) });
+    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, models: MODELS, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }) });
     assert.deepEqual([result.outcomes[0].status, result.outcomes[0].class], ['waiting_external', 'finalize_hold']);
     assert.deepEqual(pause.writes, [], 'a hold never pauses main');
     assert.equal(w.calls.includes('mainStatus'), false, 'the merge was never attempted');
@@ -253,6 +255,7 @@ test('a handler-supplied mergeHold field never turns a successful merge into a h
       workRoot: root,
       queue: ['53'],
       autoMerge: w.autoMerge,
+      models: MODELS,
       handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok', ...(phase === 'finalizing' ? { mergeHold: { gate: 'ci', reason: 'stale field' } } : {}) }),
     });
     assert.equal(result.outcomes[0].status, 'done', 'only the auto-merge step may report a hold');
@@ -420,6 +423,7 @@ function gateFixture(overrides = {}) {
   };
   const input = {
     issue: '53', head: BASE_SHA, tree: 'tree1', highRisk: false, changedFiles: ['runtime/rtd.mjs'], pr: 90,
+    models: MODELS,
     state: {
       async get(id) { return records.get(id); },
       async put(id, value) { records.set(id, structuredClone(value)); },
