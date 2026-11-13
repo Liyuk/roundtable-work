@@ -47,7 +47,7 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
     if (typeof repoRoot !== 'string' || typeof client.createIssue !== 'function') throw new TypeError('repoRoot and injected tracker createIssue are required for decompose');
     const drafts = await Promise.all(decision.drafts.map(path => readDraft(repoRoot, path)));
     await store.update(id, state => {
-      state.decomposition = { status: 'creating', drafts, childIds: [], inFlight: false };
+      state.decomposition = { status: 'creating', drafts, childIds: [], closedPullRequests: [], inFlight: false };
       state.status = 'waiting_external';
     });
     const childIds = await resumeDecomposition({ number, store, client, now });
@@ -92,7 +92,10 @@ export async function resumeDecomposition({ number, store, client, now = Date.no
     || decomposition.drafts.some(draft => !plain(draft) || !nonEmpty(draft.title) || !nonEmpty(draft.body))
     || !Array.isArray(decomposition.childIds) || decomposition.childIds.length > decomposition.drafts.length
     || decomposition.childIds.some(child => !Number.isSafeInteger(child) || child < 1)
-    || new Set(decomposition.childIds).size !== decomposition.childIds.length) return null;
+    || new Set(decomposition.childIds).size !== decomposition.childIds.length
+    || (decomposition.closedPullRequests !== undefined && (!Array.isArray(decomposition.closedPullRequests)
+      || decomposition.closedPullRequests.some(pull => !Number.isSafeInteger(pull) || pull < 1)
+      || new Set(decomposition.closedPullRequests).size !== decomposition.closedPullRequests.length))) return null;
   await client.addLabel(number, 'rt:hold');
   for (const child of decomposition.childIds) await client.addLabel(child, 'rt:self');
   // A failed or interrupted create may have succeeded remotely. Never retry it blindly.
@@ -108,6 +111,18 @@ export async function resumeDecomposition({ number, store, client, now = Date.no
     await client.addLabel(child, 'rt:self');
   }
   const childIds = decomposition.childIds;
+  const closedPullRequests = decomposition.closedPullRequests ?? [];
+  const branchPrefix = `rt/${number}-`;
+  // The children take over the work, so the parent's open pull requests are closed but their branches are kept.
+  if (typeof client.listOpenPullRequests === 'function') {
+    for (const pull of await client.listOpenPullRequests({ headPrefix: branchPrefix })) {
+      if (closedPullRequests.includes(pull?.number) || pull?.state?.toUpperCase() !== 'OPEN'
+        || typeof pull?.headRefName !== 'string' || !pull.headRefName.startsWith(branchPrefix)) continue;
+      const body = `<!-- rt:decompose-parent -->\nParent #${number} was decomposed into sub-issues ${childIds.map(child => `#${child}`).join(', ')}. This pull request is closed without merging; its branch \`${pull.headRefName}\` is kept.`;
+      await client.closePullRequest(pull.number, body);
+      await store.update(id, state => { (state.decomposition.closedPullRequests ??= []).push(pull.number); });
+    }
+  }
   await store.update(id, state => {
     state.decomposition.status = 'waiting'; state.status = 'waiting_external';
     state.lastEvent = { type: 'decision_decompose', at: now(), detail: childIds };

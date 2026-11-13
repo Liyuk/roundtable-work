@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyDecision, parseDecisionFile, resumeAfterOwnerReply } from '../../runtime/lib/decisions.mjs';
+import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, resumeDecomposition } from '../../runtime/lib/decisions.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { runQueue } from './observation-fixture.mjs';
 
@@ -185,4 +185,69 @@ test('decompose rejects traversal and creates labeled children with durable IDs 
   assert.deepEqual((await store.load('7')).decomposition.childIds, [81]);
   assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 81 && e[2] === 'rt:self'));
   assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 7 && e[2] === 'rt:hold'));
+}));
+
+async function decomposeFixture(root, tracker, pulls, drafts = ['1.json', '2.json']) {
+  const { writeFile } = await import('node:fs/promises');
+  for (const [index, draft] of drafts.entries()) await writeFile(join(root, draft), JSON.stringify({ title: `Child ${index + 1}`, body: 'Child work.' }));
+  const store = await createStateStore({ workRoot: root });
+  tracker.createIssue = async title => { tracker.events.push(['createIssue', title]); return { number: 100 + tracker.events.filter(e => e[0] === 'createIssue').length }; };
+  tracker.listOpenPullRequests = async ({ headPrefix }) => { tracker.events.push(['listOpenPullRequests', headPrefix]); return pulls; };
+  tracker.closePullRequest = async (number, body) => tracker.events.push(['closePullRequest', number, body]);
+  await applyDecision({ decision: { decision: 'decompose', drafts }, issue: { number: 90 }, store, client: tracker, repoRoot: root });
+  return store;
+}
+
+test('decompose closes an open parent pull request, comments the child issues, and keeps the branch', async () => fixture(async root => {
+  const tracker = client();
+  const store = await decomposeFixture(root, tracker, [{ number: 55, headRefName: 'rt/90-pi', state: 'OPEN' }]);
+  assert.deepEqual(tracker.events.filter(e => e[0] === 'listOpenPullRequests'), [['listOpenPullRequests', 'rt/90-']]);
+  const closes = tracker.events.filter(e => e[0] === 'closePullRequest');
+  assert.equal(closes.length, 1);
+  assert.equal(closes[0][1], 55);
+  assert.ok(closes[0][2].startsWith('<!-- rt:decompose-parent -->\n'));
+  assert.match(closes[0][2], /#101, #102/);
+  assert.match(closes[0][2], /`rt\/90-pi` is kept/);
+  assert.equal(tracker.events.some(e => e[0] === 'deleteBranch'), false);
+  assert.equal((await store.load('90')).decomposition.status, 'waiting');
+  assert.deepEqual((await store.load('90')).decomposition.closedPullRequests, [55]);
+  assert.ok(tracker.events.some(e => e[0] === 'addLabel' && e[1] === 90 && e[2] === 'rt:hold'));
+}));
+
+test('decompose leaves a parent without a pull request unchanged', async () => fixture(async root => {
+  const tracker = client();
+  const store = await decomposeFixture(root, tracker, []);
+  assert.deepEqual(tracker.events.filter(e => e[0] === 'closePullRequest'), []);
+  assert.deepEqual((await store.load('90')).decomposition.closedPullRequests, []);
+  assert.equal((await store.load('90')).decomposition.status, 'waiting');
+}));
+
+test('decompose leaves an already-merged pull request alone', async () => fixture(async root => {
+  const tracker = client();
+  const store = await decomposeFixture(root, tracker, [{ number: 56, headRefName: 'rt/90-pi', state: 'MERGED' }]);
+  assert.deepEqual(tracker.events.filter(e => e[0] === 'closePullRequest'), []);
+  assert.deepEqual((await store.load('90')).decomposition.closedPullRequests, []);
+  assert.equal((await store.load('90')).decomposition.status, 'waiting');
+}));
+
+test('a resumed decomposition does not close or comment the same pull request twice', async () => fixture(async root => {
+  const tracker = client();
+  const store = await decomposeFixture(root, tracker, [{ number: 55, headRefName: 'rt/90-pi', state: 'OPEN' }]);
+  await store.update('90', s => { s.decomposition.status = 'creating'; s.status = 'waiting_external'; });
+  await resumeDecomposition({ number: 90, store, client: tracker });
+  assert.equal(tracker.events.filter(e => e[0] === 'closePullRequest').length, 1);
+  assert.equal(tracker.events.filter(e => e[0] === 'createIssue').length, 2);
+  assert.equal((await store.load('90')).decomposition.status, 'waiting');
+}));
+
+test('a decomposition created before the closedPullRequests field resumes and completes', async () => fixture(async root => {
+  const tracker = client();
+  const store = await createStateStore({ workRoot: root });
+  tracker.listOpenPullRequests = async ({ headPrefix }) => { tracker.events.push(['listOpenPullRequests', headPrefix]); return [{ number: 55, headRefName: 'rt/90-pi', state: 'OPEN' }]; };
+  tracker.closePullRequest = async (number, body) => tracker.events.push(['closePullRequest', number, body]);
+  await store.update('90', s => { s.status = 'waiting_external'; s.decomposition = { status: 'creating', drafts: [{ title: 'Child 1', body: 'Child work.' }], childIds: [101], inFlight: false }; });
+  assert.deepEqual(await resumeDecomposition({ number: 90, store, client: tracker }), [101]);
+  const state = await store.load('90');
+  assert.equal(state.decomposition.status, 'waiting');
+  assert.deepEqual(state.decomposition.closedPullRequests, [55]);
 }));
