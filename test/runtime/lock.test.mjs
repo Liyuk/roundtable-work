@@ -1,6 +1,8 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
 import * as realFs from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
@@ -168,7 +170,14 @@ test('lock: in-process contenders racing for an expired lock yield exactly one h
   assert.equal(await winner.refresh(), true);
   assert.equal(await winner.release(), true);
   assert.equal((await readEpochFile(dir, 2)).released, true, 'release marks the file, it does not unlink it');
-  assert.deepEqual(await readdir(dir), [], 'nothing is written into the work root');
+  // The only thing written into the work root is the anchor-domain marker: a hash, no path and no host data.
+  assert.deepEqual(await readdir(dir), ['.roundtable']);
+  assert.deepEqual(await readdir(join(dir, '.roundtable')), ['lock-domain']);
+  const markerPath = join(dir, '.roundtable', 'lock-domain');
+  const marker = await readFile(markerPath, 'utf8');
+  assert.equal(marker, JSON.stringify({ version: 1, anchor: createHash('sha256').update(realpathSync(ANCHOR)).digest('hex') }));
+  assert.equal((await stat(markerPath)).mode & 0o777, 0o600, 'the marker is private');
+  assert.ok(!marker.includes(ANCHOR) && !marker.includes(tmpdir()), 'the marker never carries the anchor path');
 }));
 
 test('lock: a displaced holder cannot refresh over or release its successor\'s lock', withDir(async (dir) => {
@@ -812,4 +821,63 @@ test('anchor: in-repo lock-directory churn can neither validate an older holder 
   assert.equal(await h.anchorHighWater(), next.epoch);
   assert.deepEqual(await readdir(anchored), ['epoch-1', 'epoch-2'], 'both records live in the anchor, not in the work root');
   await next.release();
+}));
+
+// Issue #140: the anchor is chosen by the environment, so one work root must not be shared by two anchor domains.
+test('anchor: a work root bound to one anchor refuses another anchor, both while held and after release', withDir(async (dir) => {
+  const other = await tmp();
+  try {
+    const lockPath = lockPathOf(dir);
+    const markerPath = join(dir, '.roundtable', 'lock-domain');
+    const a = await acquireLock({ lockPath, repoRoot: dir, anchorRoot: ANCHOR, owner: 'a' });
+    assert.equal(a.acquired, true);
+    const marker = await readFile(markerPath, 'utf8');
+    const refused = () => acquireLock({ lockPath, repoRoot: dir, anchorRoot: other, owner: 'x' });
+    const held = await refused();
+    assert.deepEqual([held.acquired, held.reason], [false, 'anchor_mismatch']);
+    assert.equal(await a.refresh(), true, 'the refusal does not disturb the holder');
+    assert.equal(await a.release(), true);
+    // Still refused with no lease left: the refusal is about the domain, not about who holds the lock.
+    const released = await refused();
+    assert.deepEqual([released.acquired, released.reason], [false, 'anchor_mismatch']);
+    assert.deepEqual((await readdir(lockDirectoryFor({ lockPath, repoRoot: dir, anchorRoot: other }))).filter((n) => /^epoch-\d+$/.test(n)), [], 'the refused invocation created no epoch under the other anchor');
+    assert.equal(await readFile(markerPath, 'utf8'), marker, 'the marker is written once and never rewritten');
+    const again = await acquireLock({ lockPath, repoRoot: dir, anchorRoot: ANCHOR, owner: 'b' });
+    assert.equal(again.acquired, true, 'the bound anchor keeps working');
+    assert.equal(again.epoch, 2);
+    assert.equal(await again.release(), true);
+  } finally { await rm(other, { recursive: true, force: true }); }
+}));
+
+test('anchor: a symlinked or corrupt domain marker fails closed and is never used to choose an anchor', withDir(async (dir) => {
+  const outside = await tmp();
+  try {
+    const lockPath = lockPathOf(dir);
+    const markerDir = join(dir, '.roundtable');
+    const reason = async () => {
+      const r = await acquireLock({ lockPath, repoRoot: dir, owner: 'x' });
+      assert.equal(r.acquired, false);
+      return r.reason;
+    };
+    // The marker's directory is a symlink: refused, nothing written through it.
+    await mkdir(join(outside, 'state'), { mode: 0o700 });
+    await symlink(join(outside, 'state'), markerDir);
+    assert.equal(await reason(), 'invalid_lock_domain');
+    assert.deepEqual(await readdir(join(outside, 'state')), []);
+    // The marker itself is a symlink: refused without following it, the target is untouched.
+    await rm(markerDir);
+    await mkdir(markerDir, { mode: 0o700 });
+    await writeFile(join(outside, 'sentinel'), 'do not touch');
+    await symlink(join(outside, 'sentinel'), join(markerDir, 'lock-domain'));
+    assert.equal(await reason(), 'invalid_lock_domain');
+    assert.equal(await readFile(join(outside, 'sentinel'), 'utf8'), 'do not touch');
+    // Corrupt, foreign or unknown-version content is refused, never resolved as a lock location.
+    await rm(join(markerDir, 'lock-domain'));
+    const bodies = ['{"version":1,"anchor":', JSON.stringify({ version: 1, anchor: join(outside, 'state') }), JSON.stringify({ version: 2, anchor: 'a'.repeat(64) })];
+    for (const body of bodies) {
+      await writeFile(join(markerDir, 'lock-domain'), body);
+      assert.equal(await reason(), 'invalid_lock_domain', body);
+    }
+    assert.deepEqual(await readdir(join(outside, 'state')), [], 'nothing was written through the marker');
+  } finally { await rm(outside, { recursive: true, force: true }); }
 }));

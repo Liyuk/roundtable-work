@@ -117,7 +117,7 @@ export function exitCodeFor(result) {
  * deliberately outside work-root confinement (only paths under the work root are confined).
  * `rtd.mjs --work-root DIR --providers MODULE --clear-main-pause` clears a stale main hold (see `clearMainPause`).
  *
- * @returns {Promise<{status:'locked', holder:object} | {status:'lock_lost', outcomes:object[], skipped:object[], abandonedHandler?:true} | {status:'ok', outcomes:object[], skipped:object[], abandonedHandler?:true}>}
+ * @returns {Promise<{status:'locked', holder:object, reason:string} | {status:'lock_lost', outcomes:object[], skipped:object[], abandonedHandler?:true} | {status:'ok', outcomes:object[], skipped:object[], abandonedHandler?:true}>}
  */
 export async function runQueue({
   workRoot, queue, handler, now = Date.now, owner = `rtd-${process.pid}-${randomUUID()}`,
@@ -151,7 +151,7 @@ export async function runQueue({
   })));
   const rulesFingerprint = createHash('sha256').update(Buffer.concat(ruleContents.flatMap((bytes, i) => [Buffer.from(`${ruleFiles[i]}\0${bytes.length}\0`), bytes]))).digest('hex');
   const lock = await acquireLock({ lockPath: await store.confinement.resolve('.roundtable/state/rtd.lock.d'), repoRoot: workRoot, owner, now, ttlMs: lockTtlMs });
-  if (!lock.acquired) return { status: 'locked', holder: lock.holder };
+  if (!lock.acquired) return { status: 'locked', holder: lock.holder, reason: lock.reason };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
   store.setFence({ highWater: () => lock.anchorHighWater() }); // and by the anchor high-water mark, not the state file
 
@@ -851,7 +851,7 @@ const TIMED_OUT = Symbol('timed out');
  * writes through the epoch-fenced state store, and clears both the persisted `mainMonitor` record and, when the
  * providers module exposes `pause`, the injected pause backend. A successful no-op when no hold exists.
  *
- * @returns {Promise<{status:'locked', holder:object} | {status:'ok', cleared:boolean}>}
+ * @returns {Promise<{status:'locked', holder:object, reason:string} | {status:'ok', cleared:boolean}>}
  */
 export async function clearMainPause({
   workRoot, providers = {}, now = Date.now, owner = `rtd-clear-${process.pid}-${randomUUID()}`, lockTtlMs = 5 * 60_000,
@@ -861,7 +861,7 @@ export async function clearMainPause({
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now });
   const lock = await acquireLock({ lockPath: await store.confinement.resolve('.roundtable/state/rtd.lock.d'), repoRoot: workRoot, owner, now, ttlMs: lockTtlMs });
-  if (!lock.acquired) return { status: 'locked', holder: lock.holder };
+  if (!lock.acquired) return { status: 'locked', holder: lock.holder, reason: lock.reason };
   store.setEpoch(lock.epoch);
   store.setFence({ highWater: () => lock.anchorHighWater() });
   try {
