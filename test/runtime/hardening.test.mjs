@@ -653,12 +653,13 @@ test('state: a paused old epoch cannot replace a successor checkpoint or artifac
 test('timeout: renewal prevents a second runner after the original TTL while the handler runs', withRoot(async (root) => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const opts = { workRoot: root, queue: ['A'], handler: async () => { await gate; return { exitCode: 0 }; }, phaseTimeoutMs: 30, graceMs: 10, lockTtlMs: 180, lockRenewMinMs: 30, leaseTtlMs: 180 };
+  // Use seconds of headroom so a slow CI runner can still service several renewal ticks.
+  const opts = { workRoot: root, queue: ['A'], handler: async () => { await gate; return { exitCode: 0 }; }, phaseTimeoutMs: 30, graceMs: 10, lockTtlMs: 5000, lockRenewMinMs: 1000, leaseTtlMs: 5000 };
   const first = await runQueue(opts);
   assert.equal(first.abandonedHandler, true);
-  await sleep(450);
+  await sleep(10_000); // twice the original TTL; multiple renewal ticks must keep both records live
   const runnerUrl = new URL('../../runtime/rtd.mjs', import.meta.url).href;
-  const script = `import { runQueue } from ${JSON.stringify(runnerUrl)}; import { writeFile } from 'node:fs/promises'; const r = await runQueue({workRoot:process.argv[1], queue:['A'], handler:async () => ({exitCode:0}), lockTtlMs:180, lockRenewMinMs:30, leaseTtlMs:180}); await writeFile(process.argv[2], r.status);`;
+  const script = `import { runQueue } from ${JSON.stringify(runnerUrl)}; import { writeFile } from 'node:fs/promises'; const r = await runQueue({workRoot:process.argv[1], queue:['A'], handler:async () => ({exitCode:0}), lockTtlMs:5000, lockRenewMinMs:1000, leaseTtlMs:5000}); await writeFile(process.argv[2], r.status);`;
   const resultFile = join(root, 'contender-result');
   const child = spawn(process.execPath, ['--input-type=module', '-e', script, root, resultFile], { stdio: 'inherit' });
   try {
