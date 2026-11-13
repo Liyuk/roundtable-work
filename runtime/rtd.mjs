@@ -182,19 +182,13 @@ export async function runQueue({
     await ensureLive(signal);
     const status = await autoMerge.github.mainStatus();
     if (!status || !['green', 'red', 'pending'].includes(status.status) || typeof status.head !== 'string' || !status.head) throw new Error('provider github.mainStatus returned an invalid status');
-    if (status.status === 'green' && (!record.recovery || record.recovery.revertMerged?.done)) {
-      await ensureLive(signal);
-      await writeMonitor(null);
-      return false;
-    }
-    if (status.status !== 'red' || status.head !== record.mergeCommit) return true;
     // Publish an in-flight marker before every external recovery effect. A crash or error leaves
     // an explicit hold rather than repeating an action whose outcome is unknown.
     const once = async (key, effect) => {
       record = await readMonitor();
       const step = record.recovery?.[key];
       if (step?.done) return step.value;
-      if (step?.inFlight) throw new Error(`Recovery ${key} outcome is unknown; main remains paused`);
+      if (step?.inFlight) throw Object.assign(new Error(`Recovery ${key} outcome is unknown; main remains paused`), { code: 'RT_RECOVERY_UNKNOWN', recoveryStep: key });
       record.recovery ??= {};
       record.recovery[key] = { inFlight: true };
       await writeMonitor(record);
@@ -206,7 +200,57 @@ export async function runQueue({
       await writeMonitor(record);
       return value;
     };
-    await recoverRedMain({ mergeCommit: record.mergeCommit, mainHead: status.head, mainRed: true,
+    const notifyUnknown = async (key, reason) => {
+      record = await readMonitor();
+      record.recovery ??= {};
+      const legacy = record.recovery.intervention;
+      // Older records have one notification; its reason identifies the associated effect.
+      const legacyKey = /^Recovery (revert|pullRequest|issue|revertMerged) outcome is unknown;/.exec(legacy?.reason ?? '')?.[1];
+      if (legacy && !legacyKey && !legacy.done) throw new Error('Recovery notification outcome is unknown; human intervention required to inspect the external issue before resuming');
+      const intervention = record.recovery.interventions?.[key] ?? (legacyKey === key ? legacy : null);
+      if (intervention && !intervention.done) throw new Error('Recovery notification outcome is unknown; human intervention required to inspect the external issue before resuming');
+      if (intervention) return;
+      record.recovery.interventions ??= {};
+      record.recovery.interventions[key] = { inFlight: true, reason };
+      await writeMonitor(record);
+      await ensureLive(signal);
+      let issue;
+      try {
+        issue = await autoMerge.github.createIssue({
+          title: `Human intervention required: recovery outcome unknown for ${record.mergeCommit.slice(0, 7)}`,
+          labels: ['type:bug', 'rt:self'],
+          body: `Human intervention required: recovery step \`${key}\` for auto-merge ${record.mergeCommit} has an unknown outcome. Main remains paused; inspect the external effect before resuming recovery.`,
+        });
+        if (issue == null) throw new Error('issue returned no result');
+      } catch (cause) {
+        throw new Error('Recovery notification outcome is unknown; human intervention required to inspect the external issue before resuming', { cause });
+      }
+      record = await readMonitor();
+      record.recovery.interventions[key] = { done: true, value: issue, reason };
+      await writeMonitor(record);
+    };
+    try {
+      // Unknown effects must be resolved before status-based exits can clear or hide the hold.
+      const legacy = record.recovery?.intervention;
+      const legacyKey = /^Recovery (revert|pullRequest|issue|revertMerged) outcome is unknown;/.exec(legacy?.reason ?? '')?.[1];
+      if (legacy && !legacy.done && !legacyKey) {
+        throw new Error('Recovery notification outcome is unknown; human intervention required to inspect the external issue before resuming');
+      }
+      const unknownSteps = ['revert', 'pullRequest', 'issue', 'revertMerged']
+        .filter((key) => record.recovery?.[key]?.inFlight && !record.recovery[key].done);
+      for (const key of unknownSteps) {
+        const notification = record.recovery?.interventions?.[key] ?? (legacyKey === key ? legacy : null);
+        if (!notification || notification.done) await notifyUnknown(key, `Recovery ${key} outcome is unknown; main remains paused`);
+      }
+      if ((legacy && !legacy.done) || Object.values(record.recovery?.interventions ?? {}).some((item) => !item.done)) throw new Error('Recovery notification outcome is unknown; human intervention required to inspect the external issue before resuming');
+      if (unknownSteps.length) return true;
+      if (status.status === 'green' && (!record.recovery || record.recovery.revertMerged?.done)) {
+        await ensureLive(signal);
+        await writeMonitor(null);
+        return false;
+      }
+      if (status.status !== 'red' || status.head !== record.mergeCommit) return true;
+      await recoverRedMain({ mergeCommit: record.mergeCommit, mainHead: status.head, mainRed: true,
       pause: { async claimsAndMerges() {} },
       git: { createRevert: (args) => once('revert', () => autoMerge.git.createRevert(args)) },
       github: {
@@ -232,7 +276,12 @@ export async function runQueue({
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
         return gated.result;
       } },
-    });
+      });
+    } catch (error) {
+      if (error?.code !== 'RT_RECOVERY_UNKNOWN') throw error;
+      await notifyUnknown(error.recoveryStep, error.message);
+      return true;
+    }
     return true;
   };
 

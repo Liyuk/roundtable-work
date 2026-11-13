@@ -9,6 +9,170 @@ test('production adapter rejects missing providers with a concrete diagnostic', 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runQueue } from '../../runtime/rtd.mjs';
+import { createStateStore } from '../../runtime/lib/state.mjs';
+
+test('an in-flight recovery effect stays paused and requests human intervention once', async () => {
+  const root = await mkdtemp(join(process.cwd(), 'rt121-test-'));
+  const calls = [];
+  const autoMerge = createProductionAdapter({
+    pause: { async get() { return null; }, async put() {} },
+    github: {
+      async getPullRequest() { return { state: 'open', draft: false, mergeable: true, head: 'head', files: ['x'] }; },
+      async requiredGreen() { return true; }, async squashMerge() { return { mergeCommit: 'abcdef0123456789' }; },
+      async addLabel() {}, async recordedEscalationApproval() { return null; },
+      async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
+      async openRevertPullRequest() { return { number: 91, head: 'reverthead' }; },
+      async createIssue(input) { calls.push(['issue', input]); return { number: 121 }; },
+    },
+    git: { async createRevert() { calls.push('revert'); return { sha: '1234567' }; } },
+    context: { async get() { throw new Error('recovery must not proceed'); } },
+    gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'head' }; }, async crossCheck() { return true; } },
+  });
+  try {
+    const store = await createStateStore({ workRoot: root });
+    await store.update('rt-main-monitor', (state) => {
+      state.mainMonitor = { stage: 'monitoring', mergeCommit: 'abcdef0123456789', recovery: { revert: { inFlight: true } } };
+    });
+
+    const result = await runQueue({ workRoot: root, queue: ['54'], autoMerge, handler: async () => { throw new Error('queue item must not run'); } });
+
+    assert.equal(result.status, 'ok');
+    assert.deepEqual(result.skipped, [{ id: '54', reason: 'main_paused' }]);
+    assert.deepEqual(calls.map((call) => Array.isArray(call) ? call[0] : call), ['issue']);
+    assert.deepEqual(calls[0][1].labels, ['type:bug', 'rt:self']);
+    assert.match(calls[0][1].body, /human intervention/i);
+    const monitor = (await store.load('rt-main-monitor')).mainMonitor;
+    assert.deepEqual(monitor.recovery.revert, { inFlight: true });
+    assert.deepEqual(monitor.recovery.interventions.revert, {
+      done: true, value: { number: 121 },
+      reason: 'Recovery revert outcome is unknown; main remains paused',
+    });
+    const later = await runQueue({ workRoot: root, queue: ['55'], autoMerge, handler: async () => { throw new Error('later queue item must not run'); } });
+    assert.deepEqual(later.skipped, [{ id: '55', reason: 'main_paused' }]);
+    assert.equal(calls.length, 1, 'the later pass neither repeats the revert nor creates another intervention issue');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('distinct unknown recovery effects each receive an intervention notification', async () => {
+  const root = await mkdtemp(join(process.cwd(), 'rt121-test-'));
+  const calls = [];
+  const autoMerge = createProductionAdapter({
+    github: {
+      async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
+      async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
+      async openRevertPullRequest() { throw new Error('must not repeat pull request'); },
+      async createIssue(input) { calls.push(input); return { number: 120 + calls.length }; },
+    },
+    git: { async createRevert() { throw new Error('must not repeat revert'); } },
+    context: { async get() {} }, gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
+  });
+  try {
+    const store = await createStateStore({ workRoot: root });
+    await store.update('rt-main-monitor', (state) => {
+      state.mainMonitor = { stage: 'monitoring', mergeCommit: 'abcdef0123456789', recovery: { revert: { inFlight: true } } };
+    });
+    const run = () => runQueue({ workRoot: root, queue: ['54'], autoMerge, handler: async () => { throw new Error('must stay paused'); } });
+    assert.deepEqual((await run()).skipped, [{ id: '54', reason: 'main_paused' }]);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].body, /`revert`/);
+    store.setEpoch((await store.load('rt-main-monitor')).lockEpoch);
+    await store.update('rt-main-monitor', (state) => {
+      state.mainMonitor.recovery.revert = { done: true, value: { sha: '1234567' } };
+      state.mainMonitor.recovery.pullRequest = { inFlight: true };
+    });
+    assert.deepEqual((await store.load('rt-main-monitor')).mainMonitor.recovery.pullRequest, { inFlight: true });
+    assert.deepEqual((await run()).skipped, [{ id: '54', reason: 'main_paused' }]);
+    assert.equal(calls.length, 2, 'the later unknown effect has its own notification');
+    assert.match(calls[1].body, /`pullRequest`/);
+    await run();
+    assert.equal(calls.length, 2, 'repeated passes do not duplicate either notification');
+    const recovery = (await store.load('rt-main-monitor')).mainMonitor.recovery;
+    assert.equal(recovery.interventions.revert.done, true);
+    assert.equal(recovery.interventions.pullRequest.done, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const scenario of ['throws', 'null', 'restart']) {
+  test(`unknown intervention notification remains actionable after ${scenario}`, async () => {
+    const root = await mkdtemp(join(process.cwd(), 'rt121-test-'));
+    let calls = 0;
+    const autoMerge = createProductionAdapter({
+      github: {
+        async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
+        async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
+        async openRevertPullRequest() {}, async createIssue() { calls++; if (scenario === 'throws') throw new Error('network failure'); return null; },
+      },
+      git: { async createRevert() { throw new Error('must not repeat'); } },
+      context: { async get() {} }, gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
+    });
+    try {
+      const store = await createStateStore({ workRoot: root });
+      await store.update('rt-main-monitor', (state) => {
+        state.mainMonitor = { stage: 'monitoring', mergeCommit: 'abcdef0123456789', recovery: {
+          revert: { inFlight: true }, ...(scenario === 'restart' ? { intervention: { inFlight: true, reason: 'unknown' } } : {}),
+        } };
+      });
+      const run = () => runQueue({ workRoot: root, queue: ['54'], autoMerge, handler: async () => { throw new Error('must stay paused'); } });
+      await assert.rejects(run(), /(?:network failure|no result|notification.*unknown)/i);
+      await assert.rejects(run(), /notification.*unknown.*human intervention/i);
+      assert.equal(calls, scenario === 'restart' ? 0 : 1);
+      const recovery = (await store.load('rt-main-monitor')).mainMonitor.recovery;
+      assert.equal((scenario === 'restart' ? recovery.intervention : recovery.interventions.revert).inFlight, true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test('an uncertain notification does not duplicate or hide a different unknown effect', async () => {
+  const root = await mkdtemp(join(process.cwd(), 'rt121-test-'));
+  const calls = [];
+  const autoMerge = createProductionAdapter({
+    github: {
+      async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
+      async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
+      async openRevertPullRequest() {}, async createIssue(input) { calls.push(input); return { number: 122 }; },
+    },
+    git: { async createRevert() {} }, context: { async get() {} },
+    gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
+  });
+  try {
+    const store = await createStateStore({ workRoot: root });
+    await store.update('rt-main-monitor', (state) => {
+      state.mainMonitor = { stage: 'monitoring', mergeCommit: 'abcdef0123456789', recovery: {
+        revert: { inFlight: true }, pullRequest: { inFlight: true },
+        interventions: { revert: { inFlight: true, reason: 'Recovery revert outcome is unknown; main remains paused' } },
+      } };
+    });
+    const run = () => runQueue({ workRoot: root, queue: ['54'], autoMerge, handler: async () => { throw new Error('must stay paused'); } });
+    await assert.rejects(run(), /notification.*unknown.*human intervention/i);
+    await assert.rejects(run(), /notification.*unknown.*human intervention/i);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].body, /`pullRequest`/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const status of [{ head: 'changed', status: 'red' }, { head: 'changed', status: 'green' }]) {
+  test(`unknown recovery is surfaced when main is ${status.status} with changed HEAD`, async () => {
+    const root = await mkdtemp(join(process.cwd(), 'rt121-test-'));
+    let calls = 0;
+    const autoMerge = createProductionAdapter({
+      github: {
+        async getPullRequest() {}, async requiredGreen() {}, async squashMerge() { throw new Error('must not repeat'); }, async addLabel() {},
+        async recordedEscalationApproval() {}, async mainStatus() { return status; }, async openRevertPullRequest() {},
+        async createIssue() { calls++; return { number: 121 }; },
+      },
+      git: { async createRevert() {} }, context: { async get() {} },
+      gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
+    });
+    try {
+      const store = await createStateStore({ workRoot: root });
+      await store.update('rt-main-monitor', (state) => { state.mainMonitor = { stage: 'monitoring', mergeCommit: 'abcdef0123456789', recovery: { revertMerged: { inFlight: true } } }; });
+      const result = await runQueue({ workRoot: root, queue: ['54'], autoMerge, handler: async () => { throw new Error('must stay paused'); } });
+      assert.deepEqual(result.skipped, [{ id: '54', reason: 'main_paused' }]);
+      assert.equal(calls, 1);
+      assert.equal((await store.load('rt-main-monitor')).mainMonitor.recovery.interventions.revertMerged.done, true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
 
 test('production adapter triggers recovery after red main and holds later work', async () => {
   const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
