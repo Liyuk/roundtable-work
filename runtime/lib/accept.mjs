@@ -1691,6 +1691,7 @@ async function execute(opts, deadline) {
   // Rule 1 (run base command). Submitted code is never run when the diff carries a symlink,
   // a submodule or a path outside the allowed scope: that is a block, not a test result.
   await step(async () => {
+    if (blocks.length) return [];
     if (findings.some((f) => SCOPE_NO_RUN.has(f.ruleId))) throw new GateSignal('G0-TESTS-SKIPPED-SCOPE');
     if (opts.hostRun === true && opts.networkIsolated !== true) throw new GateSignal('G0-NETWORK');
     let basePackage;

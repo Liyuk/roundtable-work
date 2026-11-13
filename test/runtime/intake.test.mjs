@@ -51,6 +51,34 @@ test('dependencies fail closed and become eligible when closed', async () => {
   assert.deepEqual((await readQueue(provider)).items.map(i => i.id), ['1']);
   for (const states of [{}, { 2: 'OPEN', 3: 'CLOSED' }, { 2: 'UNKNOWN', 3: 'CLOSED' }]) assert.equal(select([candidate], states).issues.length, 0);
 });
+test('repository-qualified dependencies are not resolved in the selected repository', async () => {
+  const candidate = issue(1, ['type:bug'], { body: 'Depends on other-owner/other-repo#50' });
+  const lookups = [];
+  const provider = createIntakeProvider({
+    getOwner: async () => 'owner',
+    listIssues: async () => [candidate],
+    getIssue: async number => { lookups.push(number); return { state: 'CLOSED' }; },
+  });
+
+  assert.deepEqual((await readQueue(provider)).items.map(item => item.id), ['1']);
+  assert.deepEqual(lookups, []);
+});
+test('repository-qualified references do not shadow local dependencies on the same line', async () => {
+  const candidate = issue(1, ['type:bug'], { body: 'Depends on other-owner/other-repo#50 and #2' });
+  const lookups = [];
+  let localState = 'OPEN';
+  const provider = createIntakeProvider({
+    getOwner: async () => 'owner',
+    listIssues: async () => [candidate],
+    getIssue: async number => { lookups.push(number); return { state: localState }; },
+  });
+
+  assert.deepEqual((await readQueue(provider)).items, []);
+  assert.deepEqual(lookups, [2]);
+  localState = 'CLOSED';
+  assert.deepEqual((await readQueue(provider)).items.map(item => item.id), ['1']);
+  assert.deepEqual(lookups, [2, 2]);
+});
 test('listed dependencies block selection until closed', async () => {
   for (const marker of ['- ', '* ', '+ ', '1. ', '2) ']) {
     for (const phrase of ['Depends on', 'Blocked by']) {
@@ -133,4 +161,13 @@ test('runQueue selects tracker fixtures after dependencies close', async () => {
     dependency = 'CLOSED';
     assert.deepEqual((await runQueue({ workRoot: root, queue: provider, handler })).outcomes.map(({ id, status }) => [id, status]), [['10', 'done']]);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('tracker intake includes rt:ask and rt:blocked issues and carries owner identity for resumption', async () => {
+  const paused = issue(32, ['rt:ask'], { title: '[A] paused' });
+  const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [paused] }, { includeRunning: true });
+  const items = await provider();
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].author, paused.author);
+  assert.deepEqual(items[0].labels.map(label => label.name), ['rt:ask']);
 });

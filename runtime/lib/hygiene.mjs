@@ -820,7 +820,8 @@ function credentialValue(raw) {
   if (cut > 0) v = v.slice(0, cut);
   v = v.replace(/[,;)\]}]+$/, '');
   if (v.length < 8 || isPlaceholder(v)) return null;
-  if (REFERENCE_RE.test(v) || /^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/.test(v)) return null;
+  if (REFERENCE_RE.test(v)) return null;
+  if (/^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/.test(v) && (!/\d/.test(v) || !highEntropy(v))) return null;
   if (/^(?:true|false|null|none|undefined|string|required|optional)$/i.test(v)) return null;
   if (highEntropy(v)) return v;
   if (/^[a-z]+\d{0,3}$/.test(v) && !/[0-9]/.test(v)) return null; // a plain lowercase word

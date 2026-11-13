@@ -16,8 +16,8 @@ const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-recovery-'));
 const exists = (p) => access(p).then(() => true, () => false);
 const PASS = '审查结论：通过\nok';
-// Lock files live in `rtd.lock.d/epoch-<n>`: a successor process writes the next epoch; the holder is the highest one.
-const lockDirOf = (root) => join(root, 'rtd.lock.d');
+// Runtime lock files live in `.roundtable/state/rtd.lock.d/epoch-<n>`; the holder is the highest epoch.
+const lockDirOf = (root) => join(root, '.roundtable', 'state', 'rtd.lock.d');
 const epochsIn = (root) => readdirSync(lockDirOf(root)).map((n) => /^epoch-(\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b);
 const plantEpoch = (root, rec) => writeFileSync(join(lockDirOf(root), `epoch-${Math.max(0, ...epochsIn(root)) + 1}`), JSON.stringify(rec));
 const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch-${Math.max(...epochsIn(root))}`), 'utf8'));
@@ -128,7 +128,7 @@ test('single-flight: a lock whose process died is stale and is taken over', { ti
   try {
     const dead = spawnSync(process.execPath, ['-e', '']);
     assert.equal(dead.status, 0);
-    mkdirSync(lockDirOf(root));
+    mkdirSync(lockDirOf(root), { recursive: true });
     plantEpoch(root, { owner: 'old', pid: dead.pid, hostId: hostId(), token: 'x', epoch: 1, acquiredAt: Date.now(), expiresAt: Date.now() + 3_600_000 });
     const result = await runQueue({ workRoot: root, queue: ['1'], handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }) });
     assert.equal(result.status, 'ok');

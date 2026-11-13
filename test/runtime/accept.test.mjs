@@ -2127,3 +2127,18 @@ test('host isolation claim alone must not permit submitted tests to run', async 
   assert.equal(called, false);
   assert.equal(result.verdict, 'block');
 });
+
+test('failed host prechecks prevent the submitted runner from starting', async () => {
+  for (const options of [
+    { env: {}, metadata: { prTitle: 'Edit', prBody: '', branch: 'rt/fixture' } },
+    { env: HOST_ENV, metadata: { prTitle: 'Edit', branch: 'rt/fixture' } },
+  ]) {
+    let called = false;
+    const result = await run([edit('docs/a.md', 'old\n', 'new\n')], {
+      hostRun: true, networkIsolated: true, denylist: undefined, ...options,
+      runner: async () => { called = true; return { exitCode: 0 }; },
+    });
+    assert.equal(result.verdict, 'block');
+    assert.equal(called, false, 'runner must not execute after a failed precheck');
+  }
+});
