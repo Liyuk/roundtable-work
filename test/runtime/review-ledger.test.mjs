@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateReviewLedger } from '../../runtime/lib/review-ledger.mjs';
+import { validateReviewLedger, reportReviewFindings, readReviewConfig } from '../../runtime/lib/review-ledger.mjs';
 
 const sha = n => String(n).padStart(40, '0');
 const freeze = {
@@ -90,4 +90,33 @@ test('blocking and in-scope-miss findings need non-empty evidence; out-of-scope 
   assert.equal(call([followUp]).verdict, '审查结论：通过');
   assert.throws(() => call([{ ...followUp, evidence: 'not needed here' }]), /unexpected/);
   assert.throws(() => call([{ ...finding('F9'), note: 'extra prose' }]), /unexpected/);
+});
+
+test('readReviewConfig is off for a missing, unreadable, or malformed file and on only for true', async () => {
+  const off = { createFollowupIssues: false };
+  assert.deepEqual(await readReviewConfig({ readFile: async () => { throw new Error('ENOENT'); } }), off);
+  assert.deepEqual(await readReviewConfig({ readFile: async () => '{ not json' }), off);
+  assert.deepEqual(await readReviewConfig({ readFile: async () => JSON.stringify({ createFollowupIssues: 'yes' }) }), off);
+  assert.deepEqual(await readReviewConfig({ readFile: async () => JSON.stringify({ createFollowupIssues: true }) }), { createFollowupIssues: true });
+});
+
+test('non-blocking findings post one PR comment and no issues unless the switch is on', async () => {
+  const calls = [];
+  const github = {
+    createComment: async (pr, body) => { calls.push(['createComment', pr, body]); return { id: 7 }; },
+    createIssue: async (...args) => { calls.push(['createIssue', ...args]); return { number: 8 }; },
+  };
+  const findings = [
+    { id: 'F3', summary: 'Style nit', severity: 'low' },
+    { id: 'F4', summary: 'Edge case outside acceptance', severity: 'medium' },
+  ];
+  const result = await reportReviewFindings({ github, pr: 12, findings });
+  assert.deepEqual(calls.map(call => call[0]), ['createComment']);
+  assert.equal(calls[0][1], 12);
+  assert.match(calls[0][2], /^<!-- rt:review-notes -->/);
+  assert.deepEqual(result.issues, []);
+
+  calls.length = 0;
+  await reportReviewFindings({ github, pr: 12, findings, config: { createFollowupIssues: true } });
+  assert.deepEqual(calls.map(call => call[0]), ['createComment', 'createIssue', 'createIssue']);
 });

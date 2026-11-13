@@ -1,3 +1,5 @@
+import { readFile as readDiskFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 const VERDICTS = Object.freeze({ pass: '审查结论：通过', reject: '审查结论：打回', block: '审查结论：阻塞' });
@@ -91,3 +93,26 @@ const plain = value => value !== null && typeof value === 'object' && !Array.isA
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 const nonEmpty = value => typeof value === 'string' && value.trim().length > 0;
 const sha = value => typeof value === 'string' && SHA.test(value);
+
+const REVIEW_NOTES_MARKER = '<!-- rt:review-notes -->';
+const REVIEW_CONFIG_OFF = Object.freeze({ createFollowupIssues: false });
+
+/** Load the tracked follow-up switch; a missing or malformed file resolves to off. */
+export async function readReviewConfig({ readFile = readDiskFile, repoRoot = join(import.meta.dirname, '../..') } = {}) {
+  try {
+    const parsed = JSON.parse(await readFile(join(repoRoot, 'runtime', 'review.config.json'), 'utf8'));
+    if (typeof parsed.createFollowupIssues === 'boolean') return parsed;
+  } catch {}
+  return { ...REVIEW_CONFIG_OFF };
+}
+
+/** Put non-blocking findings in one PR comment; follow-up issues are opt-in and off by default. */
+export async function reportReviewFindings({ github, pr, findings, config }) {
+  const { createFollowupIssues } = config ?? await readReviewConfig();
+  const body = `${REVIEW_NOTES_MARKER}\n${findings.map(finding => `- ${finding.id} (${finding.severity}): ${finding.summary}`).join('\n')}`;
+  const comment = await github.createComment(pr, body);
+  const issues = createFollowupIssues === true
+    ? await Promise.all(findings.map(finding => github.createIssue({ title: `Follow-up ${finding.id}: ${finding.summary}`, labels: ['rt:followup', 'rt:go'], body: finding.summary })))
+    : [];
+  return { comment, issues };
+}

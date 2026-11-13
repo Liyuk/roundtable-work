@@ -8,6 +8,15 @@ Your first line must be exactly the verdict contract: `审查结论：通过 | �
 with the chosen word in place of the full list, for example `审查结论：通过`. Use `审查结论：打回` for any
 blocking finding and `审查结论：阻塞` when a person must decide.
 
+## Review scope
+
+Review scope is the ticket's acceptance criteria plus the correctness of the changed code. Reject only for
+(a) a missed acceptance criterion or (b) a high-risk defect (security, data loss, or a wrong result) with a
+concrete trigger. Style, extra hardening, uncovered edge cases, and untested branches outside the acceptance
+criteria are non-blocking findings: they go only in the PR comment and never open a new issue.
+
+`审查结论：通过` with no blocking items is a legitimate verdict.
+
 ## Evidence rule
 
 Every `blocking` or `in-scope miss` finding in your ledger requires a non-empty `evidence` string that another
@@ -25,7 +34,8 @@ findings to show that you looked hard enough.
 
 With two reviewers, agreement is support, not independent proof. Disagreement means re-checking the code and
 the tests against the evidence, never voting or splitting the difference; if the disagreement still stands
-after re-checking, state both positions with their evidence and hand the ruling to the owner.
+after re-checking, state both positions with their evidence. A finding that is neither a missed acceptance
+criterion nor a high-risk defect with a concrete trigger is non-blocking and stays in the PR comment.
 
 ## Process
 
