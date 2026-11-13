@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runQueue } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
@@ -100,6 +100,7 @@ test('a CI hold waits: waiting_external/wait, recovery untouched, gate record ke
     assert.equal(s.checkpoint.phase, 'reviewing', 'the next wake resumes at finalizing');
     assert.equal(s.lastEvent.type, 'finalize_hold');
     assert.deepEqual(s.gateRecord.passed, ['gate0', 'gate1']);
+    assert.equal(typeof s.gateRecord.rulesFingerprint, 'string');
     assert.deepEqual([s.gateRecord.head, s.gateRecord.tree], [BASE_SHA, 'tree1']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -121,6 +122,26 @@ test('a later wake resumes at finalizing and merges after the hold cleared witho
     const s = await createStateStore({ workRoot: root }).then((store) => store.load('53'));
     assert.equal(s.status, 'done');
     assert.deepEqual(s.gateRecord.passed, ['gate0', 'gate1', 'ci']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a prompt change invalidates persisted gate evidence before the hold resumes', async () => {
+  const root = await tmp();
+  try {
+    const w = world({ ci: false });
+    assert.equal((await wake(root, w)).outcomes[0].status, 'waiting_external');
+    w.state.ci = true;
+    const reviewerPrompt = join(root, '.agents/skills/roundtable-work/prompts/roles/reviewer.md');
+    await mkdir(join(reviewerPrompt, '..'), { recursive: true });
+    await writeFile(reviewerPrompt, 'changed');
+    w.calls.length = 0;
+    const phases = [];
+    const second = await wake(root, w, phases);
+    assert.equal(second.outcomes[0].status, 'done');
+    assert.deepEqual(phases, ['finalizing']);
+    assert.equal(w.count('gate0'), 1);
+    assert.equal(w.count('gate1'), 1);
+    assert.deepEqual(w.squashes(), [['squash', { method: 'squash' }]]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
