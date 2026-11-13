@@ -84,7 +84,7 @@ async function cliSetup(mode) {
   await writeFile(join(root, 'handler.mjs'), HANDLER_SOURCE);
   const children = [];
   const run = () => {
-    const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')],
+    const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs')],
       { env: { ...process.env, RT_TEST_ROOT: root, RT_TEST_MODE: mode }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);
     return child;

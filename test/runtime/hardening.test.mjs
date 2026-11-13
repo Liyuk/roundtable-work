@@ -505,7 +505,7 @@ for (const phase of ['developing', 'finalizing']) {
     await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '1' }]));
     if (phase === 'finalizing') await (await createStateStore({ workRoot: root })).checkpoint('1', 'reviewing');
     await writeFile(join(root, 'handler.mjs'), `export default ({ phase }) => (phase === ${JSON.stringify(phase)} ? new Promise(() => {}) : Promise.resolve({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' }));\n`);
-    const r = await runChild([RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--phase-timeout-ms', '200', '--grace-ms', '50']);
+    const r = await runChild([RTD, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs'), '--phase-timeout-ms', '200', '--grace-ms', '50']);
     assert.equal(r.signal, null, 'the process ended by itself');
     assert.notEqual(r.out.trim(), '', 'not a silent exit');
     const result = JSON.parse(r.out);
@@ -591,7 +591,7 @@ export default async ({ phase }) => {
   return { exitCode: 0, output: 'ok' };
 };
 `);
-  const args = [RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--phase-timeout-ms', '200', '--grace-ms', '50'];
+  const args = [RTD, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs'), '--phase-timeout-ms', '200', '--grace-ms', '50'];
   const startedAt = Date.now();
   const r = await runChild(args);
   const elapsed = Date.now() - startedAt;

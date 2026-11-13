@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { PathEscapeError } from './lib/paths.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { readQueue, isTerminal } from './lib/queue.mjs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createStateStore, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
 import { createIntakeProvider } from './lib/intake.mjs';
@@ -21,6 +21,7 @@ import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
+import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
@@ -41,8 +42,13 @@ export function exitCodeFor(result) {
 /**
  * One pass over the queue: each runnable issue gets at most one wake.
  *
- * `handler({ item, phase, stage, state, heartbeat, recordArtifacts, signal })` performs one phase and returns
- * `{ exitCode, timedOut, output, scopeMismatch, humanBlock, artifacts, changedFiles }`.
+ * `handler({ item, phase, stage, state, heartbeat, recordArtifacts, signal, routing })` performs one phase and returns
+ * `{ exitCode, timedOut, output, scopeMismatch, humanBlock, artifacts, changedFiles, ruleRelated }`.
+ * CLI routing supplies `facts.roles` (harness, model, tier) and rendered `prompts` to the trusted handler.
+ * On a `reviewing` result, the injected handler may set `ruleRelated: true` only when its structured
+ * review metadata identifies the rejection as caused by a rule/policy issue; this explicit signal is
+ * persisted with a terminal review rejection so a later rules fingerprint change can re-evaluate it.
+ * It is optional, and generic rejected verdicts do not imply it.
  * It must not delete worktree / diff / output artifacts; it reports their paths (returned or via
  * `recordArtifacts`, which persists them immediately so a crash cannot lose the record).
  * For auto-merge, `autoMerge.context({ item, state, result, signal })` supplies the PR number, head, tree,
@@ -107,7 +113,7 @@ export function exitCodeFor(result) {
  * Abandoned handlers retain the queue lock and issue lease with background renewal until they settle.
  * No further work starts in the pass. The CLI exits after recording the recoverable state.
  *
- * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N]`. `--handler` is trusted operator code,
+ * CLI: `rtd.mjs --work-root DIR --queue FILE --handler MODULE --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N]`. `--handler` is trusted operator code,
  * deliberately outside work-root confinement (only paths under the work root are confined).
  * `rtd.mjs --work-root DIR --providers MODULE --clear-main-pause` clears a stale main hold (see `clearMainPause`).
  *
@@ -119,7 +125,7 @@ export async function runQueue({
   maxWakesPerIssue = RUNTIME_DEFAULTS.maxWakesPerIssue, maxDeveloperAttempts = RUNTIME_DEFAULTS.maxDeveloperAttempts, maxReviewerUnavailable = RUNTIME_DEFAULTS.maxReviewerUnavailable,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
-  githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients,
+  githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -137,6 +143,13 @@ export async function runQueue({
   if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
+  const ruleFiles = ['.agents/skills/roundtable-work/prompts/roles/chief.md', '.agents/skills/roundtable-work/prompts/roles/reviewer.md', '.roundtable/policy.md'];
+  const ruleRoot = repoRoot ?? workRoot;
+  const ruleContents = await Promise.all(ruleFiles.map((path) => readFile(resolve(ruleRoot, path)).catch((error) => {
+    if (error.code === 'ENOENT') return Buffer.alloc(0);
+    throw error;
+  })));
+  const rulesFingerprint = createHash('sha256').update(Buffer.concat(ruleContents.flatMap((bytes, i) => [Buffer.from(`${ruleFiles[i]}\0${bytes.length}\0`), bytes]))).digest('hex');
   const lock = await acquireLock({ lockPath: await store.confinement.resolve('.roundtable/state/rtd.lock.d'), repoRoot: workRoot, owner, now, ttlMs: lockTtlMs });
   if (!lock.acquired) return { status: 'locked', holder: lock.holder };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
@@ -187,8 +200,8 @@ export async function runQueue({
     if (value !== null && autoMerge?.pause) await autoMerge.pause.put(value, { epoch: lock.epoch });
   };
   const gateStore = {
-    get: async (issue) => (await store.load(issue)).gateRecord,
-    put: async (issue, record) => { await store.update(issue, (s) => { s.gateRecord = record; }); },
+    get: async (issue) => { const record = (await store.load(issue)).gateRecord; return record?.rulesFingerprint === rulesFingerprint ? record : undefined; },
+    put: async (issue, record) => { await store.update(issue, (s) => { s.gateRecord = { ...record, rulesFingerprint }; }); },
   };
   const validContext = (context) => context && typeof context.highRisk === 'boolean' && Array.isArray(context.changedFiles) && context.changedFiles.every((f) => typeof f === 'string') && context.pr != null;
   const ensureLive = async (signal = abort.signal) => { if (signal.aborted || !(await refreshLock()) || signal.aborted) throw new Error('phase aborted or lock lost'); };
@@ -394,7 +407,7 @@ export async function runQueue({
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
         const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore });
-        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, merge: { squash } });
+        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, merge: { squash }, models, routing });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
         return gated.result;
       } },
@@ -422,6 +435,24 @@ export async function runQueue({
       await stopRenewal();
     }
     const { items, skipped } = read;
+    const rulesRequeued = new Set();
+    for (const id of new Set([...items, ...skipped].map((item) => item.id).filter(Boolean))) {
+      let state;
+      try { state = await store.load(id); } catch (error) { if (error instanceof CorruptStateError) continue; throw error; }
+      if (state.rulesFingerprint !== rulesFingerprint && state.status === 'stop'
+        && state.lastEvent?.type === 'review_rejected' && state.lastEvent.ruleRelated === true) {
+        await store.update(id, (current) => {
+          current.status = 'queued'; current.checkpoint = null; current.attempts.developer = 0; current.attempts.wakes = 0;
+          current.rulesFingerprint = rulesFingerprint;
+          current.lastEvent = { type: 'rules_changed_requeue', at: now(), detail: state.lastEvent.type };
+        });
+        rulesRequeued.add(id);
+      }
+    }
+    for (const id of rulesRequeued) {
+      const index = skipped.findIndex((item) => item.id === id && item.reason === 'terminal');
+      if (index >= 0) { skipped.splice(index, 1); items.push({ id, priority: 0, index: Number.MAX_SAFE_INTEGER }); }
+    }
     // Lost while the queue was read: another pass may own the state now, so do not start any wake.
     if (lockLost || !(await refreshLock())) return { status: 'lock_lost', outcomes: [], skipped };
     const outcomes = [];
@@ -535,20 +566,23 @@ export async function runQueue({
 
     const recovery = await store.recover(id);
     if (recovery.action === 'held') return out('held', { owner: recovery.owner });
-    if (recovery.action === 'interrupted') return out('interrupted', { phase: recovery.resumePhase });
+    if (recovery.action === 'interrupted') {
+      await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
+      return out('interrupted', { phase: recovery.resumePhase });
+    }
     let state = await store.load(id);
     if (isTerminal(state.status)) return out(state.status, { skipped: true });
 
     if (state.attempts.wakes >= maxWakesPerIssue) {
-      await store.update(id, (s) => { s.status = 'stop'; s.lastEvent = { type: 'wake_budget_exhausted', at: now() }; });
+      await store.update(id, (s) => { s.status = 'stop'; s.rulesFingerprint = rulesFingerprint; s.lastEvent = { type: 'wake_budget_exhausted', at: now() }; });
       return out('stop', { reason: 'wake_budget_exhausted', decision: 'stop' });
     }
     const lease = await store.acquireLease(id, owner);
     if (!lease.acquired) return out('held', { owner: lease.state.lease.owner });
     await store.bump(id, 'wakes');
 
-    const finish = (status, cls, reason, decision) =>
-      store.update(id, (s) => { s.status = status; s.lastEvent = { type: cls, at: now(), ...(reason ? { detail: reason } : {}) }; })
+    const finish = (status, cls, reason, decision, ruleRelated = false) =>
+      store.update(id, (s) => { s.status = status; s.rulesFingerprint = rulesFingerprint; s.lastEvent = { type: cls, at: now(), ...(reason ? { detail: reason } : {}), ...(ruleRelated ? { ruleRelated: true } : {}) }; })
         .then(() => out(status, { class: cls, reason, decision }));
 
     try {
@@ -623,7 +657,7 @@ export async function runQueue({
         const guard = withTimeout(phaseTimeoutMs, () => phaseAbort.abort(new Error('phase timed out')));
         try {
           running = Promise.resolve().then(async () => {
-            const result = await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal });
+            const result = await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal, routing });
             if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
             const executeMerge = async () => {
               if (await readMonitor()) throw new Error('Main is paused');
@@ -633,10 +667,10 @@ export async function runQueue({
               // everything after it is bookkeeping, and must never turn a real merge into a finalize failure.
               let mergeHappened = false;
               const gateState = {
-                get: async (issue) => (await store.load(issue)).gateRecord,
+                get: async (issue) => { const record = (await store.load(issue)).gateRecord; return record?.rulesFingerprint === rulesFingerprint ? record : undefined; },
                 put: async (issue, record) => {
                   if (signal.aborted) throw new Error('phase aborted');
-                  await store.update(issue, (s) => { s.gateRecord = record; });
+                  await store.update(issue, (s) => { s.gateRecord = { ...record, rulesFingerprint }; });
                 },
               };
               const mergeGithub = {
@@ -662,7 +696,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, merge: { squash: guardedSquash } });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, merge: { squash: guardedSquash }, models, routing });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;
@@ -760,6 +794,7 @@ export async function runQueue({
               return out('waiting_external', { class: 'observation_failed', reason, decision: 'wait', observation });
             }
             const decisionResult = await applyDecision({ decision, issue: item, store, client: githubClient, repoRoot: item.worktree ?? repoRoot, now });
+            if (isTerminal(decisionResult.status)) await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
             return out(decisionResult.status, { class: 'decision', decision: decisionResult.decision });
           }
           if (!(phase === 'finalizing' && autoMerge && step.merged === true)) {
@@ -778,12 +813,13 @@ export async function runQueue({
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
           // After a phase timeout the abandoned handler may still be running: never start the retry in this wake.
           const next = await store.retryDeveloper(id, cls, reason, phaseTimedOut ? { suspendPhase: phase } : undefined);
-          if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop');
+          if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop', verdict.ruleRelated === true);
           if (phaseTimedOut) return out('queued', { class: cls, reason, decision: 'wait', phase: PHASES[0] });
           phase = PHASES[0];
         } else if (cls === 'finalize_failure') {
           // Finalizing may already have had external side effects: never re-run it automatically.
           await store.markInterrupted(id, phase, cls);
+          await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
           return out('interrupted', { class: cls, reason, decision: 'ask', phase });
         } else if (cls === 'reviewer_unavailable') {
           const next = await store.bump(id, 'reviewerUnavailable');
@@ -867,7 +903,7 @@ async function main(argv) {
   }
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' }, routing: { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
@@ -884,7 +920,7 @@ async function main(argv) {
     return exitCodeFor(result);
   }
   if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github)) {
-    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] (MODULE is trusted operator code, not confined to the work root)');
     console.error('       rtd.mjs --work-root DIR --providers MODULE --clear-main-pause');
     return 2;
   }
@@ -898,6 +934,25 @@ async function main(argv) {
     }
     timeouts[option] = n;
   }
+  if (!args.routing) {
+    console.error('routing: --routing FILE is required');
+    return 2;
+  }
+  let facts;
+  try {
+    facts = routingFacts(await loadRouting(args.routing), Date.now());
+  } catch (error) {
+    if (!(error instanceof RoutingError)) throw error;
+    console.error(error.message.replace(/^routing /, 'routing: '));
+    return 2;
+  }
+  const prompts = {};
+  for (const role of ['chief', 'developer', 'fixer', 'reviewer', 'researcher']) {
+    const prompt = await readFile(new URL(`../.agents/skills/roundtable-work/prompts/roles/${role}.md`, import.meta.url), 'utf8');
+    prompts[role] = renderRolePrompt(prompt, facts);
+  }
+  const routing = { facts, prompts };
+  const models = { reviewer: facts.roles.reviewer.model, crossCheck: facts.roles.crosscheck.model };
   const handlerModule = await import(pathToFileURL(resolve(args.handler)).href);
   const handler = handlerModule.default;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
@@ -906,7 +961,7 @@ async function main(argv) {
     return 2;
   }
   const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: createGitHubWriter({ repo: args.repo }), repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) result.triage = queue.triage;
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {

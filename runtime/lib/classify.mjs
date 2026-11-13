@@ -73,7 +73,7 @@ export function classify(event) {
       if (verdict === 'rejected') {
         return unevidenced(event.findings)
           ? result('reviewer_unavailable', 'wait', { reason: 'unevidenced_blocking_findings' })
-          : result('review_rejected', 'continue', { verdict });
+          : result('review_rejected', 'continue', { verdict, ...(event.ruleRelated === true ? { ruleRelated: true } : {}) });
       }
       return result('human_block', 'ask', { verdict, reason: 'review_blocked' });
     }
