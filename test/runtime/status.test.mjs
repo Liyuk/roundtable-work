@@ -87,6 +87,47 @@ test('runtime entry exposes status text and JSON from synthetic read-only provid
   assert.equal(snapshot.active.idle, true);
 });
 
+test('status HTML writes one offline, escaped, read-only page and omits absent quota', async (t) => {
+  const root = await mkdtemp(join(process.cwd(), 'rt-status-html-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'state'));
+  const stateFile = join(root, 'state', '21.json');
+  const state = JSON.stringify({ id: '21', status: 'blocked', attempts: { wakes: 1 }, lastEvent: { type: 'waiting_person', at: 1794556800000 } });
+  await writeFile(stateFile, state);
+  const provider = join(root, 'providers.mjs');
+  await writeFile(provider, `export default {
+    async github() { return { issues: [{number: 21, title: '<img src=x onerror=alert(1)>', labels: ['rt:blocked'], state: 'OPEN'}], queue: ['21'], quotaWait: process.env.QUOTA ? { since: '2026-11-13T00:00:00Z', resumeAt: '2026-11-13T01:00:00Z' } : null }; },
+    async local() { return { issues: [{id: '21', status: 'blocked', attempts: { wakes: 1 }, lastEvent: { type: 'waiting_person', at: 1794556800000 } }], recentMerges: [] }; }
+  };\n`);
+  const cli = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
+  const output = join(root, 'status.html');
+  const run = (quota) => spawnSync(process.execPath, [cli, 'status', '--html', '-o', output, '--work-root', root, '--providers', provider], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, QUOTA: quota ? '1' : '' },
+  });
+  const withoutQuota = run(false);
+  assert.equal(withoutQuota.status, 0, withoutQuota.stderr);
+  const first = await readFile(output, 'utf8');
+  assert.match(first, /This is a read-only snapshot, not a live console\./);
+  assert.match(first, /Overview/);
+  assert.match(first, /Blockers and waiting/);
+  assert.match(first, /Issue #21/);
+  assert.match(first, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(first, /<(?:img|form|script|link)\b/i);
+  assert.doesNotMatch(first, /https?:/i);
+  assert.doesNotMatch(first, /<h2>Quota wait<\/h2>/);
+  assert.match(first, /<dt>Quota wait active<\/dt><dd>Inactive<\/dd>/);
+  assert.match(first, /<style>[\s\S]*<\/style>/);
+  assert.match(first, /<h2>In-flight details<\/h2><p>Idle<\/p>/);
+  const withQuota = run(true);
+  assert.equal(withQuota.status, 0, withQuota.stderr);
+  const second = await readFile(output, 'utf8');
+  assert.match(second, /<dt>Quota wait active<\/dt><dd>Active<\/dd>/);
+  assert.match(second, /Quota wait/);
+  assert.match(second, /resumeAt/);
+  assert.equal(await readFile(stateFile, 'utf8'), state);
+  assert.doesNotMatch(second, /https?:|<(?:form|script|link)\b/i);
+});
+
 test('status selects the highest epoch by filename and retains legacy states', async (t) => {
   const root = await mkdtemp(join(process.cwd(), 'rt-status-epoch-'));
   t.after(() => rm(root, { recursive: true, force: true }));

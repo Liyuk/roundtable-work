@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
@@ -859,7 +859,11 @@ function withTimeout(ms, onTimeout) {
 
 async function main(argv) {
   if (argv[0] === 'status') {
-    const { output } = await runStatus({ argv: argv.slice(1) });
+    const { output, outputPath } = await runStatus({ argv: argv.slice(1) });
+    if (outputPath) {
+      await writeFile(resolve(outputPath), output, 'utf8');
+      return 0;
+    }
     console.log(output);
     return 0;
   }
