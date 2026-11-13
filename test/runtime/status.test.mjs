@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { userInfo } from 'node:os';
 import { collectStatus, formatStatus } from '../../runtime/lib/status.mjs';
 
 test('status keeps one field set in text and JSON and remains read-only across calls', async () => {
@@ -85,6 +86,41 @@ test('runtime entry exposes status text and JSON from synthetic read-only provid
   for (const key of Object.keys(snapshot)) assert.match(text.stdout, new RegExp(`^${key}:`, 'm'));
   assert.equal(snapshot.issues[0].id, '8');
   assert.equal(snapshot.active.idle, true);
+});
+
+test('status publish scans rendered text, JSON and HTML before writing, and allows clean output', async (t) => {
+  const root = await mkdtemp(join(process.cwd(), 'rt-status-publish-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const provider = join(root, 'providers.mjs');
+  const cli = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
+  const target = join(root, 'published.txt');
+  const homePath = ['/', 'home/', 'systemuser/private'].join('');
+  const writeProvider = (title) => writeFile(provider, `export default { async github() { return { issues: [{number: 8, title: ${JSON.stringify(title)}, labels: [], state: 'OPEN'}], queue: ['8'] }; }, async local() { return { issues: [], recentMerges: [] }; } };\n`);
+  const run = (format = []) => spawnSync(process.execPath, [cli, 'status', '--work-root', root, '--providers', provider, '--publish', target, ...format], { cwd: root, encoding: 'utf8' });
+
+  await writeProvider('Synthetic issue');
+  const clean = run();
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(await readFile(target, 'utf8'), /Synthetic issue/);
+
+  await writeProvider('server.acme.com');
+  await rm(target);
+  const rejectedNewFile = run();
+  assert.notEqual(rejectedNewFile.status, 0);
+  assert.match(rejectedNewFile.stderr, /privacy scan/);
+  await assert.rejects(readFile(target, 'utf8'), { code: 'ENOENT' });
+
+  for (const [value, format] of [
+    ['private-host.example', []], ['server.acme.com', ['--json']], ['server.acme.com', ['--html']],
+    ['192.0.2.4', ['--json']], [userInfo().username, ['--json']], [homePath, ['--html']], ['ghp_abcdef123456', []],
+  ]) {
+    await writeProvider(value);
+    await writeFile(target, 'previous publication');
+    const result = run(format);
+    assert.notEqual(result.status, 0, `${value} should fail publication scanning`);
+    assert.match(result.stderr, /privacy scan/, `${value} should fail at the privacy scan`);
+    assert.equal(await readFile(target, 'utf8'), 'previous publication');
+  }
 });
 
 test('status HTML writes one offline, escaped, read-only page and omits absent quota', async (t) => {
