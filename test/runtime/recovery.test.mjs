@@ -51,6 +51,15 @@ import { join } from 'node:path';
 const root = process.env.RT_TEST_ROOT;
 const mode = process.env.RT_TEST_MODE;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sha = 'a'.repeat(40);
+// The trusted handler module exports the read-only observation clients used by the real CLI path.
+export const observationClients = {
+  expectedSha: () => sha,
+  issue: { async get() { return { state: 'open', labels: ['rt:running'] }; } },
+  worktree: { async inspect() { return { dirty: false }; } },
+  git: { async head() { return sha; }, async commit() { return { sha }; } },
+  evidence: { async checks() { return { sha, conclusion: 'success' }; }, async review() { return { sha, conclusion: 'approved' }; } },
+};
 export default async function handler({ item, phase }) {
   if (mode === 'hold') {
     writeFileSync(join(root, 'started'), String(process.pid));
@@ -73,14 +82,9 @@ async function cliSetup(mode) {
   const root = await tmp();
   await writeFile(join(root, 'queue.json'), JSON.stringify([{ id: '49' }]));
   await writeFile(join(root, 'handler.mjs'), HANDLER_SOURCE);
-  await writeFile(join(root, 'runner.mjs'), `import { runQueue, exitCodeFor } from ${JSON.stringify(new URL('./observation-fixture.mjs', import.meta.url).href)};
-import handler from './handler.mjs';
-const result = await runQueue({ workRoot: process.env.RT_TEST_ROOT, queue: 'queue.json', handler });
-console.log(JSON.stringify(result)); process.exitCode = exitCodeFor(result);
-`);
   const children = [];
   const run = () => {
-    const child = spawn(process.execPath, [join(root, 'runner.mjs')],
+    const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs')],
       { env: { ...process.env, RT_TEST_ROOT: root, RT_TEST_MODE: mode }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);
     return child;

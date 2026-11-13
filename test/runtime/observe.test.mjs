@@ -127,6 +127,38 @@ test('production merge is held before squash when the observed SHA differs', asy
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('the merge call head cannot replace the immutable transition target', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rt-observe-merge-target-'));
+  try {
+    await (await createStateStore({ workRoot: root })).checkpoint('109', 'reviewing');
+    const other = 'b'.repeat(40);
+    let head = sha;
+    const c = clients({
+      git: { async head() { return head; }, async commit() { return { sha: head }; } },
+      evidence: { async checks() { return { sha: head, conclusion: 'success' }; }, async review() { return { sha: head, conclusion: 'approved' }; } },
+    });
+    let squashes = 0;
+    const autoMerge = {
+      production: true, observationClients: c,
+      async context() { return { pr: 1, head: other, tree: 'tree', highRisk: false, changedFiles: [] }; },
+      gates: { async gate0() { head = other; return true; }, async reviewer() { return { passed: true, head: other }; }, async crossCheck() { return true; } },
+      github: {
+        async getPullRequest() { return { state: 'open', head: other, mergeable: true, files: [] }; },
+        async requiredGreen() { return true; }, async squashMerge() { squashes++; return { mergeCommit: other }; },
+        async addLabel() {}, async recordedEscalationApproval() { return { approved: false }; },
+        async mainStatus() { return { head: other, status: 'green' }; }, async openRevertPullRequest() {}, async createIssue() {},
+      },
+      git: { async createRevert() {} },
+    };
+    const result = await runQueue({ workRoot: root, queue: ['109'], autoMerge, observationClients: c,
+      handler: async () => ({ exitCode: 0, expectedSha: sha }) });
+    assert.equal(squashes, 0, 'a merge call head differing from the transition target must not merge');
+    assert.equal(result.outcomes[0].status, 'waiting_external');
+    assert.equal(result.outcomes[0].class, 'finalize_hold');
+    assert.equal((await (await createStateStore({ workRoot: root })).load('109')).checkpoint.phase, 'reviewing');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('early phases advance without evidence that does not yet exist', async () => {
   const root = await mkdtemp(join(tmpdir(), 'rt-observe-phases-'));
   try {
