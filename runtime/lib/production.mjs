@@ -5,7 +5,8 @@
  * for a revert, and returns { pr, head, tree, highRisk, changedFiles }. Gate providers follow the
  * runGates contract. github.getPullRequest must return { state, draft, head, mergeable, files }, where
  * files is the pull request's changed paths: the merge entry point derives the safety-file set from it
- * and fails closed when it is absent. github.squashMerge resolves only after a successful squash and returns
+ * and fails closed when it is absent; the monitor uses `state: 'merged'`/`merged: true` with an optional
+ * `mergeCommit` SHA to resolve a merge whose outcome was unknown. github.squashMerge resolves only after a successful squash and returns
  * { mergeCommit: <SHA> }; github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
  * Recovery providers return the revert result, { number, head } for the PR, and { number } for the
  * bug issue. GitHub and git effects are owned by the supplied providers.
@@ -23,6 +24,11 @@ export function createProductionAdapter(providers = {}) {
       if (typeof providers[name]?.[method] !== 'function') throw new TypeError(`provider ${name}.${method} is required`);
     }
   }
+  for (const [name, methods] of Object.entries({ issue: ['get'], worktree: ['inspect'], git: ['head', 'commit'], evidence: ['checks', 'review'] })) {
+    for (const method of methods) {
+      if (typeof providers.observation?.[name]?.[method] !== 'function') throw new TypeError(`provider observation.${name}.${method} is required`);
+    }
+  }
   if (providers.pause && (typeof providers.pause.get !== 'function' || typeof providers.pause.put !== 'function')) throw new TypeError('provider pause.get and pause.put are required');
-  return { pause: providers.pause, context: (args) => providers.context.get(args), gates: providers.gates, github: providers.github, git: providers.git, production: true };
+  return { pause: providers.pause, context: (args) => providers.context.get(args), gates: providers.gates, github: providers.github, git: providers.git, observationClients: providers.observation, production: true };
 }

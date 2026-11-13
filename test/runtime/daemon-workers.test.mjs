@@ -5,7 +5,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
 
 const scratch = join(process.cwd(), '.roundtable/scratch/rt51-fix2/tmp');
@@ -22,6 +22,7 @@ async function fixture() {
   return { root, repo, workRoot };
 }
 const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/daemon-workers.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 function clientFor(issue) {
   const events = [];
   return { events, addLabel: async (_n, label) => { events.push('label'); issue.labels.push(label); }, createComment: async (_n, body) => { events.push('comment'); issue.comments.push({ body }); }, listComments: async () => issue.comments };
@@ -144,7 +145,7 @@ test('tracker intake includes stale running issues for durable recovery', async 
 test('daemon intake selects and releases a held parent when its recorded children close', async () => {
   const { root, repo, workRoot } = await fixture();
   try {
-    const held = { id: '70', number: 70, state: 'OPEN', author: { login: 'owner' }, title: '[A] parent', body: '', createdAt: '2020-01-01', labels: ['type:feature', 'rt:hold'] };
+    const held = { id: '70', number: 70, state: 'OPEN', author: { login: 'owner' }, title: '[A] parent', body: ADMISSIBLE, createdAt: '2020-01-01', labels: ['type:feature', 'rt:hold'] };
     const events = [];
     const client = { removeLabel: async (n, label) => { events.push(['removeLabel', n, label]); held.labels = held.labels.filter(x => x !== label); }, addLabel: async () => {}, createComment: async () => {}, listComments: async () => [] };
     const { createIntakeProvider } = await import('../../runtime/lib/intake.mjs');

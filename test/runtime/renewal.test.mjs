@@ -6,7 +6,7 @@ import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../runtime/rtd.mjs';
+import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { acquireLock, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 

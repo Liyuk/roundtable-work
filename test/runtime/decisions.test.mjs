@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply } from '../../runtime/lib/decisions.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 
 // Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-decisions-anchor-'));

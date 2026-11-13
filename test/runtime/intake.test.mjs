@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { selectIssues, createIntakeProvider } from '../../runtime/lib/intake.mjs';
 import { createGitHubReader } from '../../scripts/github-read.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
-import { runQueue } from '../../runtime/rtd.mjs';
+import { runQueue } from './observation-fixture.mjs';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +14,8 @@ const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-intake-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
 process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
-const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', body: '', ...extra });
+const admissibleBody = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/intake.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 20\nFiles: 2';
+const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', ...extra, body: `${admissibleBody}\n${extra.body ?? ''}` });
 const select = (issues, states = {}) => selectIssues({ issues, owner: 'owner', dependencyStates: states });
 test('eligibility and triage rules', () => {
   for (const label of ['rt:owner', 'rt:deferred', 'rt:running', 'rt:ask', 'rt:blocked', 'rt:hold', 'rt:ready-to-merge', 'rt:proposed', 'type:epic']) {
@@ -128,7 +129,7 @@ test('GitHub adapter uses the selected repository for each read', async () => {
   await reader.getIssue(42);
   assert.deepEqual(calls, [
     ['repo', 'view', 'selected-owner/selected-repo', '--json', 'owner'],
-    ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,body,url'],
+    ['issue', 'list', '--repo', 'selected-owner/selected-repo', '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,updatedAt,body,url'],
     ['issue', 'view', '42', '--repo', 'selected-owner/selected-repo', '--json', 'state'],
   ]);
 });

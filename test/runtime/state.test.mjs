@@ -181,12 +181,15 @@ test('state save cannot follow an ancestor swapped during the write', async () =
     await fs.mkdir(join(root, 'state'));
     let swapped = false;
     const store = await createStateStore({ workRoot: root, fs: { ...fs, async mkdir(...args) {
-      const result = await fs.mkdir(...args);
+      let result;
+      let error;
+      try { result = await fs.mkdir(...args); } catch (err) { error = err; }
       if (!swapped) {
         swapped = true;
         await fs.rename(join(root, 'state'), join(root, 'moved'));
         await fs.symlink(outside, join(root, 'state'));
       }
+      if (error) throw error;
       return result;
     } } });
     await store.save({ id: '1' }).catch(() => {});

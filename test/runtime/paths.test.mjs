@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createConfinement, assertSafeId, PathEscapeError } from '../../runtime/lib/paths.mjs';
 
@@ -24,6 +25,67 @@ test('paths inside the root resolve, including ones that do not exist yet', asyn
     assert.equal(await c.resolve('state', 'a.json'), join(root, 'state', 'a.json'));
     assert.equal(await c.resolve('a/b/../c'), join(root, 'a', 'c'));
   } finally { await cleanup(); }
+});
+
+test('withParent writes inside the work root', async () => {
+  const { root, cleanup } = await setup();
+  try {
+    const c = await createConfinement(root);
+    const contents = await c.withParent('state/nested.json', async (dir, name) => {
+      await writeFile(`${dir}/${name}`, 'portable');
+      return fs.readFile(`${dir}/${name}`, 'utf8');
+    }, { create: true });
+    assert.equal(contents, 'portable');
+    assert.equal(await fs.realpath(join(root, 'state', 'nested.json')), join(await fs.realpath(root), 'state', 'nested.json'));
+  } finally { await cleanup(); }
+});
+
+test('Darwin uses a real directory path for pathname operations', async () => {
+  const { root, cleanup } = await setup();
+  try {
+    const script = `
+      import assert from 'node:assert/strict';
+      import { realpath, writeFile } from 'node:fs/promises';
+      import { createConfinement } from './runtime/lib/paths.mjs';
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      const c = await createConfinement(process.argv[1]);
+      await c.withParent('state/file', async (dir, name) => {
+        assert.equal(dir, await realpath(dir));
+        await writeFile(dir + '/' + name, 'ok');
+      }, { create: true });
+    `;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, root], { cwd: process.cwd(), encoding: 'utf8' });
+    assert.equal(child.status, 0, child.stderr);
+  } finally { await cleanup(); }
+});
+
+test('withParent promptly rejects creation beneath a deleted pinned parent', async () => {
+  const base = await mkdtemp(join(process.cwd(), '.rt-paths-'));
+  const root = join(base, 'root');
+  try {
+    await mkdir(root);
+    const script = `
+      import assert from 'node:assert/strict';
+      import { mkdir, rm } from 'node:fs/promises';
+      import { createConfinement } from './runtime/lib/paths.mjs';
+      const root = process.argv[1];
+      const c = await createConfinement(root);
+      await c.withParent('control/file', async (dir, name) => {
+        await (await import('node:fs/promises')).writeFile(dir + '/' + name, 'ok');
+      }, { create: true });
+      await assert.rejects(c.withParent('state/file', () => {
+        throw new Error('callback must not run');
+      }, { create: true, fs: { mkdir: async (...args) => {
+        await rm(root, { recursive: true });
+        return mkdir(...args);
+      } } }), { code: 'ENOENT' });
+    `;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, root], {
+      cwd: process.cwd(), encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL',
+    });
+    assert.equal(child.error?.code, undefined, `child failed or timed out: ${child.error}`);
+    assert.equal(child.status, 0, child.stderr);
+  } finally { await rm(base, { recursive: true, force: true }); }
 });
 
 test('retries when an entry is created between realpath and lstat', async (t) => {
