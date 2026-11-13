@@ -231,11 +231,13 @@ export async function runQueue({
       return await retainUnknownMerge(record, `pull request #${record.pr} could not be read: ${err?.message ?? err}`, signal);
     }
     if (!(live.state === 'merged' || live.merged === true)) {
-      if (!['open', 'closed'].includes(live.state)) {
+      // Only an explicit known-unmerged state clears the hold: a provider built to the documented field set
+      // reports `closed` for a merged pull request, so `closed` alone is ambiguous and must keep the hold.
+      if (!(live.state === 'open' || (live.state === 'closed' && live.merged === false))) {
         return await retainUnknownMerge(record, `pull request #${record.pr} has an unrecognized or malformed state`, signal);
       }
-      // Still open, or closed without a merge: the squash did not land. Clearing is safe because the merge entry
-      // point revalidates every gate and the live pull request immediately before any retry.
+      // Still open, or explicitly closed without a merge: the squash did not land. Clearing is safe because the
+      // merge entry point revalidates every gate and the live pull request immediately before any retry.
       await ensureLive(signal);
       await writeMonitor(null);
       return false;
