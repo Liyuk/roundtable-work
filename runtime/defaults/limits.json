@@ -1,0 +1,9 @@
+{
+  "maxConcurrentWorkers": 8,
+  "maxDecideCallsPerIssue": 2,
+  "maxFixRoundsPerIssue": 2,
+  "maxAttemptsPerAssignment": 2,
+  "maxWakeupsPerIssue": 4,
+  "maxSessionMinutes": 25,
+  "allowAutoFollowups": false
+}
