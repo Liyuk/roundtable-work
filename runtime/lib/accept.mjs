@@ -125,6 +125,20 @@ function commitParts(text) {
   return { identities, message };
 }
 
+const RULE_PATHS = /^(?:runtime\/lib\/|runtime\/prompts\/|\.agents\/skills\/roundtable-work\/|\.roundtable\/policy\.md$)/;
+
+/** A rule patch must carry a changed test path (the reproducing test) and a Stall-Evidence citation in its PR body. */
+export function rulePatchErrors({ changedPaths = [], metadata = {}, commitMessages = [] } = {}) {
+  const trailer = commitMessages.some((message) => message.split('\n').some((line) => line.startsWith('Rule-Patch:')));
+  const rulePatch = metadata.rulePatch === true || trailer
+    || (changedPaths.length > 0 && changedPaths.every((path) => RULE_PATHS.test(path)));
+  if (!rulePatch) return [];
+  const errors = [];
+  if (!changedPaths.some((path) => TEST_PATH.test(path))) errors.push({ rule: 'rule_patch:test_missing', path: '<diff>', line: 0 });
+  if (!(typeof metadata.prBody === 'string' && /Stall-Evidence:\s*\S+/.test(metadata.prBody))) errors.push({ rule: 'rule_patch:no_citation', path: '<diff>', line: 0 });
+  return errors;
+}
+
 const lineOf = (location, value, offset) => location.line
   || (typeof value === 'string' ? value.slice(0, offset).split('\n').length : 0);
 
@@ -196,11 +210,13 @@ export async function runGate0(options = {}) {
       const baseText = baseBuf ? decode(baseBuf) ?? '' : '';
       for (const line of addedLines(baseText, decode(headBuf) ?? '')) push(record.path, line.line, line.text, { realPath: record.path });
     }
+    const commitMessages = [];
     const commits = ((await gitText(root, ['rev-list', '--reverse', `${base}..${head}`], { timeoutMs })) ?? '')
       .split('\n').filter(Boolean);
     for (const sha of commits) {
       const parts = commitParts((await git(root, ['cat-file', 'commit', sha], { timeoutMs })).toString('utf8'));
       push('<commit>', 0, parts.message);
+      commitMessages.push(parts.message);
       for (const identity of parts.identities) push('<commit>', 0, identity);
     }
     for (const value of [metadata.prTitle, metadata.prBody, metadata.branch,
@@ -224,6 +240,9 @@ export async function runGate0(options = {}) {
     }
     for (const error of policy.errors) {
       fail(error.rule, flagged.has(error.path) ? '<redacted>' : error.path, BLOCK_POLICY.has(error.rule));
+    }
+    for (const error of rulePatchErrors({ changedPaths: records.map((record) => record.path), metadata, commitMessages })) {
+      fail(error.rule, error.path, false);
     }
 
     if (errors.length === 0) {
