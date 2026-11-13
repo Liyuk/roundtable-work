@@ -142,11 +142,42 @@ export function formatStatus(snapshot) {
   return Object.entries(snapshot).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n');
 }
 
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+const display = (value) => value == null ? 'Unknown' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+const list = (values, render) => Array.isArray(values) && values.length ? `<ul>${values.map((value) => `<li>${render(value)}</li>`).join('')}</ul>` : '<p>None</p>';
+
+/** Render a snapshot as a self-contained, read-only HTML document. */
+export function renderStatusHtml(snapshot) {
+  const field = (name, value) => `<dt>${escapeHtml(name)}</dt><dd>${escapeHtml(display(value))}</dd>`;
+  const issues = list(snapshot.issues, (issue) => `<strong>#${escapeHtml(issue.id)} ${escapeHtml(issue.title ?? '')}</strong><dl>${[
+    field('Labels', issue.metadata?.labels?.join(', ')), field('Status', issue.status), field('Stage', issue.stage),
+    field('Updated', issue.updatedAt), field('Heartbeat live', issue.heartbeatLive), field('Linked pull requests', issue.pr),
+    field('Gate', issue.gates?.gate), field('Review', issue.gates?.review), field('Cross-check', issue.gates?.xCheck),
+    field('Waiting', issue.waiting), field('Budget', issue.budgets),
+  ].join('')}</dl>`);
+  const active = snapshot.active?.issue
+    ? `Issue #${escapeHtml(snapshot.active.issue)}`
+    : snapshot.active?.idle === true ? 'Idle' : 'Unknown';
+  const quota = snapshot.quotaWait == null ? '' : `<section><h2>Quota wait</h2><p>${escapeHtml(display(snapshot.quotaWait))}</p></section>`;
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Read-only status snapshot</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:60rem;margin:auto;padding:1rem;color:#17212b}header,section{border-bottom:1px solid #ccd3da;padding:.75rem 0}header{font-weight:700}h1{font-size:1.6rem}h2{font-size:1.2rem}dl{display:grid;grid-template-columns:minmax(8rem,1fr) 2fr;gap:.25rem .75rem}dd{margin:0;overflow-wrap:anywhere}ul{padding-left:1.25rem}li{margin:.6rem 0}section.overview{order:-1}@media(max-width:35rem){body{padding:.75rem}dl{grid-template-columns:1fr}dd{margin-bottom:.4rem}}</style></head><body>
+<header>This is a read-only snapshot, not a live console.</header><main><h1>Status snapshot</h1>
+<section class="overview"><h2>Overview</h2><dl>${field('Snapshot time (UTC)', snapshot.generatedAt)}${field('Queue length', snapshot.queue?.count)}${field('In flight', active)}${field('Blockers', snapshot.blockerCount)}${field('Quota wait active', snapshot.quotaWait == null ? 'Inactive' : 'Active')}${field('Remote', snapshot.remote?.status)}${field('Local snapshot', snapshot.local?.status)}</dl></section>
+<section><h2>Blockers and waiting</h2>${list(snapshot.blockers, (item) => `Issue #${escapeHtml(item.id)} · ${escapeHtml(item.status)} · ${escapeHtml(display(item.waiting))}`)}</section>
+<section><h2>Queue</h2>${list(snapshot.queue?.issueIds, (id) => `Issue #${escapeHtml(id)}`)}</section>
+<section><h2>In-flight details</h2><p>${escapeHtml(active)}</p>${list(snapshot.active?.issueIds, (id) => `Issue #${escapeHtml(id)}`)}</section>
+<section><h2>Gate conclusions</h2>${list(snapshot.issues, (issue) => `Issue #${escapeHtml(issue.id)}: ${escapeHtml(display(issue.gates))}`)}</section>
+${quota}<section><h2>Recent merges</h2>${list(snapshot.recentMerges, (merge) => `PR #${escapeHtml(merge.number)} · ${escapeHtml(merge.title)} · ${escapeHtml(merge.mergedAt)}`)}</section>
+<section><h2>Per-issue details and budget</h2>${issues}</section></main></body></html>`;
+}
+
 export async function runStatus({ argv = [], cwd = process.cwd(), sources, now } = {}) {
   const { parseArgs } = await import('node:util');
   const { values } = parseArgs({ args: argv, options: {
-    json: { type: 'boolean' }, 'work-root': { type: 'string' }, queue: { type: 'string' }, repo: { type: 'string' }, providers: { type: 'string' },
+    json: { type: 'boolean' }, html: { type: 'boolean' }, output: { type: 'string', short: 'o' }, 'work-root': { type: 'string' }, queue: { type: 'string' }, repo: { type: 'string' }, providers: { type: 'string' },
   } });
+  if (values.html && !values.output) throw new Error('status --html requires -o FILE');
   let selectedSources = sources;
   if (!selectedSources && values.providers) {
     const { pathToFileURL } = await import('node:url');
@@ -176,5 +207,5 @@ export async function runStatus({ argv = [], cwd = process.cwd(), sources, now }
     };
   }
   const snapshot = await collectStatus({ workRoot: values['work-root'] ?? cwd, sources: selectedSources, now, budgets: RUNTIME_DEFAULTS, heartbeatTimeoutMs: RUNTIME_DEFAULTS.heartbeatTimeoutMs });
-  return { snapshot, output: values.json ? JSON.stringify(snapshot, null, 2) : formatStatus(snapshot) };
+  return { snapshot, output: values.html ? renderStatusHtml(snapshot) : values.json ? JSON.stringify(snapshot, null, 2) : formatStatus(snapshot), outputPath: values.html ? values.output : null };
 }
