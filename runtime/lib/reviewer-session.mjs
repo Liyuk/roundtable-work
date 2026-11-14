@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { parseVerdict } from '../../lib/verdict.mjs';
+import { childEnv } from './agent-adapter.mjs';
 
 // First-line verdict contract: `审查结论：通过 | 打回 | 阻塞`. Anything else is blocked.
 const VERDICT_LINE = /^审查结论[：:]\s*(\S+)\s*$/;
@@ -27,7 +28,7 @@ export function runSeparateReviewer({ head, gate0Summary, model, env = process.e
   const [file, ...args] = (env.RT_REVIEWER_COMMAND ?? 'pi -p').trim().split(/\s+/);
   const prompt = buildReviewerPrompt({ head, gate0Summary });
   return new Promise((resolve, reject) => {
-    const child = execFile(file, [...args, ...(model ? ['--model', model] : []), prompt], { env }, (error, stdout) => {
+    const child = execFile(file, [...args, ...(model ? ['--model', model] : []), prompt], { env: childEnv(env) }, (error, stdout) => {
       if (error?.code === 'ENOENT') return reject(Object.assign(error, { code: 'REVIEWER_UNAVAILABLE' }));
       resolve({ status: statusOf(stdout), head, independent: true, pid: child.pid, exitCode: child.exitCode, rationale: stdout.split('\n').slice(1).join('\n').trim() });
     });
