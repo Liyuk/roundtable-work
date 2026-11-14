@@ -30,6 +30,16 @@ What gets installed:
 
 To install for only one harness, use `--harness claude` or `--harness codex`; to upgrade, add `--update`. `.roundtable/` may contain project-private information, and whether to commit it is up to you.
 
+### Ephemeral load (no install in the target)
+
+To run against a repository that has not installed Roundtable Work, load it into a temp dir for one command:
+
+```bash
+node scripts/ephemeral.mjs --target /path/to/repo -- sh -c 'ls "$RT_HOME/.roundtable"'
+```
+
+The command runs in the target with `RT_HOME` pointing at a temp dir holding the skill, `runtime/`, `scripts/`, and the default `.roundtable/` config and state. The temp dir is removed when the command exits, including on failure. The target gets no install files or `install.json`; only git worktree metadata from the command is pruned afterwards. The temp dir must be outside the target. Runtime rule files are still read from the repo root you pass to `rtd`.
+
 Then start the harness in the workspace:
 
 - **Claude Code**: run `claude` in the workspace and confirm that `roundtable-work` is in the skill list. Then say "Use roundtable-work to drive this: <goal and acceptance>". The Chief will use the `Agent` tool to assign work to the `rt-*` subagents and use another subagent for independent review.
