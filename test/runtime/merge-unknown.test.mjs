@@ -10,6 +10,7 @@ import { runQueue, clearMainPause, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../run
 import { createProductionAdapter } from '../../runtime/lib/production.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { acquireLock } from '../../runtime/lib/lock.mjs';
+const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 const tmp = () => mkdtemp(join(process.cwd(), 'rt119-'));
 // Lock records live in the private anchor, never in the work root: keep the host's real anchor untouched.
@@ -44,7 +45,7 @@ function providers(overrides = {}) {
         ? { pr: 91, head: 'reverthead', tree: 'reverttree', highRisk: false, changedFiles: ['x'] }
         : { pr: 90, head: 'head', tree: 'tree', highRisk: false, changedFiles: ['x'] };
     }, ...overrides.context },
-    gates: { async gate0() { return true; }, async reviewer({ head }) { return { passed: true, head }; }, async crossCheck() { return true; }, ...overrides.gates },
+    gates: { async gate0() { return true; }, async reviewer({ head }) { return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; }, ...overrides.gates },
     observation: {
       expectedSha: ({ expectedSha }) => expectedSha ?? OBSERVED_SHA,
       issue: { async get() { return { state: 'open', labels: ['rt:running'] }; } },

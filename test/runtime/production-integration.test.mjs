@@ -16,6 +16,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runQueue } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
+const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 const BASE_SHA = 'a'.repeat(40);
 const REVERT_SHA = 'b'.repeat(40);
@@ -44,7 +45,7 @@ test('an in-flight recovery effect stays paused and requests human intervention 
     git: { async createRevert() { calls.push('revert'); return { sha: '1234567' }; } },
     observation: observationProvider(),
     context: { async get() { throw new Error('recovery must not proceed'); } },
-    gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'head' }; }, async crossCheck() { return true; } },
+    gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'head', rationale: RATIONALE }; }, async crossCheck() { return true; } },
   });
   try {
     const store = await createStateStore({ workRoot: root });
@@ -209,7 +210,7 @@ test('production adapter triggers recovery after red main and holds later work',
   const providers = {
     github, git: { async createRevert() { calls.push('revert'); return { sha: '1234567' }; } },
     context: { async get({ recovery }) { return recovery ? { pr: 91, head: REVERT_SHA, tree: 'reverttree', highRisk: false, changedFiles: ['x'] } : { pr: 90, head: BASE_SHA, tree: 'tree', highRisk: false, changedFiles: ['x'] }; } },
-    gates: { async gate0() { calls.push('gate0'); return true; }, async reviewer({ head }) { calls.push('reviewer'); return { passed: true, head }; }, async crossCheck() { return true; } },
+    gates: { async gate0() { calls.push('gate0'); return true; }, async reviewer({ head }) { calls.push('reviewer'); return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
     observation: observationProvider(),
   };
   const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
@@ -238,10 +239,11 @@ async function cliFixture(root, status, revertGreen = true) {
   await writeFile(join(root, 'handler.mjs'), `export default async ({phase}) => ({exitCode:0, output:phase === 'reviewing' ? '审查结论：通过' : 'ok'});`);
   await writeFile(join(root, 'providers.mjs'), `
 import { appendFile } from 'node:fs/promises';
+const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 const log = async (...v) => appendFile(${JSON.stringify(log)}, JSON.stringify(v)+'\\n');
 export default {
  context: { async get({recovery}) { return recovery ? {pr:91,head:'${REVERT_SHA}',tree:'reverttree',highRisk:false,changedFiles:['x']} : {pr:90,head:'${BASE_SHA}',tree:'tree',highRisk:false,changedFiles:['x']}; } },
- gates: { async gate0() { await log('gate0'); return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head}; }, async crossCheck() { return true; } },
+ gates: { async gate0() { await log('gate0'); return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head,rationale:RATIONALE}; }, async crossCheck() { return true; } },
  git: { async createRevert() { await log('revert'); return {sha:'1234567'}; } },
  github: {
   async getPullRequest(pr) { return {state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
@@ -342,7 +344,7 @@ test('pending main and failed revert gate hold tracker claims across passes', as
   const autoMerge = createProductionAdapter({ pause, github,
     git: { async createRevert() { return { sha: '1234567' }; } },
     context: { async get({ recovery }) { return { pr: recovery ? 91 : 90, head: recovery ? REVERT_SHA : BASE_SHA, tree: 'tree', highRisk: false, changedFiles: ['x'] }; } },
-    gates: { async gate0({ issue }) { return issue === '53' || gatePass; }, async reviewer({ head }) { return { passed: true, head }; }, async crossCheck() { return true; } },
+    gates: { async gate0({ issue }) { return issue === '53' || gatePass; }, async reviewer({ head }) { return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
     observation: observationProvider(),
   });
   const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });

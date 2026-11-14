@@ -1,5 +1,6 @@
 import { assertSafeId } from './paths.mjs';
 import { safetyFiles } from './safety.mjs';
+import { gate2Triggers } from './gate2-triggers.mjs';
 
 const PASS = (result) => result === true || result?.passed === true || result?.status === 'pass';
 const UNAVAILABLE = (error) => error?.code === 'REVIEWER_UNAVAILABLE' || error?.unavailable === true;
@@ -33,7 +34,7 @@ export function createGateStateStore({ load, save }) {
  *   red and fails closed as before.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
-export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, github, models = {}, routing, modelRouter }) {
+export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, github, models = {}, routing, modelRouter, escalation }) {
   const id = assertSafeId(issue);
   if (![head, tree].every((v) => typeof v === 'string' && v.length)) throw new TypeError('head and tree are required');
   required(gates, 'gates'); required(ci, 'ci'); required(merge, 'merge'); required(state, 'state'); required(github, 'github');
@@ -45,13 +46,15 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   if (record && (record.issue !== id || record.head !== head || record.tree !== tree)) record = null;
   const passed = new Set(record?.passed ?? []);
   let ciReruns = record?.ciReruns ?? 0;
+  // Gate 2 triggers are recorded with the gate; a resumed record without them is treated as requiring Gate 2 (rationale unknown).
+  let gate2Reasons = record?.gate2Reasons ?? gate2Triggers({ changedFiles });
   // The gated safety set is written on every persist so the merge entry point can compare it with the
   // live pull request. Approval is only proven once the escalation check has passed, which happens
   // before the `ci` persist; earlier persists keep it explicitly false.
   const gatedSafetyFiles = safetyFiles(changedFiles);
   const persist = async (gate) => {
     if (gate) passed.add(gate);
-    record = { issue: id, head, tree, passed: [...passed], ciReruns, safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
+    record = { issue: id, head, tree, passed: [...passed], ciReruns, gate2Reasons, safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
     await state.put(id, record);
   };
   // `hold` separates a resumable wait from a genuine failure; see the runGates contract above. Default is
@@ -82,15 +85,22 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
       await github.addLabel(pr, 'rt:ready-to-merge');
       return failed('gate1', 'Reviewer unavailable after one retry; labeled rt:ready-to-merge', true);
     }
+    gate2Reasons = gate2Triggers({ changedFiles, gate1: result });
     await persist('gate1');
   }
-  if (highRisk && !passed.has('gate2')) {
+  if ((highRisk || gate2Reasons.length > 0) && !passed.has('gate2')) {
     if (typeof gates.crossCheck !== 'function') return failed('gate2', 'High-risk diff has no cross-check implementation');
     if (!crossCheckModel) return failed('gate2', 'High-risk diff has no configured cross-check model');
     let result;
     try { result = await gates.crossCheck({ issue: id, head, tree, model: crossCheckModel, ...(routing && { routing, role: routing.facts.roles.crosscheck }), changedFiles }); }
     catch (error) { return failed('gate2', error.message, true); }
-    if (!PASS(result)) return failed('gate2', result?.reason ?? 'Cross-check failed');
+    if (!PASS(result)) {
+      const reason = result?.reason ?? 'Cross-check failed';
+      // Gate 1 passed but Gate 2 disagrees: hand the disagreement to the escalation adapter, never back to the developer.
+      if (typeof escalation !== 'function') return failed('gate2', reason);
+      await escalation({ issue: id, head, tree, model: modelRouter?.('escalation'), disagreement: { gate1: 'pass', gate2: 'fail', reason } });
+      return { ...await failed('gate2', reason), escalated: true };
+    }
     await persist('gate2');
   }
   if (gatedSafetyFiles.length) {

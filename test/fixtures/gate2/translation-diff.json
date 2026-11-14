@@ -1,0 +1,4 @@
+{
+  "changedFiles": ["locales/zh/app.po"],
+  "gate1": { "passed": true, "rationale": "Checked every translated string against the English source and the glossary; no mistranslation or missing plural form found." }
+}

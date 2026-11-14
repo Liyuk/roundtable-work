@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { runQueue } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { observeAndCheckTransition } from '../../runtime/lib/observe.mjs';
+const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 const sha = 'a'.repeat(40);
 function clients(overrides = {}) {
@@ -116,7 +117,7 @@ test('production merge is held before squash when the observed SHA differs', asy
     const autoMerge = {
       production: true, observationClients: c,
       async context() { return { pr: 1, head: sha, tree: 'tree', highRisk: false, changedFiles: [] }; },
-      gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: sha }; }, async crossCheck() { return true; } },
+      gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: sha, rationale: RATIONALE }; }, async crossCheck() { return true; } },
       github, git: { async createRevert() {} },
     };
     const result = await runQueue({ workRoot: root, queue: ['109'], autoMerge, observationClients: c,
@@ -141,7 +142,7 @@ test('the merge call head cannot replace the immutable transition target', async
     const autoMerge = {
       production: true, observationClients: c,
       async context() { return { pr: 1, head: other, tree: 'tree', highRisk: false, changedFiles: [] }; },
-      gates: { async gate0() { head = other; return true; }, async reviewer() { return { passed: true, head: other }; }, async crossCheck() { return true; } },
+      gates: { async gate0() { head = other; return true; }, async reviewer() { return { passed: true, head: other, rationale: RATIONALE }; }, async crossCheck() { return true; } },
       github: {
         async getPullRequest() { return { state: 'open', head: other, mergeable: true, files: [] }; },
         async requiredGreen() { return true; }, async squashMerge() { squashes++; return { mergeCommit: other }; },
@@ -209,7 +210,7 @@ test('finalizing runs gates before requiring current-head evidence and refuses s
       const autoMerge = {
         observationClients: c,
         async context() { return { pr: 1, head: sha, tree: 'tree', highRisk: false, changedFiles: [] }; },
-        gates: { async gate0() { gatesRan = true; return true; }, async reviewer() { return { passed: true, head: sha }; } },
+        gates: { async gate0() { gatesRan = true; return true; }, async reviewer() { return { passed: true, head: sha, rationale: RATIONALE }; } },
         github: {
           async requiredGreen() { return true; }, async getPullRequest() { return { state: 'open', head: sha, mergeable: true, files: [] }; },
           async squashMerge() { squashes++; return { mergeCommit: sha }; },

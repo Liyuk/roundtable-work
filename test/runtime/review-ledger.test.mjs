@@ -120,3 +120,20 @@ test('non-blocking findings post one PR comment and no issues unless the switch 
   await reportReviewFindings({ github, pr: 12, findings, config: { createFollowupIssues: true } });
   assert.deepEqual(calls.map(call => call[0]), ['createComment', 'createIssue', 'createIssue']);
 });
+
+test('an owner waiver suppresses only the blocking finding with that id and keeps evidence rules', () => {
+  const call = (findings, waivers) => validateReviewLedger({ ...ledger(findings), ...(waivers && { waivers }) }, { currentHeadSha: sha(4), frozen: freeze });
+  const owner = [{ id: 'F1', ownerComment: 'https://github.com/example/repo/pull/1#issuecomment-9' }];
+  assert.equal(call([finding('F1'), fixed('F2')], owner).verdict, '审查结论：通过');
+  assert.equal(call([finding('F1'), finding('F2')], owner).verdict, '审查结论：打回');
+  assert.equal(call([fixed('F1'), finding('F2')], owner).verdict, '审查结论：打回');
+  assert.throws(() => call([{ ...finding('F1'), evidence: '' }, fixed('F2')], owner), /evidence/);
+  assert.throws(() => call([finding('F1'), fixed('F2')], [{ id: 'F1', ownerComment: ' ' }]), /waivers/);
+  assert.throws(() => call([finding('F1'), fixed('F2')], [{ id: 'F1' }]), /waivers/);
+});
+
+test('without an owner waiver the blocking finding still rejects the review', () => {
+  const call = findings => validateReviewLedger(ledger(findings), { currentHeadSha: sha(4), frozen: freeze });
+  assert.equal(call([finding('F1'), fixed('F2')]).verdict, '审查结论：打回');
+  assert.equal(validateReviewLedger(ledger([finding('F1'), fixed('F2')]), { currentHeadSha: sha(4), frozen: freeze }).verdict, '审查结论：打回');
+});
