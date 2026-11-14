@@ -34,12 +34,18 @@ test('rejects syntactically valid but unknown model identifiers', () => {
   assert.throws(() => createModelRouter({ ...env, RT_ALLOWED_MODELS: 'not a model' }), /RT_ALLOWED_MODELS/);
 });
 
-test('accepts the current deployment models without extra configuration', () => {
+test('routes deployment models only when they are explicitly allowed', () => {
   const route = createModelRouter({ RT_MODEL: 'gpt-6-luna', RT_REVIEWER_MODEL: 'deepseek-v4-pro',
-    RT_DECIDER_MODEL: 'gpt-6.1-terra', RT_CROSSCHECK_MODEL: 'gpt-6.1-terra' });
+    RT_DECIDER_MODEL: 'gpt-6.1-terra', RT_CROSSCHECK_MODEL: 'gpt-6.1-terra',
+    RT_ALLOWED_MODELS: 'gpt-6-luna,deepseek-v4-pro,gpt-6.1-terra' });
   assert.equal(route('chief'), 'gpt-6-luna');
   assert.equal(route('review'), 'deepseek-v4-pro');
   assert.equal(route('escalation'), 'gpt-6.1-terra');
+});
+
+test('has no default allowed models: routing without RT_ALLOWED_MODELS is rejected', () => {
+  const models = { RT_MODEL: 'gpt-6-luna', RT_REVIEWER_MODEL: 'gpt-6-luna', RT_DECIDER_MODEL: 'gpt-6-luna', RT_CROSSCHECK_MODEL: 'gpt-6-luna' };
+  assert.throws(() => createModelRouter(models), /RT_ALLOWED_MODELS/);
 });
 
 test('rejects unknown work types instead of silently selecting a route', () => {
