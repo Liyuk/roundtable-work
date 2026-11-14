@@ -1,4 +1,4 @@
-import { mkdir, lstat } from 'node:fs/promises';
+import { mkdir, lstat, realpath } from 'node:fs/promises';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
@@ -20,6 +20,9 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
     return confinement.resolve('worktrees', id);
   };
 
+  // `git worktree list` reports resolved (symlink-free) paths; compare against the resolved form of the worktrees root.
+  const realPathFor = async (id) => join(await realpath(worktrees), id);
+
   async function list() {
     const { stdout } = await execFile('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], { maxBuffer: 1024 * 1024 });
     return stdout.split(/\r?\n/).filter((line) => line.startsWith('worktree ')).map((line) => line.slice(9));
@@ -30,7 +33,7 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
     const path = await pathFor(id);
     const branch = `rt/${id}-pi`;
     const existing = await list();
-    if (existing.includes(path)) {
+    if (existing.includes(await realPathFor(id))) {
       const { stdout } = await execFile('git', ['-C', path, 'branch', '--show-current'], { maxBuffer: 1024 * 1024 });
       const checkedOutBranch = stdout.trim();
       if (checkedOutBranch !== branch) {
@@ -69,7 +72,7 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
     const id = assertSafeId(rawId);
     const path = await pathFor(id);
     const worktreesForRepo = await list();
-    const liveWorktree = worktreesForRepo.includes(path) && (await lstat(path).then((s) => s.isDirectory(), () => false));
+    const liveWorktree = worktreesForRepo.includes(await realPathFor(id)) && (await lstat(path).then((s) => s.isDirectory(), () => false));
     const lock = await acquire(rawId, `probe-${process.pid}-${id}`);
     if (lock.acquired) { await lock.release().catch(() => false); return { id, liveWorktree, heldLock: false }; }
     return { id, liveWorktree, heldLock: true, holder: lock.holder };
