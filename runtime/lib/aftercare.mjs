@@ -113,6 +113,9 @@ export function createAftercareDispatcher({ actions, store }) {
         } else if (event.type === 'branch_behind') {
           const key = `base_sync:${record.headSha}:${record.baseSha}`;
           if (next.dispatched.includes(key)) continue;
+          const attempts = next.syncAttempts ?? 0;
+          if (attempts >= 3) { next.waitReason = 'base sync budget exhausted'; results.push({ type: 'wait', reason: next.waitReason }); continue; }
+          next.syncAttempts = attempts + 1;
           const result = await actions.syncBase({ headSha: record.headSha, force: false });
           if (result?.conflict || result?.requiresForcePush) {
             next.waitReason = result.conflict ? 'base sync conflict; waiting for resolution' : 'base sync requires force-push; waiting for direction';
