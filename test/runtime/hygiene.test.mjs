@@ -37,8 +37,8 @@ test('runtime code never shells out or touches the network', async () => {
   const files = await runtimeOnly();
   assert.ok(files.length >= 5);
   for (const { file, text } of files) {
-    if (file === 'runtime/lib/worktree.mjs' || file === 'runtime/lib/accept.mjs') {
-      // The worktree lifecycle and the Gate 0 composition layer are the subprocess integrations; keep them argument-based and local.
+    if (file === 'runtime/lib/worktree.mjs' || file === 'runtime/lib/accept.mjs' || file === 'runtime/lib/reviewer-session.mjs') {
+      // The worktree lifecycle, the Gate 0 composition layer and the separate-process reviewer are the subprocess integrations; keep them argument-based and local.
       assert.match(text, /node:child_process/);
       assert.match(text, /execFile/);
       assert.doesNotMatch(text, /\bexec\(/);

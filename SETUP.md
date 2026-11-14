@@ -33,6 +33,23 @@ Open the harness in the workspace and have the agent run "Use roundtable-work to
 2. Ask only the questions that are missing and affect authorization or acceptance: the workspace and long-term goal, which actions need no confirmation and which need confirmation, roles, budget, and whether to enable external events or timers.
 3. Edit `.roundtable/team.md` and `policy.md`; for existing settings, show the diff before changing them. Do not ask for credentials in the conversation, and by default do not automatically merge, deploy, or send messages externally.
 
+### Model and reviewer environment keys
+
+Routing reads these keys (`runtime/lib/routing.mjs`, `ROUTE_ENV`). `RT_ALLOWED_MODELS` is required: there are no built-in default models, so the deployment must list every approved model ID (comma-separated).
+
+| Key | Used for |
+| --- | --- |
+| `RT_ALLOWED_MODELS` | Approved model IDs; required, no default |
+| `RT_MODEL` | Default for chief, developer, verification (fallback for their specific keys) |
+| `RT_CHIEF_MODEL` / `RT_DEVELOPER_MODEL` / `RT_VERIFICATION_MODEL` | Per-role overrides of `RT_MODEL` |
+| `RT_REVIEWER_MODEL` | Reviewer / Gate 1 (falls back to `RT_MODEL`) |
+| `RT_CROSSCHECK_MODEL` | Gate 2 cross-check (no fallback) |
+| `RT_DECIDER_MODEL` | Escalation / decider (no fallback); the issue's `RT_ESCALATE_MODEL` maps to this key |
+| `RT_DECIDE_MAX` | Escalation attempt budget (default 2) |
+| `RT_REVIEWER_COMMAND` | Command for the independent reviewer process (default `pi -p`), see `runtime/lib/reviewer-session.mjs` |
+
+An independent Gate 1 review runs the reviewer as a separate OS process. A single-session review (`reviewInSession`) returns `independent: false` and never counts as a Gate 1 pass.
+
 ## 3. Choosing a deployment form
 
 1. **In-harness setup** (default): the harness provides sessions, delegation, and notifications; Roundtable Work provides roles, rules, and templates; the harness is the sole scheduling authority.
