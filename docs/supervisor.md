@@ -83,6 +83,8 @@ The daemon and the supervisor run as separate OS users, each with its own token.
 
 [rt-supervisor.service](../deploy/systemd/rt-supervisor.service) is a `Type=oneshot` template that runs the observe-mode entrypoint. It is a template only: it is not enabled, installed, or referenced by any script. Before installing, replace every `<placeholder>` (`<supervisor-user>`, `<workspace>`, `<env-file>`). The unit contains no host paths, addresses or secrets.
 
+The daemon has a matching template, [rtd.service](../deploy/systemd/rtd.service) (`Type=simple`, `Restart=on-failure`, its own `<daemon-user>`, same `<env-file>` convention). It is also template only, has no `[Install]` section, and is not enabled or installed.
+
 ## Grok Bot heartbeat liveness
 
 The Grok Bot routine checks liveness from the heartbeat only: whether `writtenAt` is recent and `daemon.state` is `running`. It does not supervise, act on, or decide anything about the daemon.

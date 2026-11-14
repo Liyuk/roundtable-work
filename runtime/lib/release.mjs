@@ -1,4 +1,4 @@
-import { lstat, realpath, stat } from 'node:fs/promises';
+import { lstat, realpath, rename, stat, symlink } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 
 export class ReleaseError extends Error {
@@ -25,4 +25,21 @@ export async function resolveCurrentRelease(baseDir) {
   if (!SHA.test(sha)) fail('current points outside releases or names a malformed sha');
   if (!(await stat(target)).isDirectory()) fail('current release is not a directory');
   return { sha, path: target };
+}
+
+/** Fail unless `<baseDir>/current` is absent or already a symlink. */
+export async function assertCurrentReplaceable(baseDir) {
+  const existing = await lstat(join(resolve(baseDir), 'current')).catch(() => null);
+  if (existing && !existing.isSymbolicLink()) fail('current exists and is not a symlink');
+}
+
+/** Atomically point `<baseDir>/current` at `releases/<sha>` and validate it. */
+export async function replaceCurrentLink(baseDir, sha) {
+  const base = resolve(baseDir);
+  await assertCurrentReplaceable(base);
+  const current = join(base, 'current');
+  const tmp = join(base, `current.tmp-${process.pid}`);
+  await symlink(join(base, 'releases', sha), tmp);
+  await rename(tmp, current);
+  return resolveCurrentRelease(base);
 }

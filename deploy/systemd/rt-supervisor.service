@@ -1,6 +1,6 @@
 # TEMPLATE ONLY. Not enabled, not installed, and not referenced by any script.
 # Before installing, replace every <placeholder> with a value for your host and keep secrets
-# (tokens) in the env file only, never in this unit. See docs/supervisor.md.
+# (credentials) in the env file only, never in this unit. See docs/supervisor.md.
 [Unit]
 Description=Roundtable Work supervisor (observe-only oneshot)
 
