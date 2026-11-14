@@ -6,7 +6,7 @@ import { gate2Triggers } from './gate2-triggers.mjs';
 const PASS = (result) => result?.independent !== false && (result === true || result?.passed === true || result?.status === 'pass');
 const UNAVAILABLE = (error) => error?.code === 'REVIEWER_UNAVAILABLE' || error?.unavailable === true;
 const required = (value, name) => { if (!value || typeof value !== 'object') throw new TypeError(`${name} is required`); return value; };
-/** How many cancelled-only CI re-runs one issue+head may request before a cancelled answer fails closed. */
+/** How many cancelled-only CI re-runs one issue may request before a cancelled answer fails closed. */
 const MAX_CI_RERUNS = 2;
 /** How many attempts a recorded-approval read gets before the gate holds for a later pass. */
 const MAX_APPROVAL_READS = 3;
@@ -33,7 +33,7 @@ export function createGateStateStore({ load, save }) {
  *   Required CI is a hold while the provider reports `status: 'pending'`; red CI, or a not-green answer
  *   without an explicit pending status, is a genuine failure that escalates instead of waiting. A cancelled-only
  *   answer is also a hold while an optional `ci.rerunCancelled(pr)` capability exists and the persisted budget
- *   (`MAX_CI_RERUNS` per issue+head, stored as `ciReruns` on the gate record) is not used up; otherwise it is
+ *   (`MAX_CI_RERUNS` per issue, stored as `ciReruns` on the gate record) is not used up; otherwise it is
  *   red and fails closed as before.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
@@ -45,10 +45,11 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   for (const method of ['requiredGreen']) if (typeof ci[method] !== 'function') throw new TypeError(`ci.${method} is required`);
   for (const method of ['squash']) if (typeof merge[method] !== 'function') throw new TypeError(`merge.${method} is required`);
 
-  let record = await state.get(id);
+  const stored = await state.get(id);
+  let record = stored;
   if (record && (record.issue !== id || record.head !== head || record.tree !== tree)) record = null;
   const passed = new Set(record?.passed ?? []);
-  let ciReruns = record?.ciReruns ?? 0;
+  let ciReruns = stored?.issue === id ? stored.ciReruns ?? 0 : 0;
   // Gate 2 triggers are recorded with the gate; a resumed record without them is treated as requiring Gate 2 (rationale unknown).
   let gate2Reasons = record?.gate2Reasons ?? gate2Triggers({ changedFiles });
   // The gated safety set is written on every persist so the merge entry point can compare it with the
