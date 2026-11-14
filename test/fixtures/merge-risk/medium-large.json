@@ -1,0 +1,4 @@
+{
+  "facts": { "paths": ["src/app.mjs"], "changedLines": 500, "ci": "green", "reviewDisagreement": false },
+  "expected": { "label": "risk:medium", "reasons": ["large-diff"] }
+}
