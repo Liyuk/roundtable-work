@@ -82,7 +82,7 @@ test('daemon clears a stale ask pause and resumes after an owner reply', async (
     const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], now: () => Date.parse(repliedAt) + 1,
       handler: async ({ phase }) => { phases.push(phase); return handler({ phase }); } });
     assert.equal(result.outcomes[0].status, 'done');
-    assert.deepEqual(events, [['removeLabel', 15, 'rt:ask'], ['removeLabel', 15, 'rt:blocked']]);
+    assert.deepEqual(events, [['removeLabel', 15, 'rt:ready-to-merge'], ['removeLabel', 15, 'rt:ask'], ['removeLabel', 15, 'rt:blocked']]);
     assert.equal(issue.labels.includes('rt:ask'), false);
     assert.equal((await store.load('15')).pause, undefined);
     assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);

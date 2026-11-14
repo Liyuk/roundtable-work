@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, resumeDecomposition } from '../../runtime/lib/decisions.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
+import { selectIssues } from '../../runtime/lib/intake.mjs';
 import { runQueue } from './observation-fixture.mjs';
 
 // Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
@@ -174,6 +175,17 @@ test('metadata-free pause accepts an owner reply in the same tracker timestamp s
   const sameSecondReply = { id: 32, author: issue.author, createdAt: '2026-01-02T12:00:00Z', body: 'Proceed' };
   assert.equal(await resumeAfterOwnerReply({ issue, comments: [olderReply, nonOwnerReply, sameSecondReply], store, client: tracker }), true);
   assert.equal((await store.load('21')).status, 'queued');
+}));
+
+test('a stale ready label does not outrank a blocked issue: owner reply resumes it and removes rt:ready-to-merge', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const issue = { number: 12, title: 'Issue 12', state: 'OPEN', author: { login: 'owner' }, createdAt: '2025-01-01T00:00:00Z', body: 'Fixture task.', labels: [{ name: 'type:feature' }, { name: 'rt:blocked' }, { name: 'rt:ready-to-merge' }] };
+  await applyDecision({ decision: { decision: 'out-of-scope', reason: 'Outside scope' }, issue: { number: 12 }, store, client: tracker, now: () => 1 });
+  assert.deepEqual(selectIssues({ issues: [issue], owner: 'owner', includeRunning: true }).issues.map(item => item.id), ['12']);
+  const reply = { id: 99, author: { login: 'owner' }, createdAt: '2026-01-02T00:00:00Z', body: 'Proceed' };
+  assert.equal(await resumeAfterOwnerReply({ issue, comments: [reply], store, client: tracker, now: () => 2 }), true);
+  assert.equal((await store.load('12')).status, 'queued');
+  assert.deepEqual(tracker.events.slice(-3), [['removeLabel', 12, 'rt:ready-to-merge'], ['removeLabel', 12, 'rt:ask'], ['removeLabel', 12, 'rt:blocked']]);
 }));
 
 test('a second ask waits for a reply to its own comment', async () => fixture(async root => {
