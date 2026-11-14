@@ -90,3 +90,26 @@ test('defaults object is not mutated', async () => {
     assert.equal(await readFile(DEFAULTS, 'utf8'), before);
   });
 });
+
+test('priceWindows is a host-only section: validated and returned, absent yields null', async () => {
+  const priceWindows = { holidayTimeZone: 'UTC', entries: { 'pi/a': { timeZone: 'UTC', windows: [{ start: '09:00', end: '17:00' }] } } };
+  await withHost(JSON.stringify({ priceWindows }), async (hostPath) => {
+    const result = await loadLimits({ defaultsPath: DEFAULTS, hostPath });
+    assert.deepEqual(result.priceWindows, { ...priceWindows, holidays: [] });
+    assert.deepEqual(result.clamped, []);
+    assert.equal(Object.hasOwn(result.limits, 'priceWindows'), false);
+  });
+  await withHost(JSON.stringify({ maxConcurrentWorkers: 4 }), async (hostPath) => {
+    assert.equal((await loadLimits({ defaultsPath: DEFAULTS, hostPath })).priceWindows, null);
+  });
+});
+
+test('invalid priceWindows throws naming only the key path, never the value', async () => {
+  const bad = { holidayTimeZone: 'UTC', entries: { 'pi/a': { timeZone: 'UTC', windows: [{ start: SECRET, end: '17:00' }] } } };
+  await withHost(JSON.stringify({ priceWindows: bad }), async (hostPath) => {
+    const error = await loadLimits({ defaultsPath: DEFAULTS, hostPath }).then(() => null, (err) => err);
+    assert.ok(error);
+    assert.match(error.message, /entries\.pi\/a\.windows\[0\]\.start/);
+    assert.equal(error.message.includes(SECRET), false);
+  });
+});

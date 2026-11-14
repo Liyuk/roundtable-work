@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validatePriceWindows } from './price-window.mjs';
 
 const DEFAULTS_PATH = fileURLToPath(new URL('../defaults/limits.json', import.meta.url));
 const HOST_PATH = join(homedir(), '.config', 'rtd', 'limits.json');
@@ -25,7 +26,9 @@ export async function loadLimits({ defaultsPath = DEFAULTS_PATH, hostPath = HOST
   const host = await readHost(hostPath);
   const limits = { ...defaults };
   const clamped = [];
-  for (const [key, value] of Object.entries(host)) {
+  const { priceWindows: rawWindows, ...rest } = host;
+  const priceWindows = rawWindows === undefined ? null : validatePriceWindows(rawWindows);
+  for (const [key, value] of Object.entries(rest)) {
     if (!Object.hasOwn(defaults, key)) throw new Error(`Unknown host limit key: ${key}`);
     const base = defaults[key];
     if (typeof base === 'boolean') {
@@ -38,5 +41,5 @@ export async function loadLimits({ defaultsPath = DEFAULTS_PATH, hostPath = HOST
       if (value > base) clamped.push(key);
     }
   }
-  return { limits, clamped: clamped.sort() };
+  return { limits, clamped: clamped.sort(), priceWindows };
 }
