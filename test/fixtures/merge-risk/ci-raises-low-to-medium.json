@@ -1,0 +1,4 @@
+{
+  "facts": { "paths": ["docs/a.md"], "changedLines": 3, "ci": "red", "reviewDisagreement": false },
+  "expected": { "label": "risk:medium", "reasons": ["ci-not-green"] }
+}

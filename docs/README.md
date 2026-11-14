@@ -13,6 +13,7 @@ Runtime instructions are governed by the [skill directory](../.agents/skills/rou
 | Organization scaling and multi-level reporting | [08 Organization Adjustment](08-organization.md) | [10 Evolving Studio Case](10-evolving-studio.md) |
 | Prompt assembly, host gaps, engineering roadmap | [14 Prompt to Runtime](14-prompt-to-runtime.md) | [15 Single Harness First](15-single-harness-communication.md) · [Host mapping](../.agents/skills/roundtable-work/references/harnesses.md) |
 | Installation and configuration | [SETUP](../SETUP.md) | [Setup flow](../.agents/skills/roundtable-work/references/setup.md) |
+| Operating the runtime: shadow run, heartbeat, pause, rollback, proposals, merge risk, owner-only steps | [Operator guide](operator-guide.md) | [Supervisor heartbeat](supervisor.md) |
 | Skill discovery | [16 Skill Discovery](16-skill-discovery.md) | [Runtime flow](../.agents/skills/roundtable-work/references/skill-discovery.md) |
 | Evaluation and roadmap | [06 Evaluation and Roadmap](06-evaluation-and-roadmap.md) | [Practice protocol](../practice/README.md) |
 

@@ -1,0 +1,4 @@
+{
+  "facts": { "paths": ["package.json", "bin/gh", ".github/workflows/ci.yml"], "changedLines": 0, "ci": "green", "reviewDisagreement": true },
+  "expected": { "label": "risk:high", "reasons": ["safety-file:.github/workflows/ci.yml", "safety-file:bin/gh", "review-disagreement", "protocol-file:package.json"] }
+}
