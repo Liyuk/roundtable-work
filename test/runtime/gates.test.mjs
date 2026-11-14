@@ -213,6 +213,14 @@ test('cancelled-only required CI requests one re-run and holds instead of failin
   assert.equal(f.records.get('53').ciReruns, 1);
 });
 
+test('cancelled CI with a re-run capability is a hold and never a retryable fixer finding', async () => {
+  const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'cancelled' }; }, async rerunCancelled() {} } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', true]);
+  assert.equal(result.retryable, undefined);
+  assert.equal(result.retryFinding, undefined);
+});
+
 test('a real CI failure never requests a re-run and stays fail-closed', async () => {
   let reruns = 0;
   const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'failure' }; }, async rerunCancelled() { reruns++; } } });
@@ -356,4 +364,34 @@ test('no red main or unrelated main head does not cause recovery side effects', 
   const deps = { pause: { async claimsAndMerges() { invoked = true; } }, git: { async createRevert() { invoked = true; } }, github: {} };
   assert.equal((await recoverRedMain({ mergeCommit: 'abcdef0123456789', mainHead: 'other123', mainRed: true, ...deps })).status, 'no-action');
   assert.equal(invoked, false);
+});
+
+test('green main at the merge commit is a no-action with no pause or git/github side effects', async () => {
+  const calls = [];
+  const trap = (name) => async () => { calls.push(name); };
+  const result = await recoverRedMain({ mergeCommit: 'abcdef0123456789', mainHead: 'abcdef0123456789', mainRed: false,
+    pause: { claimsAndMerges: trap('pause') },
+    git: { createRevert: trap('revert') },
+    github: { openRevertPullRequest: trap('pr'), createIssue: trap('issue'), requiredGreen: trap('revert-ci') },
+    merge: { squash: trap('merge') },
+  });
+  assert.deepEqual(result, { status: 'no-action' });
+  assert.deepEqual(calls, []);
+});
+
+test('red main with a not-green revert CI pauses before revert and does not merge the revert', async () => {
+  const calls = [];
+  const result = await recoverRedMain({ mergeCommit: 'abcdef0123456789', mainHead: 'abcdef0123456789', mainRed: true,
+    pause: { async claimsAndMerges(v) { calls.push(['pause', v]); } },
+    git: { async createRevert(v) { calls.push(['revert', v.branch]); return {}; } },
+    github: {
+      async openRevertPullRequest() { calls.push(['pr']); return { number: 91, head: 'reverthead' }; },
+      async createIssue() { calls.push(['issue']); },
+      async requiredGreen(pr) { calls.push(['revert-ci', pr]); return { green: false }; },
+    },
+    merge: { async squash() { calls.push(['merge']); } },
+  });
+  assert.deepEqual(result, { status: 'revert-pending', paused: true, pr: 91, branch: 'rt/revert-abcdef0' });
+  assert.deepEqual(calls[0], ['pause', { paused: true, reason: 'main is red after auto-merge' }]);
+  assert.equal(calls.some(([name]) => name === 'merge'), false);
 });

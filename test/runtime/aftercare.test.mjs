@@ -150,6 +150,25 @@ test('a sync conflict blocks later events in this and subsequent calls', async (
  }
 });
 
+test('base sync is attempted at most three times per workspace state and never changes fix rounds', async () => {
+  let state;
+  const calls = [];
+  const dispatcher = createAftercareDispatcher({ actions: {
+    async syncBase(input) { calls.push(['sync', input]); return {}; },
+    async requestFix(input) { calls.push(['fix', input]); },
+  }, store: { async load() { return state; }, async save(value) { state = structuredClone(value); } } });
+  const config = { dispatchAftercareFixes: true, maxFixRounds: 1 };
+  for (const baseSha of ['b1', 'b2', 'b3', 'b4']) {
+    await dispatcher.handle({ config, record: { headSha: 'head-a', baseSha }, events: [{ type: 'branch_behind' }] });
+  }
+  assert.equal(calls.filter(([type]) => type === 'sync').length, 3);
+  assert.equal(state.syncAttempts, 3);
+  assert.equal(state.fixRounds, 0);
+  assert.match(state.waitReason, /base sync budget exhausted/);
+  await dispatcher.handle({ config, record: { headSha: 'head-a', baseSha: 'b4' }, events: [{ type: 'ci_failure', headSha: 'head-a' }] });
+  assert.deepEqual(calls.filter(([type]) => type === 'fix'), [['fix', { headSha: 'head-a' }]]);
+});
+
 test('new head requests a review and records ready only with evidence for that SHA', async () => {
   let state;
   const calls = [];
