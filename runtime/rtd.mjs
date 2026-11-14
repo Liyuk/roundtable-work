@@ -24,6 +24,7 @@ import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
+import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
@@ -44,7 +45,7 @@ export function exitCodeFor(result) {
 /**
  * One pass over the queue: each runnable issue gets at most one wake.
  *
- * `handler({ item, phase, stage, state, heartbeat, recordArtifacts, signal, routing })` performs one phase and returns
+ * `handler({ item, phase, stage, role, state, heartbeat, recordArtifacts, signal, routing })` performs one phase and returns
  * `{ exitCode, timedOut, output, scopeMismatch, humanBlock, artifacts, changedFiles, ruleRelated }`.
  * CLI routing supplies `facts.roles` (harness, model, tier) and rendered `prompts` to the trusted handler.
  * On a `reviewing` result, the injected handler may set `ruleRelated: true` only when its structured
@@ -128,7 +129,7 @@ export async function runQueue({
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -601,6 +602,9 @@ export async function runQueue({
         // After a lost lock nothing is written for this issue: not even beginPhase (the wake's first step and
         // the check after each handler already ran a real refresh, this only reads the shared flag).
         if (lockLost) return lost();
+        // Chosen before the phase begins: development is never handed to Chief, and a rework goes to the fixer role.
+        const role = phase === 'developing' ? implementerRole({ routing, rework: (await store.load(id)).attempts.developer > 0 }) : undefined;
+        if (role?.stop) return await finish('stop', role.stop, role.stop, 'stop');
         await store.beginPhase(id, phase);
         if (!(await refreshLock())) return lost();
         state = await store.load(id);
@@ -663,7 +667,7 @@ export async function runQueue({
         try {
           running = Promise.resolve().then(async () => {
             const routeType = { developing: 'development', testing: 'verification', reviewing: 'review', finalizing: 'chief' }[phase];
-            const result = await handler({ item, phase, stage: STAGE[phase], state, heartbeat, recordArtifacts, signal, routing,
+            const result = await handler({ item, phase, stage: STAGE[phase], role, state, heartbeat, recordArtifacts, signal, routing,
               ...(modelRouter ? { model: modelRouter(routeType) } : {}) });
             if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
             const executeMerge = async () => {
@@ -780,7 +784,8 @@ export async function runQueue({
           step.scopeMismatch = true;
         }
 
-        const verdict = classify({ ...step, stage: STAGE[phase] });
+        // A Chief-authored implementation is refused fail-closed under the default no-implementation policy.
+        const verdict = classify({ ...step, stage: STAGE[phase], scopeMismatch: step.scopeMismatch || (phase === 'developing' && chiefAuthored({ author: step.author, chiefImplements })) });
         const { class: cls, reason } = verdict;
 
         // Checked before the ok/finalize_failure branches: a gate hold is neither success nor failure. Nothing
