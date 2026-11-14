@@ -105,7 +105,6 @@ const ROUTE_ENV = Object.freeze({
   'cross-check': ['RT_CROSSCHECK_MODEL'],
 });
 const MODEL_ID = /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/;
-const DEFAULT_MODELS = ['gpt-6-luna', 'gpt-6.1-terra', 'deepseek-v4-pro'];
 
 export function escalationAttemptBudget(env = process.env) {
   const budget = env.RT_DECIDE_MAX === undefined ? 2 : Number(env.RT_DECIDE_MAX);
@@ -114,8 +113,8 @@ export function escalationAttemptBudget(env = process.env) {
 }
 
 export function createModelRouter(env = process.env) {
-  // A trusted deployment may replace the defaults with its own approved model IDs.
-  const allowed = env.RT_ALLOWED_MODELS === undefined ? DEFAULT_MODELS : env.RT_ALLOWED_MODELS.split(',').map(model => model.trim());
+  // The deployment must name its approved model IDs explicitly; there are no built-in defaults.
+  const allowed = (env.RT_ALLOWED_MODELS ?? '').split(',').map(model => model.trim());
   if (!allowed.length || allowed.some(model => !MODEL_ID.test(model) || model.toLowerCase().includes(['hai', 'ku'].join('')))) {
     throw new TypeError('RT_ALLOWED_MODELS must contain valid model identifiers');
   }

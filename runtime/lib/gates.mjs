@@ -2,7 +2,8 @@ import { assertSafeId } from './paths.mjs';
 import { safetyFiles } from './safety.mjs';
 import { gate2Triggers } from './gate2-triggers.mjs';
 
-const PASS = (result) => result === true || result?.passed === true || result?.status === 'pass';
+// A single-session (`independent: false`) review is never a Gate 1 pass, whatever its verdict says.
+const PASS = (result) => result?.independent !== false && (result === true || result?.passed === true || result?.status === 'pass');
 const UNAVAILABLE = (error) => error?.code === 'REVIEWER_UNAVAILABLE' || error?.unavailable === true;
 const required = (value, name) => { if (!value || typeof value !== 'object') throw new TypeError(`${name} is required`); return value; };
 /** How many cancelled-only CI re-runs one issue+head may request before a cancelled answer fails closed. */
