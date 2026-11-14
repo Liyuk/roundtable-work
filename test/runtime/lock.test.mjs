@@ -664,6 +664,17 @@ test('lock: link failure is surfaced, not degraded', withDir(async (dir) => {
   }
 }));
 
+test('lock: a concurrent first creator of the repo identity is never seen half-written', withDir(async (dir) => {
+  const slowOpen = { open: async (p, flags, mode) => { const fh = await realFs.open(p, flags, mode); if (flags === 'wx') await sleep(50); return fh; } };
+  const first = acquireLock({ lockPath: lockPathOf(dir, 'a.lock.d'), repoRoot: dir, anchorRoot: ANCHOR, owner: 'a', fs: slowOpen });
+  await sleep(10);
+  const second = await acquireLock({ lockPath: lockPathOf(dir, 'b.lock.d'), repoRoot: dir, anchorRoot: ANCHOR, owner: 'b' });
+  const firstHandle = await first;
+  assert.deepEqual([firstHandle.acquired, second.acquired], [true, true], second.detail);
+  await firstHandle.release();
+  await second.release();
+}));
+
 
 // ---------------------------------------------------------------------------------------------
 // Anchored authority (issue #77): the work root is a hint, the private anchor is authoritative.
