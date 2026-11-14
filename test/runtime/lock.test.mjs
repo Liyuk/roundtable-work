@@ -892,3 +892,12 @@ test('anchor: a symlinked or corrupt domain marker fails closed and is never use
     assert.deepEqual(await readdir(join(outside, 'state')), [], 'nothing was written through the marker');
   } finally { await rm(outside, { recursive: true, force: true }); }
 }));
+
+test('concurrent first acquisitions in a fresh anchor all succeed', async () => {
+  for (let round = 0; round < 400; round++) {
+    const dir = await tmp(), anchorRoot = await tmp();
+    const results = await Promise.all(['a', 'b', 'c', 'd'].map((name) => acquireLock({ lockPath: lockPathOf(dir, `${name}.lock.d`), repoRoot: dir, anchorRoot, owner: name, ttlMs: 60_000 })));
+    assert.deepEqual(results.filter((lock) => !lock.acquired).map((lock) => lock.reason), [], `round ${round}`);
+    await Promise.all(results.map((lock) => lock.release()));
+  }
+});
