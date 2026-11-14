@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { runGates, recoverRedMain } from '../../runtime/lib/gates.mjs';
 import { createMergeEntryPoint } from '../../runtime/lib/merge.mjs';
 
+const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
+
 function fixture(overrides = {}) {
   const calls = [];
   const records = new Map();
@@ -14,7 +16,7 @@ function fixture(overrides = {}) {
     state: { async get(id) { calls.push('state:get'); return records.get(id); }, async put(id, value) { calls.push(`state:put:${value.passed.at(-1)}`); records.set(id, structuredClone(value)); } },
     gates: {
       async gate0() { calls.push('gate0'); return { passed: true }; },
-      async reviewer(arg) { calls.push(`reviewer:${arg.attempt}`); return { passed: true, head: 'abc1234' }; },
+      async reviewer(arg) { calls.push(`reviewer:${arg.attempt}`); return { passed: true, head: 'abc1234', rationale: RATIONALE }; },
       async crossCheck() { calls.push('gate2'); return { passed: true }; },
     },
     ci: { async requiredGreen() { calls.push('ci'); return { green: true }; } },
@@ -394,4 +396,52 @@ test('red main with a not-green revert CI pauses before revert and does not merg
   assert.deepEqual(result, { status: 'revert-pending', paused: true, pr: 91, branch: 'rt/revert-abcdef0' });
   assert.deepEqual(calls[0], ['pause', { paused: true, reason: 'main is red after auto-merge' }]);
   assert.equal(calls.some(([name]) => name === 'merge'), false);
+});
+
+test('translation diff with a passed Gate 1 is not accepted until Gate 2 passes', async () => {
+  const fx = JSON.parse(await readFile(new URL('../fixtures/gate2/translation-diff.json', import.meta.url), 'utf8'));
+  const failing = fixture({ highRisk: false, changedFiles: fx.changedFiles, gates: { ...fixture().input.gates, reviewer: async () => ({ passed: true, head: 'abc1234', rationale: fx.gate1.rationale }), async crossCheck() { return { passed: false, reason: 'Mistranslation' }; } } });
+  const blocked = await runGates(failing.input);
+  assert.deepEqual([blocked.status, blocked.gate, blocked.hold], ['blocked', 'gate2', false]);
+  assert.equal(failing.calls.includes('merge'), false);
+  assert.equal(failing.records.get('53').passed.includes('gate2'), false);
+  const passing = fixture({ highRisk: false, changedFiles: fx.changedFiles, gates: { ...fixture().input.gates, reviewer: async () => ({ passed: true, head: 'abc1234', rationale: fx.gate1.rationale }) } });
+  assert.equal((await runGates(passing.input)).status, 'merged');
+  assert.ok(passing.calls.indexOf('gate2') < passing.calls.indexOf('merge'));
+});
+
+test('protocol or machine-field diff requires Gate 2 even when not high-risk', async () => {
+  const f = fixture({ highRisk: false, changedFiles: ['lib/verdict.mjs'], gates: { ...fixture().input.gates, async crossCheck() { f.calls.push('gate2'); return { passed: false, reason: 'Verdict field changed' }; } } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'gate2', false]);
+  assert.ok(f.calls.includes('gate2'));
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('Gate 1 with an empty or thin rationale requires Gate 2', async () => {
+  for (const rationale of [undefined, '', '  ok  ']) {
+    const f = fixture({ highRisk: false, changedFiles: ['runtime/lib/x.mjs'], gates: { ...fixture().input.gates, async reviewer() { return { passed: true, head: 'abc1234', rationale }; }, async crossCheck() { f.calls.push('gate2'); return { passed: false, reason: 'Thin' }; } } });
+    const result = await runGates(f.input);
+    assert.equal(result.gate, 'gate2', String(rationale));
+    assert.ok(f.calls.includes('gate2'), String(rationale));
+  }
+});
+
+test('Gate 1 pass with Gate 2 fail escalates the disagreement and never calls the developer', async () => {
+  const escalations = [];
+  const f = fixture({ highRisk: true, modelRouter: type => ({ escalation: 'model-escalation' })[type], escalation: async (arg) => { f.calls.push('escalation'); escalations.push(arg); return { status: 'fixed' }; } });
+  f.input.gates.crossCheck = async () => { f.calls.push('gate2'); return { passed: false, reason: 'Cross-check found a defect' }; };
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold, result.escalated], ['blocked', 'gate2', false, true]);
+  assert.deepEqual(f.calls.filter(x => !x.startsWith('state:')), ['gate0', 'reviewer:1', 'gate2', 'escalation']);
+  assert.equal(escalations.length, 1);
+  assert.equal(escalations[0].model, 'model-escalation');
+  assert.deepEqual(escalations[0].disagreement, { gate1: 'pass', gate2: 'fail', reason: 'Cross-check found a defect' });
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('without an escalation adapter a Gate 2 failure stays fail-closed and not a hold', async () => {
+  const f = fixture({ highRisk: true, gates: { ...fixture().input.gates, async crossCheck() { return { passed: false, reason: 'No' }; } } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold, result.escalated], ['blocked', 'gate2', false, undefined]);
 });

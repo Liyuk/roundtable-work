@@ -7,13 +7,14 @@ const CLASSES = ['blocking', 'in-scope miss', 'out-of-scope follow-up'];
 const STATUSES = ['open', 'fixed', 'follow-up'];
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 const SHA = /^[a-f0-9]{40,64}$/i;
+const LEDGER_KEYS = ['version', 'freeze', 'findings', 'riskList'];
 
 /** Validate a frozen review ledger. Findings' prose is descriptive and never drives a verdict. */
 export function validateReviewLedger(value, options = {}) {
   if (!plain(options)) throw new TypeError('options must be an object');
   exact(options, ['currentHeadSha', 'frozen'], 'options');
   if (!plain(value)) throw new TypeError('ledger must be an object');
-  exact(value, ['version', 'freeze', 'findings', 'riskList'], 'ledger');
+  exact(value, value.waivers === undefined ? LEDGER_KEYS : [...LEDGER_KEYS, 'waivers'], 'ledger');
   if (value.version !== 1) throw new TypeError('ledger version must be 1');
   validateFreeze(value.freeze);
   const { currentHeadSha, frozen } = options;
@@ -23,6 +24,8 @@ export function validateReviewLedger(value, options = {}) {
   }
   if (!Array.isArray(value.findings)) throw new TypeError('findings must be an array');
   if (value.riskList !== null && !validRiskList(value.riskList)) throw new TypeError('riskList must be null or include a threatModel and risks');
+  const waivers = value.waivers ?? [];
+  if (!Array.isArray(waivers) || !waivers.every(validWaiver)) throw new TypeError('waivers must list { id, ownerComment } with non-empty strings');
   const riskBlocked = value.freeze.highRisk && value.riskList === null;
 
   const ids = new Set();
@@ -39,7 +42,9 @@ export function validateReviewLedger(value, options = {}) {
       followUps.push({ id: finding.id, summary: finding.summary, severity: finding.severity });
       continue;
     }
-    if (finding.status !== 'fixed' || finding.retest.result !== 'passed' || finding.retest.headSha !== currentHeadSha) blocked = true;
+    // An owner waiver only suppresses a blocking finding with the same id; evidence rules above still apply.
+    const waived = finding.classification === 'blocking' && waivers.some(waiver => waiver.id === finding.id);
+    if (!waived && (finding.status !== 'fixed' || finding.retest.result !== 'passed' || finding.retest.headSha !== currentHeadSha)) blocked = true;
   }
   for (const id of frozen.mustFixIds) if (!value.findings.some(finding => finding.id === id && finding.classification === 'blocking')) throw new TypeError(`frozen must-fix ${id} is missing from the findings as blocking`);
   return { verdict: riskBlocked ? VERDICTS.block : blocked ? VERDICTS.reject : VERDICTS.pass, followUps };
@@ -76,6 +81,10 @@ function validateFinding(value) {
     }
   }
   if (!nonEmpty(value.id) || !nonEmpty(value.summary) || !SEVERITIES.includes(value.severity)) throw new TypeError('finding requires id, summary, and a known severity');
+}
+
+function validWaiver(value) {
+  return plain(value) && exactOrFalse(value, ['id', 'ownerComment']) && nonEmpty(value.id) && nonEmpty(value.ownerComment);
 }
 
 function validRiskList(value) {

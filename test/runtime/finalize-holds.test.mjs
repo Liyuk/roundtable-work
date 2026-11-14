@@ -6,6 +6,7 @@ import { runQueue } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { createProductionAdapter } from '../../runtime/lib/production.mjs';
 import { runGates } from '../../runtime/lib/gates.mjs';
+const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 const PASS = '审查结论：通过';
 const SAFETY = '.github/workflows/check.yml';
@@ -59,7 +60,7 @@ function world(overrides = {}) {
     async reviewer() {
       log('gate1');
       if (w.state.reviewUnavailable) throw Object.assign(new Error('reviewer offline'), { code: 'REVIEWER_UNAVAILABLE' });
-      return { passed: w.state.review, head: w.state.reviewHead };
+      return { passed: w.state.review, head: w.state.reviewHead, rationale: RATIONALE };
     },
     async crossCheck() { log('gate2'); if (w.state.gate2Throw) throw new Error('cross-check offline'); return w.state.gate2; },
   };
@@ -524,7 +525,7 @@ function gateFixture(overrides = {}) {
   const records = new Map();
   const gates = {
     async gate0() { calls.push('gate0'); return true; },
-    async reviewer(arg) { calls.push(`gate1:${arg.attempt}`); return { passed: true, head: BASE_SHA }; },
+    async reviewer(arg) { calls.push(`gate1:${arg.attempt}`); return { passed: true, head: BASE_SHA, rationale: RATIONALE }; },
     async crossCheck() { calls.push('gate2'); return true; },
   };
   const input = {
@@ -550,8 +551,8 @@ test('runGates separates a resumable hold from a genuine failure and never merge
     ['reviewer rejection', false, 'gate1', () => ({ gates: { async gate0() { return true; }, async reviewer() { return { passed: false, head: BASE_SHA }; } } })],
     ['stale reviewer head', false, 'gate1', () => ({ gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'oldhead' }; } } })],
     ['reviewer unavailable', true, 'gate1', () => ({ gates: { async gate0() { return true; }, async reviewer() { throw Object.assign(new Error('offline'), { code: 'REVIEWER_UNAVAILABLE' }); } } })],
-    ['gate2 not-pass', false, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: BASE_SHA }; }, async crossCheck() { return false; } } })],
-    ['gate2 throws (transient)', true, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: BASE_SHA }; }, async crossCheck() { throw new Error('offline'); } } })],
+    ['gate2 not-pass', false, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: BASE_SHA, rationale: RATIONALE }; }, async crossCheck() { return false; } } })],
+    ['gate2 throws (transient)', true, 'gate2', () => ({ highRisk: true, gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: BASE_SHA, rationale: RATIONALE }; }, async crossCheck() { throw new Error('offline'); } } })],
     ['safety approval missing', true, 'safety-approval', () => ({ changedFiles: [SAFETY] })],
     ['CI pending', true, 'ci', () => ({ ci: { async requiredGreen() { return { green: false, status: 'pending' }; } } })],
     ['CI throws', true, 'ci', () => ({ ci: { async requiredGreen() { throw new Error('offline'); } } })],
