@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,8 +40,8 @@ test('runs the command with the target as cwd and RT_HOME set', (t) => {
   const result = run(['--target', target, '--', ...node('console.log(process.cwd(), process.env.RT_HOME)')], env);
   assert.equal(result.status, 0, result.stderr);
   const [cwd, home] = result.stdout.trim().split(' ');
-  assert.equal(cwd, target);
-  assert.ok(home.startsWith(env.TMPDIR));
+  assert.equal(cwd, realpathSync(target));
+  assert.ok(home.startsWith(realpathSync(env.TMPDIR)));
 });
 
 test('removes the temp dir when the command fails (injected exit 7)', (t) => {
