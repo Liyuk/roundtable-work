@@ -205,6 +205,8 @@ export async function resumeAfterOwnerReply({ issue, comments, store, client, no
     current.status = 'queued'; current.phase = null; current.checkpoint = null; current.pause = undefined;
     current.lastEvent = { type: 'owner_reply_resumed', at: now() };
   });
+  // A blocked or asked issue outranks a stale ready label left by an earlier merge attempt.
+  await client.removeLabel(number, 'rt:ready-to-merge');
   await clearPauseLabels(client, number);
   return true;
 }

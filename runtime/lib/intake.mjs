@@ -80,7 +80,8 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
   for (const issue of issues) {
     if (issue.state?.toUpperCase() !== 'OPEN' || issue.author?.login?.toLowerCase() !== owner.toLowerCase()) continue;
     const labels = labelsOf(issue);
-    if (labels.some(label => excluded.has(label) && !(includeRunning && ['rt:running', 'rt:ask', 'rt:blocked'].includes(label))) || /^\[owner\]/i.test(issue.title ?? '') || /^\[epic\]/i.test(issue.title ?? '') || /^(?:\[[^\]]+\]\s*)?epic\s*:/i.test(issue.title ?? '') || labels.includes('type:epic')) continue;
+    const paused = includeRunning && labels.some(label => ['rt:ask', 'rt:blocked'].includes(label));
+    if (labels.some(label => excluded.has(label) && !(includeRunning && ['rt:running', 'rt:ask', 'rt:blocked'].includes(label)) && !(paused && label === 'rt:ready-to-merge')) || /^\[owner\]/i.test(issue.title ?? '') || /^\[epic\]/i.test(issue.title ?? '') || /^(?:\[[^\]]+\]\s*)?epic\s*:/i.test(issue.title ?? '') || labels.includes('type:epic')) continue;
     const recovering = includeRunning && labels.some(label => ['rt:running', 'rt:ask', 'rt:blocked'].includes(label));
     if (!recovering && labels.includes('rt:proposed') && !labels.includes('rt:approved')) continue;
     if (!labels.length) { triage.push(issue); continue; }
