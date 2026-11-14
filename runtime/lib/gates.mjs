@@ -8,6 +8,8 @@ const UNAVAILABLE = (error) => error?.code === 'REVIEWER_UNAVAILABLE' || error?.
 const required = (value, name) => { if (!value || typeof value !== 'object') throw new TypeError(`${name} is required`); return value; };
 /** How many cancelled-only CI re-runs one issue+head may request before a cancelled answer fails closed. */
 const MAX_CI_RERUNS = 2;
+/** How many attempts a recorded-approval read gets before the gate holds for a later pass. */
+const MAX_APPROVAL_READS = 3;
 
 /** A small durable gate record store. The host can inject a transactional state backend instead. */
 export function createGateStateStore({ load, save }) {
@@ -109,7 +111,14 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
       await github.addLabel(pr, 'rt:ready-to-merge');
       return failed('safety-approval', 'Safety-file changes require a configured cross-check model for recorded approval', true);
     }
-    const approval = await github.recordedEscalationApproval(pr);
+    let approval;
+    // A missed read (a throw or an empty result) is retried a bounded number of times; if it is still missing the gate
+    // holds for a later pass (or the owner check below), never a rejection.
+    for (let attempt = 1; ; attempt++) {
+      try { approval = await github.recordedEscalationApproval(pr); }
+      catch (error) { approval = null; if (attempt === MAX_APPROVAL_READS) { await github.addLabel(pr, 'rt:ready-to-merge'); return failed('safety-approval', `Recorded approval could not be read: ${error.message}`, true); } }
+      if (approval || attempt === MAX_APPROVAL_READS) break;
+    }
     const approvalModel = models.crossCheck ?? modelRouter?.('escalation');
     const modelApproved = approval?.approved === true && approval?.model === approvalModel && approval?.head === head;
     const live = modelApproved || typeof github.getPullRequest !== 'function' ? null : await github.getPullRequest(pr);
