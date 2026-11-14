@@ -244,10 +244,58 @@ test('a cancelled CI after two re-runs falls back to the fail-closed path withou
   assert.equal(f.records.get('53').ciReruns, 2);
 });
 
+test('the cancelled-CI re-run budget is per issue and survives a head change', async () => {
+  let reruns = 0;
+  const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'cancelled' }; }, async rerunCancelled() { reruns++; } } });
+  f.records.set('53', gatedRecord({ ciReruns: 2, head: 'def5678', tree: 'tree-b' }));
+  const result = await runGates(f.input);
+  assert.equal(result.hold, false);
+  assert.equal(reruns, 0);
+  assert.equal(f.records.get('53').ciReruns, 2);
+});
+
 test('a provider without a re-run capability keeps the cancelled-CI behaviour of today', async () => {
   const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'cancelled' }; } } });
   const result = await runGates(f.input);
   assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', false]);
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('a missed recorded-approval read is retried and then succeeds without becoming a rejection', async () => {
+  const f = fixture({ changedFiles: ['.github/workflows/check.yml'] });
+  let reads = 0;
+  f.input.github.recordedEscalationApproval = async () => { reads++; if (reads < 3) throw new Error('read timeout'); return { approved: true, model: 'model-crosscheck', head: 'abc1234' }; };
+  const result = await runGates(f.input);
+  assert.equal(reads, 3);
+  assert.equal(result.status, 'merged');
+});
+
+test('a recorded-approval read that comes back empty is retried and then succeeds', async () => {
+  const f = fixture({ changedFiles: ['.github/workflows/check.yml'] });
+  let reads = 0;
+  f.input.github.recordedEscalationApproval = async () => { reads++; return reads < 3 ? null : { approved: true, model: 'model-crosscheck', head: 'abc1234' }; };
+  const result = await runGates(f.input);
+  assert.equal(reads, 3);
+  assert.equal(result.status, 'merged');
+});
+
+test('a recorded-approval read that keeps failing is a resumable hold, not a rejection or a thrown stall', async () => {
+  const f = fixture({ changedFiles: ['.github/workflows/check.yml'] });
+  let reads = 0;
+  f.input.github.recordedEscalationApproval = async () => { reads++; throw new Error('read timeout'); };
+  const result = await runGates(f.input);
+  assert.equal(reads, 3);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'safety-approval', true]);
+  assert.equal(f.calls.includes('merge'), false);
+});
+
+test('an explicit safety rejection is read once and never retried', async () => {
+  const f = fixture({ changedFiles: ['.github/workflows/check.yml'] });
+  let reads = 0;
+  f.input.github.recordedEscalationApproval = async () => { reads++; return { reject: true, inScope: false, reason: 'weakens guard' }; };
+  const result = await runGates(f.input);
+  assert.equal(reads, 1);
+  assert.equal(result.gate, 'safety-approval');
   assert.equal(f.calls.includes('merge'), false);
 });
 
