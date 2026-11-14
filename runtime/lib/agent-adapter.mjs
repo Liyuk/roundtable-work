@@ -21,11 +21,11 @@ export function selectAdapter(name) {
 export const childEnv = (env = process.env) => Object.fromEntries(Object.entries(env).filter(([k]) => !/^(GH|GITHUB)_/.test(k)));
 
 /** Returns `launch({ workspace, sessionId, resume, prompt })` for startFrontChief; resolves to the exit code. */
-export function createAdapterLauncher({ adapter, command, env = process.env, spawnFn }) {
+export function createAdapterLauncher({ adapter, command, env = process.env, spawnFn, proxySocket }) {
   if (!spawnFn) throw new Error('createAdapterLauncher requires spawnFn');
   return ({ workspace, sessionId, resume, prompt }) => new Promise((resolve, reject) => {
     const child = spawnFn(command, adapter.buildArgs({ sessionId, resume, prompt }), {
-      cwd: workspace, env: childEnv(env), stdio: ['ignore', 'inherit', 'inherit'],
+      cwd: workspace, env: proxySocket ? { ...childEnv(env), RT_GH_PROXY_SOCKET: proxySocket } : childEnv(env), stdio: ['ignore', 'inherit', 'inherit'],
     });
     child.on('error', reject);
     child.on('exit', (code) => resolve(code ?? 1));

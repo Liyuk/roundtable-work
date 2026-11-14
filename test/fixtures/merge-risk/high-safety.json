@@ -1,0 +1,4 @@
+{
+  "facts": { "paths": ["runtime/lib/guard.mjs"], "changedLines": 5, "ci": "green", "reviewDisagreement": false },
+  "expected": { "label": "risk:high", "reasons": ["safety-file:runtime/lib/guard.mjs"] }
+}

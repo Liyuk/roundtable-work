@@ -230,7 +230,7 @@ async function bindDomain(fs, { domainRoot, anchor }) {
  * Create and validate the anchor chain: anchor -> locks/ -> <repo-id>/, and bind the per-repo directory inode
  * to `locks/.repo-<repo-id>.json` (created once). Returns the captured identities or a fail-closed reason.
  */
-async function prepareAnchor(fs, { anchor, repoId, uid, lockName }) {
+async function prepareAnchor(fs, { anchor, repoId, uid }) {
   const madeAnchor = await mkdirPrivate(fs, anchor, 'anchor');
   if (!madeAnchor.ok) return madeAnchor;
   const anchorStat = await privateDir(fs, anchor, uid, 'anchor');
@@ -246,17 +246,28 @@ async function prepareAnchor(fs, { anchor, repoId, uid, lockName }) {
   const repoStat = await privateDir(fs, repoDir, uid, 'repo');
   if (!repoStat.ok) return repoStat;
   const identityFile = join(locks, `${IDENTITY_PREFIX}${repoId}.json`);
+  const identity = await readIdentityFile(fs, identityFile);
+  if (!identity.ok) return identity;
+  if (!identity.missing && (identity.value.dev !== repoStat.dev || identity.value.ino !== repoStat.ino)) return { ok: false, detail: 'repo:id_changed' };
+  return {
+    ok: true, anchor, locks, repoDir, identityFile,
+    anchorId: { dev: anchorStat.dev, ino: anchorStat.ino },
+    locksId: { dev: locksStat.dev, ino: locksStat.ino },
+    repoIdStat: { dev: repoStat.dev, ino: repoStat.ino },
+  };
+}
+
+/**
+ * Bind `locks/.repo-<repo-id>.json` to the validated per-repo directory inode (created once). The content is complete
+ * before it is link()ed into place, so a concurrent creator never reads an empty or half-written identity file.
+ */
+async function bindRepoIdentity(fs, { identityFile, repoIdStat }) {
   let identity = await readIdentityFile(fs, identityFile);
   if (!identity.ok) return identity;
   if (identity.missing) {
-    // Written to a private temp file and `link()`ed into place: a concurrent creator never reads a half-written record,
-    // and exactly one process records the first validated inode (the others re-read it).
-    const tmp = join(locks, `${TMP_PREFIX}${randomUUID()}`);
-    // Created first, as before the identity was recorded, so a link failure leaves the lock directory in place.
-    if (!(await mkdirPrivate(fs, join(repoDir, lockName), 'lock_dir')).ok) return { ok: false, detail: 'lock_dir:mkdir_failed' };
+    const tmp = join(dirname(identityFile), `${TMP_PREFIX}${randomUUID()}`);
     try {
-      const fh = await fs.open(tmp, 'wx', 0o600);
-      try { await fh.writeFile(JSON.stringify({ dev: repoStat.dev, ino: repoStat.ino })); await fh.sync(); } finally { await fh.close(); }
+      await fs.writeFile(tmp, JSON.stringify({ dev: repoIdStat.dev, ino: repoIdStat.ino }), { flag: 'wx', mode: 0o600 });
       await fs.link(tmp, identityFile);
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
@@ -265,13 +276,8 @@ async function prepareAnchor(fs, { anchor, repoId, uid, lockName }) {
     if (!identity.ok) return identity;
     if (identity.missing) return { ok: false, detail: 'identity:missing' };
   }
-  if (identity.value.dev !== repoStat.dev || identity.value.ino !== repoStat.ino) return { ok: false, detail: 'repo:id_changed' };
-  return {
-    ok: true, anchor, locks, repoDir, identityFile,
-    anchorId: { dev: anchorStat.dev, ino: anchorStat.ino },
-    locksId: { dev: locksStat.dev, ino: locksStat.ino },
-    repoIdStat: { dev: repoStat.dev, ino: repoStat.ino },
-  };
+  if (identity.value.dev !== repoIdStat.dev || identity.value.ino !== repoIdStat.ino) return { ok: false, detail: 'repo:id_changed' };
+  return { ok: true };
 }
 
 /** Re-validate every directory the handle depends on (called before each open and before each publish). */
@@ -304,13 +310,15 @@ export async function acquireLock({
   const lockName = typeof lockPath === 'string' ? basename(lockPath) : '';
   if (!lockName || lockName === '.' || lockName === '..') return fail('invalid_lock_path');
   const anchor = anchorRoot === undefined ? anchorRootOf({ env }) : resolve(anchorRoot);
-  const ctx = await prepareAnchor(fs, { anchor, repoId: repoIdOf(repoRoot ?? dirname(lockPath)), uid: currentUid, lockName });
+  const ctx = await prepareAnchor(fs, { anchor, repoId: repoIdOf(repoRoot ?? dirname(lockPath)), uid: currentUid });
   if (!ctx.ok) return fail('invalid_anchor', null, { detail: ctx.detail });
   const lockDir = join(ctx.repoDir, lockName);
   const madeLockDir = await mkdirPrivate(fs, lockDir, 'lock_dir');
   if (!madeLockDir.ok) return fail('invalid_anchor', null, { detail: madeLockDir.detail });
   const lockDirStat = await privateDir(fs, lockDir, currentUid, 'lock_dir');
   if (!lockDirStat.ok) return fail('invalid_lock_dir', null, { detail: lockDirStat.detail });
+  const identity = await bindRepoIdentity(fs, ctx);
+  if (!identity.ok) return fail('invalid_anchor', null, { detail: identity.detail });
   // Refuse before any epoch exists, so a foreign anchor domain can never fence a state write in this work root.
   const domain = await bindDomain(fs, { domainRoot: repoRoot ?? dirname(lockPath), anchor });
   if (!domain.ok) return fail(domain.reason, null, { detail: domain.detail });

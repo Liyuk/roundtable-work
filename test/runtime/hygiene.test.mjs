@@ -37,6 +37,17 @@ test('runtime code never shells out or touches the network', async () => {
   const files = await runtimeOnly();
   assert.ok(files.length >= 5);
   for (const { file, text } of files) {
+    if (file === 'runtime/lib/gh-write-proxy.mjs') {
+      // The host-side write proxy is the only runtime file that runs gh/git and listens on a unix socket: execFile only, net only for the socket server and client, no network.
+      assert.match(text, /node:child_process/);
+      assert.match(text, /execFile/);
+      assert.doesNotMatch(text, /\bexec\(/);
+      assert.match(text, /import \{ createConnection, createServer \} from 'node:net'/);
+      assert.equal(text.match(/node:net/g).length, 1);
+      assert.doesNotMatch(text, /node:(https?|dgram|tls)\b|\bfetch\(/, file);
+      assert.doesNotMatch(text, /\bgh\s+(issue|pr|api|repo|release|label)\b/, file);
+      continue;
+    }
     if (file === 'runtime/lib/worktree.mjs' || file === 'runtime/lib/accept.mjs' || file === 'runtime/lib/reviewer-session.mjs') {
       // The worktree lifecycle, the Gate 0 composition layer and the separate-process reviewer are the subprocess integrations; keep them argument-based and local.
       assert.match(text, /node:child_process/);

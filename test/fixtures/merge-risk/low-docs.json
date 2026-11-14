@@ -1,0 +1,4 @@
+{
+  "facts": { "paths": ["docs/readme.md", "docs/policyless.md"], "changedLines": 12, "ci": "green", "reviewDisagreement": false },
+  "expected": { "label": "risk:low", "reasons": [] }
+}
