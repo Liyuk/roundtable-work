@@ -1,0 +1,16 @@
+# TEMPLATE ONLY. Not enabled, not installed, and not referenced by any script.
+# Before installing, replace every <placeholder> with a value for your host and keep secrets
+# (tokens) in the env file only, never in this unit. See docs/supervisor.md.
+[Unit]
+Description=Roundtable Work supervisor (observe-only oneshot)
+
+[Service]
+Type=oneshot
+User=<supervisor-user>
+WorkingDirectory=<workspace>
+EnvironmentFile=-<env-file>
+ExecStart=/usr/bin/env node <workspace>/runtime/supervise.mjs --mode observe --workspace <workspace>
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=<workspace>/.roundtable/state
+PrivateTmp=yes
