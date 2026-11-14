@@ -172,7 +172,7 @@ process.stdin.on('end', () => writeFileSync(process.env.RT_OUT, JSON.stringify({
   await chmod(bin, 0o755);
   const roleFile = join(dir, 'role.md');
   await writeFile(roleFile, ROLE);
-  const code = await main(['start', '--workspace', dir, '--role-prompt', roleFile], { env: { RT_AGENT_BIN: bin, RT_OUT: outFile }, stderr: collector(), stdout: collector() });
+  const code = await main(['start', '--workspace', dir, '--role-prompt', roleFile], { env: { PATH: process.env.PATH, RT_AGENT_BIN: bin, RT_OUT: outFile }, stderr: collector(), stdout: collector() });
   assert.equal(code, 0);
   const got = JSON.parse(await readFile(outFile, 'utf8'));
   const { sessionId } = JSON.parse(await readFile(sessionPath(dir), 'utf8'));
