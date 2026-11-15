@@ -1,11 +1,16 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadHarnessConfig, implementerLaunch, HARNESS_CONFIG } from '../../runtime/lib/harness.mjs';
 import { ROLES } from '../../runtime/lib/routing.mjs';
+
+// The front Chief lock lives in a private anchor for this file.
+const ANCHOR = await mkdtemp(join(tmpdir(), 'rt303-anchor-'));
+process.env.RTW_STATE_DIR = ANCHOR;
+after(() => rm(ANCHOR, { recursive: true, force: true }));
 
 const withDir = (fn) => async () => {
   const dir = await mkdtemp(join(tmpdir(), 'rt303-harness-'));
@@ -53,7 +58,7 @@ test('a missing harness name fails closed instead of defaulting to pi', withDir(
 }));
 
 test('switching the implementer harness from pi to codex changes the launched args, with no role-code change', withDir(async (dir) => {
-  const env = {};
+  const env = { PATH: process.env.PATH };
   const fakePi = await fakeBinary(dir, 'pi');
   const fakeCodex = await fakeBinary(dir, 'codex');
   const piConfig = await loadHarnessConfig(await configWith(dir, 'pi'));
@@ -91,4 +96,35 @@ test('chief start refuses an unknown harness in the config before spawning anyth
   });
   assert.equal(code, 1);
   assert.match(err.join(''), /unknown harness: deepseek/);
+}));
+
+test('chief default launch takes its harness from roles.chief: switching pi to codex changes the launched argv', withDir(async (dir) => {
+  const { main } = await import('../../bin/rt-chief.mjs');
+  const bins = join(dir, 'bin');
+  await mkdir(bins);
+  const fakePi = await fakeBinary(bins, 'pi');
+  const fakeCodex = await fakeBinary(bins, 'codex');
+  const env = { PATH: `${bins}:${process.env.PATH}` };
+  const runChief = async (chief) => {
+    const ws = join(dir, chief); // a fresh workspace per run, so each start is a new session
+    await mkdir(ws);
+    const roles = Object.fromEntries(ROLES.map((role) => [role, 'pi']));
+    roles.chief = chief;
+    const harnessConfig = join(dir, `${chief}.config.json`);
+    await writeFile(harnessConfig, JSON.stringify({ roles, implementerRole: 'developer' }));
+    const code = await main(['start', '--workspace', ws], { env, harnessConfig, execute: async () => '', stdout: { write() {} }, stderr: { write() {} } });
+    assert.equal(code, 0);
+  };
+  const argvOf = async (log) => JSON.parse((await readFile(log, 'utf8')).trim()).argv;
+
+  await runChief('pi');
+  const [flag, sessionId, p, prompt] = await argvOf(fakePi.log);
+  assert.deepEqual([flag, p], ['--session-id', '-p']);
+  assert.ok(sessionId && prompt);
+
+  await runChief('codex');
+  const [sub, codexPrompt, ...extra] = await argvOf(fakeCodex.log);
+  assert.equal(sub, 'exec');
+  assert.ok(codexPrompt);
+  assert.deepEqual(extra, []);
 }));
