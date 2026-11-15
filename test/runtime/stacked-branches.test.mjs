@@ -9,6 +9,7 @@ import { syncWithBase } from '../../runtime/lib/worktree.mjs';
 
 // Real local git: a bare `origin`, one clone per PR branch, and a fake GitHub client that squash-merges into main.
 const env = { ...process.env, GIT_AUTHOR_NAME: 'dev', GIT_AUTHOR_EMAIL: 'dev@example.invalid', GIT_COMMITTER_NAME: 'dev', GIT_COMMITTER_EMAIL: 'dev@example.invalid' };
+Object.assign(process.env, env); // git children spawned by runtime code (syncWithBase's merge) inherit the identity too
 const git = (dir, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-C', dir, ...args], { env, encoding: 'utf8' }).trim();
 const isAncestor = (dir, older, newer) => execFileSync('git', ['-C', dir, 'merge-base', '--is-ancestor', older, newer], { env }) && true;
 
