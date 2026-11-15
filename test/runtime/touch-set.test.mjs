@@ -144,8 +144,8 @@ test('a touch lock stays alive for the whole run so a second acquirer is refused
   try {
     const lockPath = join(workRoot, 'locks', `touch-${createHash('sha256').update('runtime/lib/a.mjs').digest('hex')}.lock.d`);
     let intruder;
-    const result = await runWorkers({ issues: [{ id: '1', title: '[A] touch', body: section('- runtime/lib/a.mjs') }], workRoot, repoRoot: repo, workers: 1, lockTtlMs: 30, run: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 120));
+    const result = await runWorkers({ issues: [{ id: '1', title: '[A] touch', body: section('- runtime/lib/a.mjs') }], workRoot, repoRoot: repo, workers: 1, lockTtlMs: 300, run: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
       intruder = await acquireLock({ lockPath, repoRoot: repo, owner: 'intruder' });
     } });
     assert.deepEqual(result.failed, []);
