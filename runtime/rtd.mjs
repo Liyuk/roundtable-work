@@ -22,18 +22,30 @@ import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
+import { readMergeConfig } from './lib/merge-mode.mjs';
+import { loadLocalChecksConfig } from './lib/local-checks.mjs';
 import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
+import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
+import { openInbox } from './lib/event-inbox.mjs';
+import { openTimers } from './lib/event-timers.mjs';
+import { createWakeSignal } from './lib/event-wake.mjs';
+import { openOutbox, dispatch } from './lib/outbox.mjs';
+import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Outcomes after which an issue is abandoned for good, so its worktree is removed (see `removeWorktree`). */
 const ABANDONED = new Set(['stop', 'out-of-scope', 'cancelled']);
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
 const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
+/** Outbox retry policy: a failed item waits backoff * 2^(failures-1) ms, and is dead-lettered after this many failures. */
+const OUTBOX_BACKOFF_MS = 60_000;
+const OUTBOX_DEAD_AFTER = 5;
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
 const DECISION_REASK = 'Your DECISION was missing or invalid. Reply with only the decision file for this turn, starting with the DECISION=<do|continue|ask|out-of-scope|decompose|done> line, then its required lines. Do no other work.';
 const parsesAsDecision = (raw) => { try { typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw); return true; } catch { return false; } };
@@ -136,13 +148,15 @@ export async function runQueue({
   maxWakesPerIssue = RUNTIME_DEFAULTS.maxWakesPerIssue, maxDeveloperAttempts = RUNTIME_DEFAULTS.maxDeveloperAttempts, maxReviewerUnavailable = RUNTIME_DEFAULTS.maxReviewerUnavailable,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
-  githubClient, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
+  githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
   if ((autoMerge?.production || githubClient) && !observationClients) throw new TypeError('production observation clients are required');
   if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
+  const mergeMode = await readMergeConfig();
+  const localChecks = await loadLocalChecksConfig();
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -420,9 +434,10 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store });
-        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks });
+        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
+        if (gated.result?.held) throw new Error(`${gated.result.mode} mode: revert merge not executed`);
         return gated.result;
       } },
       });
@@ -499,7 +514,10 @@ export async function runQueue({
           if (!state.claimPending) return;
           const comments = typeof githubClient.listComments === 'function' ? await githubClient.listComments(issue.number ?? issue.id) : issue.comments ?? [];
           if (!comments.some((comment) => String(comment.body ?? comment).includes(CLAIM_MARKER))) {
-            await githubClient.createComment(issue.number ?? issue.id, `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`);
+            const body = `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`;
+            // Looping daemons deliver the claim comment through the outbox at the end of the cycle.
+            if (outbox) outbox.enqueue({ id: `claim:${issue.number ?? issue.id}`, kind: 'comment', issue: issue.number ?? issue.id, payload: { body } });
+            else await githubClient.createComment(issue.number ?? issue.id, body);
           }
           await store.update(issue.id, (current) => { current.claimPending = false; });
         },
@@ -741,7 +759,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store });
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode, localChecks });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
@@ -750,7 +768,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;
@@ -765,6 +783,7 @@ export async function runQueue({
                 // a stale head or a changed safety-file set) stays fail-closed: interrupted, decision ask.
                 throw new Error(`${gated.gate}: ${gated.reason}`);
               }
+              if (!mergeHappened && gated.result?.held) return { ...result, mergeHold: { gate: 'merge-mode', reason: `${gated.result.mode} mode: merge not executed` } };
               if (!mergeHappened) throw new Error('Merge entry point reported a merge without a provider squash result');
               // Post-merge bookkeeping. The squash already happened, so a failure here must not fail this wake:
               // the issue is delivered and the failure is kept as a non-fatal detail. Main protection is taken
@@ -962,7 +981,7 @@ async function main(argv) {
   }
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' }, routing: { type: 'string' }, 'live-decisions': { type: 'string' }, live: { type: 'boolean' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' }, routing: { type: 'string' }, 'live-decisions': { type: 'string' }, live: { type: 'boolean' }, loop: { type: 'boolean' }, 'poll-ms': { type: 'string' }, 'cycle-deadline-ms': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
@@ -979,19 +998,27 @@ async function main(argv) {
     return exitCodeFor(result);
   }
   if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github) || (args['live-decisions'] && !args.github) || (args.live && !args.github)) {
-    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--live-decisions FILE] [--live] (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--live-decisions FILE] [--live] [--loop [--poll-ms N] [--cycle-deadline-ms N]] (MODULE is trusted operator code, not confined to the work root)');
     console.error('       rtd.mjs --work-root DIR --providers MODULE --clear-main-pause');
     return 2;
   }
+  // The loop's freeze ledger and heartbeat live under the workspace root, the parent of `.roundtable/`.
+  const workspace = args.loop ? loopWorkspace(args['work-root']) : undefined;
+  if (args.loop && !workspace) {
+    console.error('--loop requires --work-root to be a directory named .roundtable');
+    return 2;
+  }
   const timeouts = {};
-  for (const [flag, option] of [['phase-timeout-ms', 'phaseTimeoutMs'], ['queue-timeout-ms', 'queueTimeoutMs'], ['grace-ms', 'graceMs']]) {
+  const loop = {};
+  for (const [flag, option] of [['phase-timeout-ms', 'phaseTimeoutMs'], ['queue-timeout-ms', 'queueTimeoutMs'], ['grace-ms', 'graceMs'], ['poll-ms', 'pollMs'], ['cycle-deadline-ms', 'cycleDeadlineMs']]) {
     if (args[flag] === undefined) continue;
     const n = Number(args[flag]);
     if (!/^\d+$/.test(args[flag]) || !Number.isSafeInteger(n) || (option !== 'graceMs' && n === 0)) {
       console.error(`--${flag} must be a ${option === 'graceMs' ? 'non-negative' : 'positive'} integer (milliseconds)`);
       return 2;
     }
-    timeouts[option] = n;
+    if (option === 'pollMs' || option === 'cycleDeadlineMs') loop[option] = n;
+    else timeouts[option] = n;
   }
   if (!args.routing) {
     console.error('routing: --routing FILE is required');
@@ -1036,12 +1063,34 @@ async function main(argv) {
     autoMerge.git = createShadowProvider(autoMerge.git, new Set());
   }
   const writer = createGitHubWriter({ repo: args.repo });
-  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
-  if (args.github) {
-    result.triage = queue.triage;
-    if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
+  const outbox = args.loop ? openOutbox(workspace) : undefined;
+  const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
+  const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
+  // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
+  const pass = async (workers) => {
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    if (args.github) {
+      result.triage = queue.triage;
+      if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
+    }
+    return result;
+  };
+  const baseWorkers = args.workers === undefined ? 2 : Number(args.workers);
+  if (args.loop) {
+    // An inbox write from this process ends the inter-cycle wait early.
+    const wake = createWakeSignal();
+    const code = await runLoop({ pass: async ({ workers }) => {
+      await cycleSteps({ root: workspace, inbox: openInbox(workspace, { onWrite: () => wake.notify() }), timers: openTimers(workspace), reader,
+        dispatchLine: makeDispatchLine({ root: workspace, owner: ownerOf(args.repo) }) });
+      console.log(JSON.stringify(await pass(workers)));
+      // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
+      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake });
+    // A pass that never settled may still hold the process open: end it after stdout is flushed.
+    if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }
+    return code;
   }
+  const result = await pass(baseWorkers);
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {
     // A handler that never settled may still be running and would keep this process alive past the lock's

@@ -47,7 +47,11 @@ test('poll accepts exactly the expected normalized events, de-duplicated and fil
     assert.equal(accepted, 2);
     const events = openInbox(root).events();
     assert.deepEqual(events.map((e) => e.source_event_id), ['a-1', 'a-2']);
-    assert.deepEqual(events[1], {
+    const { when, what, session, ...stripped } = events[1];
+    assert.equal(when, 1000);
+    assert.equal(session, 'issue:366');
+    assert.match(what, /^intake \{/);
+    assert.deepEqual(stripped, {
       source_event_id: 'a-2', kind: 'intake', issue: 366, receivedAt: 1000,
       payload: { source: 'fake-a', url: 'https://example.test/3', author: 'carol', text: 'Roundtable again', time: '2026-01-01T00:02:00Z', source_event_id: 'a-2' },
     });

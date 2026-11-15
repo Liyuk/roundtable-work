@@ -133,12 +133,12 @@ test('handle reports executor failure as failed', async () => {
   assert.match(result.reason, /boom/);
 });
 
-test('socket: child gets no GH_ token, a write runs once on the host, and a denied write does not run', async () => {
+test('socket: child gets no GH_ token, a write runs once on the host, and a denied write does not run', async (t) => {
   const dir = await tempDir();
   const socketPath = join(dir, 'proxy.sock');
   const { calls, execute } = countingExecutor();
   const server = await startWriteProxy({ socketPath, proxy: createWriteProxy({ repo: REPO, execute }) });
-  after(() => server.close());
+  t.after(() => server.close());
 
   const script = `
 const { requestWrite } = await import(${JSON.stringify(MODULE_URL)});
@@ -163,17 +163,17 @@ console.log(JSON.stringify({ keys: Object.keys(process.env), ok, denied }));
   assert.deepEqual(calls, [{ tool: 'gh', args: ['issue', 'comment', '7', '--body', 'hi'] }]);
 });
 
-test('requestWrite replaces a stale socket file and the server closes cleanly', async () => {
+test('requestWrite replaces a stale socket file and the server closes cleanly', async (t) => {
   const dir = await tempDir();
   const socketPath = join(dir, 'stale.sock');
   const { execute } = countingExecutor();
   const first = await startWriteProxy({ socketPath, proxy: createWriteProxy({ repo: REPO, execute }) });
   await first.close();
   const second = await startWriteProxy({ socketPath, proxy: createWriteProxy({ repo: REPO, execute }) });
+  t.after(() => second.close());
   const response = await requestWrite({ socketPath, request: gh(['pr', 'merge', '1']) });
   assert.equal(response.status, 'denied');
   assert.equal(response.kind, 'merge');
-  await second.close();
 });
 
 test('createAdapterLauncher passes RT_GH_PROXY_SOCKET and no GH_/GITHUB_ keys to the child', async () => {

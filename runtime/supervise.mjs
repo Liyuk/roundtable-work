@@ -7,6 +7,7 @@ import { watchdog } from './supervisor/watchdog.mjs';
 import { dispatch } from './supervisor/modes.mjs';
 import { createLedger, fileAppender, LEDGER_PATH } from './supervisor/ledger.mjs';
 import { HEARTBEAT_PATH } from './supervisor/heartbeat.mjs';
+import { loadUsageLedger } from './lib/usage-ledger.mjs';
 
 /**
  * One supervisor cycle. Records a cycle root, then one or more decisions per finding, all on the root's trace.
@@ -62,7 +63,7 @@ export function parseArgs(argv) {
 
 /** Runs one observe cycle against a workspace; writes the cycle result as one JSON line to stdout. */
 export async function main(argv, deps = {}) {
-  const { now = Date.now, stdout = process.stdout.write.bind(process.stdout), readFile: read = readFile, mkdir: makeDir = mkdir, fileAppender: appender = fileAppender } = deps;
+  const { now = Date.now, stdout = process.stdout.write.bind(process.stdout), readFile: read = readFile, mkdir: makeDir = mkdir, fileAppender: appender = fileAppender, env = process.env } = deps;
   const { mode, workspace, issue, githubFixture } = parseArgs(argv);
   if (mode === 'apply') throw new Error('apply needs live actuator adapters, which this entrypoint does not wire');
   if (!githubFixture) throw new Error('no GitHub source configured: pass --github-fixture; live read client is not wired');
@@ -81,6 +82,9 @@ export async function main(argv, deps = {}) {
   const ledgerPath = join(workspace, LEDGER_PATH);
   await makeDir(dirname(ledgerPath), { recursive: true });
   const ledger = createLedger({ append: appender(ledgerPath) });
+  // Persisted usage rows for the issue named by RT_ISSUE feed tokens-no-commit; no issue means no usage ledger.
+  const issueId = env.RT_ISSUE;
+  const usage = issueId ? await loadUsageLedger(join(workspace, '.roundtable'), issueId) : undefined;
   // Observe mode: any accidental actuator call fails loudly.
   const actuator = { act: async () => { throw new Error('observe mode must not act'); } };
 
@@ -91,7 +95,7 @@ export async function main(argv, deps = {}) {
     collectInputs: { now: at, issue, readHeartbeat, readDaemonState: async () => null, readDaemonLog: async () => null, github },
     ledger,
     actuator,
-    config: {},
+    config: { ledger: usage, issue: issueId },
   });
   stdout(JSON.stringify(result) + '\n');
   return result;
