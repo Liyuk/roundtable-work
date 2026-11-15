@@ -53,6 +53,11 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
       if (!Array.isArray(result) || result.length >= 1000) throw new TypeError('Issue list is invalid or may be truncated');
       return result;
     },
+    async listClosedIssues(options) {
+      const result = await run(['issue', 'list', ...repository, '--state', 'closed', '--limit', '200', '--json', 'number,title,body,state,closedAt'], options);
+      if (!Array.isArray(result)) throw new TypeError('Invalid closed issue list');
+      return result;
+    },
     async getIssue(number, options) {
       if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
       return run(['issue', 'view', String(number), ...repository, '--json', 'state,labels'], options);
@@ -94,5 +99,16 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
       return matching.map(({ number, headRefName, state }) => ({ number, headRefName, state }));
     },
     closePullRequest: (number, body) => run(['pr', 'close', id(number), ...repository, '--comment', body]),
+    searchIssues: async (query) => {
+      if (typeof query !== 'string' || !query) throw new TypeError('Invalid search query');
+      let result;
+      try { result = JSON.parse(await run(['issue', 'list', ...repository, '--search', query, '--state', 'all', '--limit', '100', '--json', 'number,title,body'])); } catch { throw new TypeError('Invalid issue search output'); }
+      if (!Array.isArray(result) || result.some(issue => !Number.isSafeInteger(issue?.number))) throw new TypeError('Invalid issue search output');
+      return result.map(({ number, title, body }) => ({ number, title, body }));
+    },
+    updateIssueBody: async (number, body) => {
+      if (typeof body !== 'string' || !body) throw new TypeError('Invalid issue body');
+      return run(['issue', 'edit', id(number), ...repository, '--body', body]);
+    },
   };
 }

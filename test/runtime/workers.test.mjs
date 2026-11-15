@@ -47,10 +47,10 @@ test('worker scheduler caps concurrency and serializes same series and dependenc
   try {
     let active = 0, peak = 0;
     const issues = [
-      { id: '1', title: '[RT] one', series: 'RT', dependencies: [] },
-      { id: '2', title: '[RT] two', series: 'RT', dependencies: [] },
-      { id: '3', title: '[Pages] three', series: 'Pages', dependencies: ['1'] },
-      { id: '4', title: '[I18N] four', series: 'I18N', dependencies: [] },
+      { id: '1', title: '[RT] one', series: 'RT', dependencies: [], body: '## Goal\nnone' },
+      { id: '2', title: '[RT] two', series: 'RT', dependencies: [], body: '## Goal\nnone' },
+      { id: '3', title: '[Pages] three', series: 'Pages', dependencies: ['1'], body: '## Touch set\n- fixture-3.txt' },
+      { id: '4', title: '[I18N] four', series: 'I18N', dependencies: [], body: '## Touch set\n- fixture-4.txt' },
     ];
     const running = [];
     const dependent = (a, b) => (a.dependencies ?? []).includes(b.id) || (b.dependencies ?? []).includes(a.id);
@@ -174,4 +174,20 @@ test('existing detached issue worktree is reattached to and reused on the expect
     assert.equal(currentBranch.status, 0, currentBranch.stderr);
     assert.equal(currentBranch.stdout.trim(), 'rt/94-pi');
   } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test('worker cap may be a function evaluated each scheduling pass', async () => {
+  const root = await temp();
+  try {
+    let active = 0, peak = 0, calls = 0;
+    const issues = ['1', '2', '3', '4'].map((id) => ({ id, title: `[RT${id}] work`, series: `s${id}`, dependencies: [] }));
+    const result = await runWorkers({ issues, workRoot: root, workers: () => { calls++; return 1; }, run: async () => {
+      active++; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+    } });
+    assert.equal(peak, 1);
+    assert.ok(calls >= 4);
+    assert.equal(result.completed.length, 4);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -93,10 +93,10 @@ test('daemon claims and schedules bounded, non-conflicting workers with visible 
   const { root, repo, workRoot } = await fixture();
   try {
     const issues = [
-      { id: '21', number: 21, title: '[A] first', labels: [], comments: [] },
-      { id: '22', number: 22, title: '[A] second', labels: [], comments: [] },
-      { id: '23', number: 23, title: '[B] dependent', body: 'Depends on #21', labels: [], comments: [] },
-      { id: '24', number: 24, title: '[C] independent', labels: [], comments: [] },
+      { id: '21', number: 21, title: '[A] first', labels: [], comments: [], body: '## Touch set\n- fixture-21.txt' },
+      { id: '22', number: 22, title: '[A] second', labels: [], comments: [], body: '## Goal\nnone' },
+      { id: '23', number: 23, title: '[B] dependent', body: 'Depends on #21\n\n## Touch set\n- fixture-23.txt', labels: [], comments: [] },
+      { id: '24', number: 24, title: '[C] independent', labels: [], comments: [], body: '## Touch set\n- fixture-24.txt' },
     ];
     const events = [];
     const client = {
@@ -219,6 +219,6 @@ test('daemon reads decompose drafts from the worker worktree, not the repository
       if (phase === 'developing') await writeFile(join(item.worktree, 'child.json'), JSON.stringify({ title: 'Worktree child', body: 'Work' }));
       return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', ...(phase === 'finalizing' ? { decision: { decision: 'decompose', drafts: ['child.json'] } } : {}) };
     } });
-    assert.deepEqual(created, ['Worktree child']);
+    assert.deepEqual(created, ['[50-1] Worktree child']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

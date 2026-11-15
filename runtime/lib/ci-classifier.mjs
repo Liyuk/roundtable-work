@@ -2,6 +2,8 @@
 export const MAX_REPRO_DRAFTS_PER_PR = 3;
 
 const TRANSIENT = /\b(?:flaky|timeout|timed[- ]?out|runner[- ]?(?:lost|unavailable|offline)|infrastructure)\b/i;
+// Cut on code points (not UTF-16 units) so an emoji is never split into a lone surrogate.
+const cut160 = (text) => Array.from(text).slice(0, 160).join("");
 const clean = (value, name) => {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} is required`);
   return value.trim();
@@ -16,7 +18,7 @@ export function classifyCiFixtures(observations) {
     if (!row || typeof row !== 'object' || !['failed', 'green'].includes(row.status)) throw new TypeError('invalid fixture observation');
     const workflow = clean(row.workflow, 'workflow');
     const platform = clean(row.platform, 'platform');
-    const signature = row.status === 'failed' ? clean(row.signature, 'signature').slice(0, 160) : null;
+    const signature = row.status === 'failed' ? cut160(clean(row.signature, 'signature')) : null;
     if (row.status === 'green') { greens.push({ workflow, platform }); continue; }
     const key = signature;
     const group = groups.get(key) ?? { signature, failures: [], greens: [] };
@@ -58,7 +60,7 @@ export function redactCiEvidence(value, { hostnames = [] } = {}) {
 export async function saveReproDraft({ store, head, signature, targetEnvironment, evidence, steps, observations, hostnames = [], authorizedExecutor = false }) {
   if (!store || typeof store.load !== 'function' || typeof store.save !== 'function') throw new TypeError('store.load and store.save are required');
   head = clean(head, 'head');
-  const rawSignature = clean(signature, 'signature').slice(0, 160);
+  const rawSignature = cut160(clean(signature, 'signature'));
   const result = classifyCiFixtures(observations).find((item) => item.signature === rawSignature);
   if (!result || result.classification !== 'likely_platform_specific' ||
       !result.failures.some((failure) => failure.platform === targetEnvironment)) {
