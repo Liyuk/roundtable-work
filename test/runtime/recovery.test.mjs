@@ -321,7 +321,8 @@ test('wake budget is durable across runs and ends in stop without calling the ha
   const root = await tmp();
   try {
     let calls = 0;
-    const handler = async ({ phase }) => { calls++; return phase === 'reviewing' ? { exitCode: 1 } : { exitCode: 0, output: 'ok' }; };
+    // A quota wait (402) keeps the wake spent; a reviewer outage is refunded and no longer counts against wakes.
+    const handler = async ({ phase }) => { calls++; return phase === 'reviewing' ? { exitCode: 1, statusCode: 402 } : { exitCode: 0, output: 'ok' }; };
     const opts = { workRoot: root, queue: ['3'], handler, maxWakesPerIssue: 2, maxReviewerUnavailable: 99 };
     assert.equal((await runQueue(opts)).outcomes[0].status, 'waiting_external');
     assert.equal((await runQueue(opts)).outcomes[0].status, 'waiting_external');

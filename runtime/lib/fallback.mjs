@@ -1,4 +1,4 @@
-const isBalanceError = (error) => error?.status === 402 || error?.statusCode === 402;
+export const isBalanceError = (error) => error?.status === 402 || error?.statusCode === 402;
 
 /** Budget exhaustion is a quota limit on the same wait-and-probe path as a balance error (#64), not no-progress or a block. */
 export const isQuotaLimit = (event) => event?.reason === 'budget_exhausted';
