@@ -25,15 +25,16 @@ test('claim ticks add one running label and one marker comment, then resume stal
       createComment: async (n, body) => { events.push(['comment', n, body]); issue.comments.push({ body }); },
       listComments: async () => issue.comments,
     };
-    let state = { status: 'queued', heartbeatAt: null, lease: null };
+    let state = { status: 'queued', heartbeatAt: null, lease: null, ledger: [] };
+    const store = { append: async (_id, entry) => { state.ledger.push(entry); } };
     let resumes = 0;
-    const coordinator = createClaimCoordinator({ client, stateRoot: root, loadState: async () => state, isStale: async () => true, resume: async () => { resumes++; } });
+    const coordinator = createClaimCoordinator({ client, stateRoot: root, store, loadState: async () => state, isStale: async () => true, resume: async () => { resumes++; } });
     assert.equal((await coordinator.tick([issue])).claimed, 1);
     assert.equal((await coordinator.tick([issue])).claimed, 0);
     assert.equal(events.filter(([kind]) => kind === 'comment').length, 1);
-    state = { status: 'working', heartbeatAt: 1, lease: { expiresAt: 1 } };
+    state = { status: 'working', heartbeatAt: 1, lease: { expiresAt: 1 }, ledger: [{ id: 'claim', type: 'claimed' }] };
     issue.labels.push('rt:running');
-    const held = createClaimCoordinator({ client, stateRoot: root, loadState: async () => state, isStale: async () => true, isInFlight: async () => true, resume: async () => { resumes++; } });
+    const held = createClaimCoordinator({ client, stateRoot: root, store, loadState: async () => state, isStale: async () => true, isInFlight: async () => true, resume: async () => { resumes++; } });
     assert.equal((await held.tick([issue])).resumed, 0);
     assert.equal((await coordinator.tick([issue])).resumed, 1);
     assert.equal(resumes, 1);
