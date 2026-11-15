@@ -10,6 +10,7 @@ import { openInbox } from '../../runtime/lib/event-inbox.mjs';
 import { openInterventions } from '../../runtime/lib/interventions.mjs';
 import { admission } from '../../runtime/lib/intake.mjs';
 import { scanHygiene } from '../../runtime/lib/hygiene.mjs';
+import { createSelfReviewClient } from '../../runtime/rtd.mjs';
 
 // Seams: ensureSelfReviewTimer, the inbox event the timer fires, and runSelfJob (proposals + filer, or a promotion).
 // Tracker is a fake client; clocks are injected; no network and no gh.
@@ -141,6 +142,44 @@ test('a candidate is skipped when overlappingIssues reports a closed issue from 
     const results = await fireDaily(root, { client, hygiene, extra: { inventory: inventory('tag-d') } });
     assert.deepEqual(results.map((r) => [r.outcome, r.reason]), [['skipped', 'overlap']]);
     assert.equal(client.issues.length, 0);
+  } finally { await cleanup(); }
+});
+
+test('a candidate is skipped as a duplicate of an open issue with the same title, and no issue is filed', async () => {
+  const { root, hygiene, cleanup } = await workspace();
+  try {
+    const open = [{ number: 1, title: 'Inventory row not ported: tag-d', body: 'unrelated', labels: [], state: 'OPEN' }];
+    const client = { ...fakeClient({ open }), listLinked: async () => ({}) };
+    const results = await fireDaily(root, { client, hygiene, extra: { inventory: inventory('tag-d') } });
+    assert.deepEqual(results.map((r) => [r.outcome, r.reason, r.issues]), [['skipped', 'duplicate', [1]]]);
+    assert.equal(client.issues.filter((i) => i.number >= 100).length, 0);
+  } finally { await cleanup(); }
+});
+
+test('a candidate is skipped as a duplicate of a pull request linked to the same work by title', async () => {
+  const { root, hygiene, cleanup } = await workspace();
+  try {
+    const client = { ...fakeClient(), listLinked: async () => ({ 9: [{ number: 60, title: 'Inventory row not ported: tag-d' }] }) };
+    const results = await fireDaily(root, { client, hygiene, extra: { inventory: inventory('tag-d') } });
+    assert.deepEqual(results.map((r) => [r.outcome, r.reason, r.issues]), [['skipped', 'duplicate', [60]]]);
+  } finally { await cleanup(); }
+});
+
+test('production client: an open pull request with the same title, read through the reader, makes the candidate a skipped duplicate', async () => {
+  const { root, hygiene, cleanup } = await workspace();
+  try {
+    const writer = fakeClient();
+    writer.searchIssues = writer.search;
+    const reader = {
+      listIssues: async () => [], listClosedIssues: async () => [], getIssue: async () => ({}),
+      getRepository: async () => ({ owner: 'o', name: 'r' }),
+      listLinkedPullRequests: async () => ({}),
+      listOpenPullRequestTitles: async () => [{ number: 61, title: 'Inventory row not ported: tag-d' }],
+    };
+    const client = createSelfReviewClient({ reader, writer, shadow: false });
+    const results = await fireDaily(root, { client, hygiene, extra: { inventory: inventory('tag-d') } });
+    assert.deepEqual(results.map((r) => [r.outcome, r.reason, r.issues]), [['skipped', 'duplicate', [61]]]);
+    assert.equal(writer.issues.filter((i) => i.number >= 100).length, 0);
   } finally { await cleanup(); }
 });
 

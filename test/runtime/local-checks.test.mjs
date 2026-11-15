@@ -31,6 +31,7 @@ function fixture({ checks = absent, localChecks = LOCAL, localCheck, head = 'abc
     ci: { async requiredGreen() { calls.push('ci'); return checks; } },
     merge: { async squash(pr, evidence) { calls.push(['merge', pr, evidence.ciGreen]); return { merged: true }; } },
     github: {
+      async getPullRequest() { return { body: 'Closes #58' }; },
       async recordedEscalationApproval() { return null; },
       async addLabel() {},
     },
@@ -149,7 +150,7 @@ function mergeFixture({ checks = absent, localChecks = LOCAL, ledgerEntries = []
     gateState: { async get() { return persisted; } },
     store: { async load() { return { ledger }; }, async append() {} },
     github: {
-      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
+      async getPullRequest() { return { body: 'Closes #58', state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
       async requiredGreen() { return checks; },
       async squashMerge(_pr, options) { calls.push(options); return 'merged'; },
     },

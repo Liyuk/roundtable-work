@@ -10,7 +10,7 @@ import { readQueue, isTerminal } from './lib/queue.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { createStateStore, ledgerEntry, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
-import { createIntakeProvider } from './lib/intake.mjs';
+import { createIntakeProvider, linkedPullRequests } from './lib/intake.mjs';
 import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.mjs';
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
@@ -88,7 +88,7 @@ export function exitCodeFor(result) {
 /** The self-review tracker client: reads from `reader`; `search` and the writes go through the shadow fence when `shadow`. */
 export function createSelfReviewClient({ reader, writer, shadow, attempted }) {
   const out = shadow ? createShadowGitHub(writer, attempted) : writer;
-  return { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: out.createIssue, createLabel: out.createLabel, addLabel: out.addLabel, removeLabel: out.removeLabel };
+  return { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), listLinked: async () => typeof reader.listLinkedPullRequests === 'function' ? { ...await linkedPullRequests(reader), open: await reader.listOpenPullRequestTitles(await reader.getRepository()) } : {}, getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: out.createIssue, createLabel: out.createLabel, addLabel: out.addLabel, removeLabel: out.removeLabel };
 }
 
 /** Appends the role's preloaded memory (capped by preload) under `## Memory`; the prompt is unchanged when there is none. */
@@ -491,7 +491,8 @@ export async function runQueue({
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
         const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks });
-        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
+        // The revert PR body is host-written; red-main recovery must not be blocked by the loop-PR `Closes #N` link check.
+        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing, requireClosesLink: false });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
         if (gated.result?.held) throw new Error(`${gated.result.mode} mode: revert merge not executed`);
         return gated.result;

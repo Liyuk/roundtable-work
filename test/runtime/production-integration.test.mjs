@@ -41,7 +41,7 @@ test('an in-flight recovery effect stays paused and requests human intervention 
   const autoMerge = createProductionAdapter({
     pause: { async get() { return null; }, async put() {} },
     github: {
-      async setBase() {}, async getPullRequest() { return { body: '', state: 'open', draft: false, mergeable: true, head: 'head', files: ['x'] }; },
+      async setBase() {}, async getPullRequest() { return { body: 'Closes #53', state: 'open', draft: false, mergeable: true, head: 'head', files: ['x'] }; },
       async requiredGreen() { return true; }, async squashMerge() { return { mergeCommit: 'abcdef0123456789' }; },
       async addLabel() {}, async recordedEscalationApproval() { return null; }, async createComment() {},
       async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
@@ -205,7 +205,7 @@ test('production adapter triggers recovery after red main and holds later work',
   const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
   const calls = [];
   const github = {
-    async setBase() {}, async getPullRequest(pr) { return { body: '', state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
+    async setBase() {}, async getPullRequest(pr) { return { body: pr === 90 ? 'Closes #53' : 'Closes #92', state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr, options) { calls.push(['merge', pr, options]); return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
@@ -253,7 +253,7 @@ export default {
  gates: { async gate0() { await log('gate0'); return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head,rationale:RATIONALE}; }, async crossCheck() { return true; } },
  git: { async createRevert() { await log('revert'); return {sha:'1234567'}; } },
  github: {
-  async setBase() {}, async getPullRequest(pr) { return { body: '', state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
+  async setBase() {}, async getPullRequest(pr) { return { body: pr === 90 ? 'Closes #53 Closes #54' : 'Closes #92', state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
   async requiredGreen(pr) { return pr === 90 || ${revertGreen}; },
   async squashMerge(pr,options) { await log('squash',pr,options); return {mergeCommit:pr === 90 ? 'abcdef0123456789' : '1111111111111111'}; },
   async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
@@ -341,7 +341,7 @@ test('pending main and failed revert gate hold tracker claims across passes', as
   const calls = [];
   const pause = { value: null, async get() { return this.value; }, async put(value) { this.value = structuredClone(value); } };
   const github = {
-    async setBase() {}, async getPullRequest(pr) { return { body: '', state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
+    async setBase() {}, async getPullRequest(pr) { return { body: pr === 90 ? 'Closes #53' : 'Closes #92', state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
     async requiredGreen() { return true; }, async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
     async squashMerge(pr) { calls.push(pr); return { mergeCommit: 'abcdef0123456789' }; },
     async mainStatus() { return { head: mainHead, status: main }; },

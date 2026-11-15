@@ -74,7 +74,7 @@ test('the independent reviewer pass is accepted by runGates as Gate 1', async ()
       },
       ci: { async requiredGreen() { return { green: true }; } },
       merge: { async squash() { return { merged: true }; } },
-      github: { async recordedEscalationApproval() { return null; }, async addLabel() {} },
+      github: { async getPullRequest() { return { body: 'Closes #244' }; }, async recordedEscalationApproval() { return null; }, async addLabel() {} },
     });
     assert.equal(result.status, 'merged');
     assert.ok(records.get('244').passed.includes('gate1'));
@@ -96,7 +96,7 @@ test('single-session review is marked not independent and never passes Gate 1', 
     gates: { async gate0() { return { passed: true }; }, reviewer: async () => result },
     ci: { async requiredGreen() { return { green: true }; } },
     merge: { async squash() { throw new Error('must not merge'); } },
-    github: { async recordedEscalationApproval() { return null; }, async addLabel() {} },
+    github: { async getPullRequest() { return { body: 'Closes #244' }; }, async recordedEscalationApproval() { return null; }, async addLabel() {} },
   });
   assert.equal(gated.status, 'blocked');
   assert.equal(gated.gate, 'gate1');
