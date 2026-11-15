@@ -15,12 +15,12 @@ const MISSING = '/nonexistent/rt-goals-host.json';
 
 const SHIPPED = {
   version: 1,
-  northStar: { metric: 'mtbiHours', target: 24 },
-  capabilities: { L: 'external', H: 'external', R: 'external', D: 'external', M: 'external', B: 'external', S: 'external', O: 'external' },
-  metrics: { windowDays: 7, mtbiHoursMin: 24, firstPassRateMin: 0.6, ownerPullInsPerWeekMax: 3 },
-  selfReview: { cadenceHours: 24, maxPerDay: 1, maxOpen: 1, hostPatchMaxAgeDays: 14, failureRepeat: { count: 3, days: 7 } },
-  reporting: { digestIssue: 0, digestHourUtc: 9 },
-  exit: { windowHours: 168, minMergedPrs: 10, minSelfSourcedCompleted: 3 },
+  northStar: { metric: 'mtbiHours', target: 72 },
+  capabilities: { L: 'self', H: 'self', R: 'self', D: 'self', M: 'self', B: 'self', S: 'self', O: 'self' },
+  metrics: { windowDays: 7, mtbiHoursMin: 24, firstPassRateMin: 0.8, ownerPullInsPerWeekMax: 3 },
+  selfReview: { cadenceHours: 24, maxPerDay: 3, maxOpen: 5, hostPatchMaxAgeDays: 3, failureRepeat: { count: 3, days: 7 } },
+  reporting: { digestIssue: null, digestHourUtc: 15 },
+  exit: { windowHours: 72, minMergedPrs: 6, minSelfSourcedCompleted: 1 },
 };
 
 // Writes the mutated goal file to a temp dir and loads it; returns the loader's promise.
