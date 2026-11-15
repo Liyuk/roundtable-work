@@ -1,6 +1,12 @@
 import { readdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { openActionJournal } from './action-journal.mjs';
+import { fileLedgerStore, LEDGER_PATH, loopWorkspace } from './daemon-loop.mjs';
+import { loadGoals } from './goals.mjs';
+import { computeMetrics, loadMetricSources } from './metrics.mjs';
+import { openInterventions } from './interventions.mjs';
+import { selfMetrics } from './self-metrics.mjs';
 import { dependencies, selectIssues } from './intake.mjs';
 import { normalizeState } from './state.mjs';
 import { homedir, hostname, userInfo } from 'node:os';
@@ -68,6 +74,28 @@ const openActions = (workRoot) => {
   const root = basename(abs) === '.roundtable' ? dirname(abs) : abs;
   return openActionJournal(root).list().filter((a) => OPEN_ACTION_STATES.includes(a.state)).map(({ id, kind, issue, state }) => ({ id, kind, issue, state }));
 };
+
+const DAY = 86_400_000;
+// Self-supervision block (#419): ledger metrics plus #337's tokens per merged PR and first-pass rate over the same window.
+async function selfSupervision(workRoot, now) {
+  const workspace = loopWorkspace(workRoot) ?? resolve(workRoot);
+  const windowDays = await loadGoals().then((goals) => goals.metrics.windowDays, () => 7);
+  const ledgerFile = join(workspace, '.roundtable', 'state', 'interventions.jsonl');
+  const freezeFile = join(workspace, LEDGER_PATH);
+  const metrics = !existsSync(ledgerFile) ? { na: 'intervention ledger absent' }
+    : !existsSync(freezeFile) ? { na: 'freeze ledger absent' }
+      : selfMetrics({ entries: openInterventions(workspace).entries().entries, freezes: fileLedgerStore(freezeFile).load(), now, windowDays });
+  const total = await loadMetricSources(workRoot).then(
+    (sources) => computeMetrics({ since: now - windowDays * DAY, until: now, owner: null, ...sources }).total,
+    () => null,
+  );
+  const unreadable = { na: 'metric sources could not be read' };
+  return {
+    ...metrics,
+    tokensPerMergedPr: total ? (total.tokensPerMergedPr.na ? total.tokensPerMergedPr : total.tokensPerMergedPr.perPr) : unreadable,
+    firstPassRate: total ? (total.firstDispatchSuccess.na ? total.firstDispatchSuccess : total.firstDispatchSuccess.rate) : unreadable,
+  };
+}
 
 /** Collect a best-effort, read-only status snapshot. Sources may be injected for synthetic tests. */
 export async function collectStatus({ workRoot = '.', sources = {}, now = Date.now, budgets = {}, heartbeatTimeoutMs = RUNTIME_DEFAULTS.heartbeatTimeoutMs } = {}) {
@@ -149,6 +177,7 @@ export async function collectStatus({ workRoot = '.', sources = {}, now = Date.n
       developerRetries: budgets.maxDeveloperAttempts ?? null,
       reviewerUnavailable: budgets.maxReviewerUnavailable ?? null,
     },
+    selfSupervision: await selfSupervision(workRoot, now()),
   };
 }
 

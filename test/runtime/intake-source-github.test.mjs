@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createGithubIssuesAdapter } from '../../runtime/lib/intake-adapters/github-issues.mjs';
+import { openInbox } from '../../runtime/lib/event-inbox.mjs';
+import { produceEvents } from '../../runtime/lib/daemon-events.mjs';
 
 // Fake `gh`: records every argv and returns fixture issues; no real gh call, no network.
 const FIXTURE = [
@@ -27,11 +32,11 @@ test('poll returns exactly the fixture issues as normalized raw reports', async 
   assert.deepEqual(reports, [
     {
       url: 'https://github.test/o/r/issues/7', author: 'alice', text: 'Roundtable intake\nfirst body',
-      time: '2026-01-03T00:00:00Z', source_event_id: 'github-issue:7:2026-01-03T00:00:00Z',
+      time: '2026-01-03T00:00:00Z', source_event_id: 'gh-issue:7:2026-01-03T00:00:00Z',
     },
     {
       url: 'https://github.test/o/r/issues/8', author: 'bob', text: 'Another\n',
-      time: '2026-01-04T00:00:00Z', source_event_id: 'github-issue:8:2026-01-04T00:00:00Z',
+      time: '2026-01-04T00:00:00Z', source_event_id: 'gh-issue:8:2026-01-04T00:00:00Z',
     },
   ]);
   assert.deepEqual(Object.keys(reports[0]).sort(), ['author', 'source_event_id', 'text', 'time', 'url']);
@@ -73,6 +78,25 @@ test('adapter exposes no write method', () => {
 test('parse maps a single issue or an array of issues', () => {
   const adapter = createGithubIssuesAdapter({ run: async () => [] });
   const [report] = adapter.parse(FIXTURE[0]);
-  assert.equal(report.source_event_id, 'github-issue:7:2026-01-03T00:00:00Z');
+  assert.equal(report.source_event_id, 'gh-issue:7:2026-01-03T00:00:00Z');
   assert.equal(adapter.parse(FIXTURE).length, 2);
+});
+
+test('webhook report and poll producer for the same change yield exactly one inbox event', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'intake-source-github-'));
+  try {
+    const [report] = createGithubIssuesAdapter({ run: async () => [] }).parse(FIXTURE[0]);
+    const inbox = openInbox(root);
+    inbox.accept({ source_event_id: report.source_event_id, kind: 'intake', issue: 7, payload: { title: 'Roundtable intake' }, receivedAt: Date.now() });
+    const reader = {
+      listIssues: async () => [{ number: 7, title: 'Roundtable intake', updatedAt: FIXTURE[0].updatedAt }],
+      listComments: async () => [],
+    };
+    await produceEvents({ inbox: openInbox(root), reader });
+    const events = openInbox(root).events();
+    assert.equal(events.length, 1);
+    assert.equal(events[0].source_event_id, 'gh-issue:7:2026-01-03T00:00:00Z');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
