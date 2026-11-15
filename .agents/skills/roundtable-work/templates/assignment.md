@@ -6,6 +6,7 @@
 - Receiving role: developer | fixer | reviewer | researcher (executor loads role instructions based on this)
 - Specific result to deliver this time:
 - Acceptance criteria (can verify each line):
+  - Rework rule: before a rework is submitted, re-check EVERY acceptance item one by one and record pass/fail with evidence, not only the items the review rejected.
 - Workspace (absolute path) / modifiable scope / forbidden actions / whether commits allowed (default no):
 - Delivery method: final reply uses delivery card; where artifacts go:
 
