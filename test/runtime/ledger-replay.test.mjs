@@ -52,7 +52,7 @@ test('a replayed merge for the same head does not squash again', async () => {
     const store = await createStateStore({ workRoot: root, now: () => 1 });
     const gateRecord = { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'], safetyFiles: [], safetyApproved: false };
     const squashes = [];
-    const entry = createMergeEntryPoint({
+    const entry = createMergeEntryPoint({ mode: 'agent',
       store,
       gateState: { async get() { return gateRecord; } },
       github: {
@@ -131,7 +131,7 @@ test('claim, merge, CI re-run, and label projection all read and write the one s
     assert.equal((await projectLabels({ number: 53, issue: { state: 'open', labels: [] }, client, store, now: () => 2 })).desired.length, 1);
     // Merge reads the ledger through the same store and records the merge there.
     const gateRecord = { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'], safetyFiles: [], safetyApproved: false };
-    const entry = createMergeEntryPoint({ store, gateState: { async get() { return gateRecord; } }, github: {
+    const entry = createMergeEntryPoint({ mode: 'agent', store, gateState: { async get() { return gateRecord; } }, github: {
       async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
       async requiredGreen() { return true; },
       async squashMerge() { return 'merged'; },
