@@ -190,7 +190,7 @@ test('state: malformed attempts/artifacts are rejected or normalised, budgets st
   const store = await createStateStore({ workRoot: root });
   assert.deepEqual((await store.load('e')).attempts, { developer: 0, reviewerUnavailable: 0, wakes: 0 });
   let calls = 0;
-  const handler = async (a) => { calls++; return a.phase === 'reviewing' ? { exitCode: 1 } : okHandler(a); }; // reviewer unavailable: not terminal
+  const handler = async (a) => { calls++; return a.phase === 'reviewing' ? { exitCode: 1, statusCode: 402 } : okHandler(a); }; // quota wait: spends the wake (a reviewer outage is refunded)
   const statuses = [];
   for (let i = 0; i < 4; i++) statuses.push((await runQueue({ workRoot: root, queue: ['e'], handler, maxWakesPerIssue: 2, maxReviewerUnavailable: 99 })).outcomes[0].status);
   assert.deepEqual(statuses.slice(0, 3), ['waiting_external', 'waiting_external', 'stop']);
