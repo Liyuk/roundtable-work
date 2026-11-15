@@ -2,7 +2,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { PathEscapeError } from './lib/paths.mjs';
 import { acquireLock } from './lib/lock.mjs';
@@ -34,7 +34,7 @@ import { reflect } from './lib/reflect.mjs';
 import { openMemoryStore } from './lib/memory-store.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
-import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { runLoop, loopWorkspace, cycleSteps, fileLedgerStore, LEDGER_PATH, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
 import { createResourceGovernor } from './lib/prune.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
@@ -49,6 +49,8 @@ import { loadGoals } from './lib/goals.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
+import { selfMetrics } from './lib/self-metrics.mjs';
+import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
@@ -59,6 +61,13 @@ const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
 /** Outbox retry policy: a failed item waits backoff * 2^(failures-1) ms, and is dead-lettered after this many failures. */
 const OUTBOX_BACKOFF_MS = 60_000;
 const OUTBOX_DEAD_AFTER = 5;
+
+// Self-supervision signals for the digest and the anomaly rules, read from the intervention ledger and the freeze ledger.
+function supervisionSignals({ workspace, goals, outbox, now }) {
+  const entries = openInterventions(workspace).entries().entries;
+  const freezes = fileLedgerStore(join(workspace, LEDGER_PATH)).load();
+  return { entries, metrics: selfMetrics({ entries, freezes, now, windowDays: goals.metrics.windowDays }), thresholds: goals.metrics, deadLetters: deadLetterCount(outbox) };
+}
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
 const DECISION_REASK = 'Your DECISION was missing or invalid. Reply with only the decision file for this turn, starting with the DECISION=<do|continue|ask|out-of-scope|decompose|done> line, then its required lines. Do no other work.';
 const parsesAsDecision = (raw) => { try { typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw); return true; } catch { return false; } };
@@ -1141,8 +1150,9 @@ async function main(argv) {
   const outbox = args.loop ? openOutbox(workspace) : undefined;
   const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
   // Daily self-review (RT-S8b) runs in GitHub loop mode only; the hygiene denylist is pinned by the operator through the environment.
+  const goals = args.loop ? await loadGoals() : null;
   const selfReview = args.loop && reader && {
-    goals: await loadGoals(),
+    goals,
     hygiene: { denylistPath: process.env.RT_HYGIENE_DENYLIST, expectedSha256: process.env.RT_HYGIENE_DENYLIST_SHA256, repoRoot: resolve(args['repo-root'] ?? '.') },
     client: { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: writer.createIssue, createLabel: writer.createLabel, addLabel: writer.addLabel, removeLabel: writer.removeLabel },
   };
@@ -1173,21 +1183,31 @@ async function main(argv) {
       const dispatchLine = makeDispatchLine({ root: workspace, owner, policy });
       const timers = openTimers(workspace);
       if (selfReview) ensureSelfReviewTimer(timers, selfReview.goals, Date.now());
+      if (selfReview) ensureDigestTimer(timers, goals, Date.now());
       await cycleSteps({ root: workspace, inbox, timers, reader,
         dispatchLine: async (batch) => {
           for (const event of batch.events) if (event.kind === 'owner_comment') {
             recordOwnerEvent({ ledger, event, state: await stateStore.load(String(batch.issue)), owner });
             await applyActionReply({ root: workspace, journal, inbox, owner, event });
           }
-          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job) {
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job === 'digest') {
+            const signals = supervisionSignals({ workspace, goals, outbox, now: Date.now() });
+            const since = Date.parse(signals.metrics.window.since);
+            const merged = ((await reader.listRecentMerges()) ?? []).filter((pr) => Date.parse(pr.mergedAt) >= since);
+            const actions = journal.list().filter((a) => a.at >= since);
+            const text = buildDigest({ window: signals.metrics.window, metrics: signals.metrics, entries: signals.entries, merged, actions, stage: 'not computed (RT-S12)', thresholds: signals.thresholds, deadLetters: signals.deadLetters });
+            await enqueueDigest({ outbox, now: Date.now(), issue: goals.reporting.digestIssue, text, hygiene: selfReview.hygiene });
+          }
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job && event.payload.job !== 'digest') {
             await runSelfJob({ root: workspace, now: Date.now(), event, goals: selfReview.goals, inputs: gatherInputs(workspace), client: selfReview.client, hygiene: selfReview.hygiene });
           }
           await dispatchLine(batch);
         } });
       // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
       if (admit) console.log(JSON.stringify(await pass(workers)));
-      // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
-      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+      // End of each cycle: raise anomaly alerts, then flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
+      if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
+      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
     }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }
