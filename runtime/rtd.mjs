@@ -37,6 +37,7 @@ import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, fileLedgerStore, LEDGER_PATH, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
 import { createResourceGovernor } from './lib/prune.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
+import { sweepAskTimeouts } from './lib/ask-timeout.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
 import { openActionJournal } from './lib/action-journal.mjs';
 import { loadAutonomy } from './lib/autonomy.mjs';
@@ -1209,6 +1210,7 @@ async function main(argv) {
           }
           await dispatchLine(batch);
         } });
+      await sweepAskTimeouts({ root: workspace, policy });
       // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
       if (admit) console.log(JSON.stringify(await pass(workers)));
       // End of each cycle: raise anomaly alerts, then flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
