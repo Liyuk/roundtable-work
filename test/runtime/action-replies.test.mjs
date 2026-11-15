@@ -9,6 +9,9 @@ import { parseRtCommand } from '../../runtime/lib/rt-commands.mjs';
 import { openInbox } from '../../runtime/lib/event-inbox.mjs';
 import { openOutbox } from '../../runtime/lib/outbox.mjs';
 import { collectStatus } from '../../runtime/lib/status.mjs';
+import { makeDispatchLine } from '../../runtime/lib/daemon-cards.mjs';
+import { cycleSteps } from '../../runtime/lib/daemon-loop.mjs';
+import { openTimers } from '../../runtime/lib/event-timers.mjs';
 
 const OWNER = 'liyuk';
 const ID = 'act:config-change:5:k1';
@@ -106,6 +109,10 @@ test('amend moves the action to amend_requested, queues the text on the line, an
     assert.equal(events[0].issue, 5);
     assert.deepEqual(events[0].payload, { command: 'amend', actionId: id, text: 'use a smaller diff', sessionId: 'sess-1', author: OWNER });
     assert.equal(journal.pendingAmend(5), id);
+    const resumed = [];
+    const dispatchLine = makeDispatchLine({ root, owner: OWNER, resume: async (args) => resumed.push(args) });
+    await cycleSteps({ root, inbox, timers: openTimers(root), now: () => 42, dispatchLine });
+    assert.deepEqual(resumed, [{ root, issue: 5, sessionId: 'sess-1', text: 'use a smaller diff', actionId: id }]);
 
     const next = await journal.perform({ action: action({ key: 'k2', amends: id }), tier: 'auto-silent', notify() {}, apply: async () => ({}) });
     assert.equal(next.state, 'settled');
