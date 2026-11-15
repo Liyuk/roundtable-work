@@ -1,0 +1,6 @@
+{
+  "min": 1,
+  "max": 8,
+  "load": { "high": 1.5, "low": 0.8 },
+  "memory": { "minRatio": 0.1, "okRatio": 0.2 }
+}

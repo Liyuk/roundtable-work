@@ -88,7 +88,7 @@ async function dirBytes(path) {
  * plus the anchor root exceed `stateMaxBytes` or the free ratio of the workspace filesystem is below `minFreeRatio`;
  * a closed budget enqueues one notification per UTC day.
  */
-export function createGovernor({
+export function createResourceGovernor({
   root, tmpRoot = tmpdir(), anchorRoot = anchorRootOf(), uid = process.getuid(), now = Date.now,
   size = dirBytes, statfs = statfsOf, config = DEFAULTS,
 }) {

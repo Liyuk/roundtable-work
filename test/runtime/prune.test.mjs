@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createGovernor, prune } from '../../runtime/lib/prune.mjs';
+import { createResourceGovernor, prune } from '../../runtime/lib/prune.mjs';
 import { hostId } from '../../runtime/lib/lock.mjs';
 import { openInterventions } from '../../runtime/lib/interventions.mjs';
 import { openOutbox } from '../../runtime/lib/outbox.mjs';
@@ -115,7 +115,7 @@ test('RT-S6 pruning runs at most once every 10 minutes, and each run that remove
   const tmpRoot = await fixture(t);
   const anchorRoot = await fixture(t);
   let now = NOW;
-  const gov = createGovernor({ root, tmpRoot, anchorRoot, uid: UID, now: () => now });
+  const gov = createResourceGovernor({ root, tmpRoot, anchorRoot, uid: UID, now: () => now });
   await oldDir(join(tmpRoot, 'rt-lock-a'), 60 * MIN);
   await gov.prune();
   assert.equal(exists(join(tmpRoot, 'rt-lock-a')), false);
@@ -154,7 +154,7 @@ test('RT-S6 disk budget closes admission when the state and anchor sizes or the 
   let now = NOW;
   let bytes = 1024;
   let free = { bavail: 50, blocks: 100 };
-  const gov = createGovernor({
+  const gov = createResourceGovernor({
     root, tmpRoot: root, anchorRoot, uid: UID, now: () => now,
     size: async () => bytes,
     statfs: async () => free,

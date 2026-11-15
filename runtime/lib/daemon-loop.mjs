@@ -1,7 +1,10 @@
 // Daemon cycle loop: each cycle records the gap since the previous cycle in a file-backed freeze ledger, runs one pass
 // with an adaptive worker cap, writes the heartbeat and waits a bounded interval. Clocks, sleep and the pass are injected.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { freemem, loadavg, cpus, totalmem } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { createGovernor, governorDefaults, readMemAvailableRatio } from './governor.mjs';
+import { openInterventions } from './interventions.mjs';
 import { GAP_FACTOR, boundedWait, createCapState, createFreezeLedger, effectiveCap, recordCycleGap } from './liveness.mjs';
 import { HEARTBEAT_PATH, SCHEMA_VERSION, parseHeartbeat, writeHeartbeat } from '../supervisor/heartbeat.mjs';
 import { processPending } from './event-claim.mjs';
@@ -23,6 +26,9 @@ const clip = (text, n) => Array.from(text).slice(0, n).join('');
 
 /** Reads a state file; undefined when absent. */
 const readText = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined);
+
+/** Host sample for the governor: 1-minute load, CPU count and MemAvailable ratio (falls back to os.freemem/totalmem). */
+const hostSample = () => ({ load1: loadavg()[0], cpus: cpus().length, memAvailableRatio: readMemAvailableRatio(readText('/proc/meminfo'), freemem() / totalmem()) });
 
 /** Replaces the file atomically: write a temp file in the same directory, then rename it over the target. */
 function writeAtomic(file, text) {
@@ -63,9 +69,11 @@ export function watchdogVerdict({ heartbeat, ledgerEntries, now, pollMs }) {
  * Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass does not settle within `cycleDeadlineMs`. A throwing pass writes a
  * stopped heartbeat and rethrows.
  */
-export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal, wake, prune, budget }) {
+export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal, wake, sample = hostSample, prune, budget }) {
   const ledger = createFreezeLedger({ store: fileLedgerStore(join(workRoot, LEDGER_PATH)) });
   const cap = createCapState(baseWorkers);
+  const governor = createGovernor({ ...governorDefaults, max: baseWorkers });
+  let governorCap = baseWorkers;
   const aborted = new Promise((resolve) => signal?.addEventListener('abort', resolve, { once: true }));
 
   const heartbeat = (state, lastCycleAt, error) => {
@@ -86,6 +94,13 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
     if (last) recordCycleGap({ ledger, pollMs, start: last.wall, end: start, wallDeltaMs: start - last.wall, monoDeltaMs: m0 - last.mono });
     last = { wall: start, mono: m0 };
 
+    const s = sample(), next = governor.step(s);
+    if (next !== governorCap) {
+      const at = new Date(start).toISOString(), workspace = loopWorkspace(workRoot);
+      if (workspace) openInterventions(workspace).append({ at, category: 'resource', ref: 'none', internalized: 'no', source: 'self', reason: `load1=${s.load1} cpus=${s.cpus} memAvailableRatio=${s.memAvailableRatio} from=${governorCap} to=${next}` }, { key: `governor:${at}:${governorCap}->${next}` });
+      governorCap = next;
+    }
+
     let timer;
     const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(DEADLINE), cycleDeadlineMs); });
     let outcome;
@@ -93,7 +108,7 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
       const cycle = async () => {
         if (prune) await prune();
         if (budget && !(await budget())) return null;
-        return pass({ workers: () => effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }) });
+        return pass({ workers: () => Math.min(effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }), governorCap) });
       };
       outcome = await Promise.race([cycle(), deadline]);
     } catch (error) {

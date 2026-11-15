@@ -32,7 +32,7 @@ import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
-import { createGovernor } from './lib/prune.mjs';
+import { createResourceGovernor } from './lib/prune.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
 import { openActionJournal } from './lib/action-journal.mjs';
@@ -1114,7 +1114,7 @@ async function main(argv) {
     const stateStore = await createStateStore({ workRoot: args['work-root'] });
     // An inbox write from this process ends the inter-cycle wait early.
     const wake = createWakeSignal();
-    const governor = createGovernor({ root: workspace });
+    const governor = createResourceGovernor({ root: workspace });
     const code = await runLoop({ pass: async ({ workers }) => {
       // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
       const owner = ownerOf(args.repo);
