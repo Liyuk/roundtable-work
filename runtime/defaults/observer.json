@@ -1,0 +1,5 @@
+{
+  "stage": 5,
+  "allowed": ["read-heartbeat", "read-ledger", "read-github", "record-intervention"],
+  "denied": ["restart-daemon", "pause-queue", "void-stale-pause", "reprompt", "rollback", "add-label", "convert-to-draft"]
+}
