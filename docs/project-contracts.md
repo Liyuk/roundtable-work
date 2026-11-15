@@ -23,6 +23,19 @@ Each rule says whether the code enforces it or whether it is a convention that t
 
 **Not identity.** Labels, comment text, ticket wording, and prompt text do not identify a session, role, issue or pull request on their own.
 
+## Pre-dispatch checks
+
+Before an implementer is dispatched, Chief prepares the environment (`npm ci`, or the repository's documented equivalent) in the worktree and verifies that a temporary directory is writable. The implementer must not discover a missing dependency or a read-only temp directory itself.
+
+The preflight (`runtime/lib/preflight.mjs`, wired into the developing phase by the `preDispatch` option of `runtime/rtd.mjs`) checks, in this order, and stops at the first failure:
+
+1. Every convention file named on the card exists in the worktree and resolves inside it (`missing_convention_file:<name>`, `convention_outside_worktree:<name>`).
+2. The card's `baseline` is a `MAJOR.MINOR.PATCH` version equal to the expected baseline (`baseline_invalid`, `baseline_stale`).
+3. The card's key numbers equal the source's, with no unknown keys (`numbers_mismatch`).
+4. The prepare command succeeds and a temporary directory is writable (`environment_not_ready`, with a stderr tail of at most 2000 characters).
+
+A failed check fails closed: the wake ends as `stop` with class `predispatch_failed` and the reason above, and no implementer runs. Convention: the checks are only as complete as the card's lists.
+
 ## Other invariants
 
 - Executors do not commit by default; the Chief commits after a review passes (convention, `.agents/skills/roundtable-work/SKILL.md`).

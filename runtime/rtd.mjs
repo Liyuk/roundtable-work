@@ -129,7 +129,7 @@ export async function runQueue({
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -605,6 +605,10 @@ export async function runQueue({
         // Chosen before the phase begins: development is never handed to Chief, and a rework goes to the fixer role.
         const role = phase === 'developing' ? implementerRole({ routing, rework: (await store.load(id)).attempts.developer > 0 }) : undefined;
         if (role?.stop) return await finish('stop', role.stop, role.stop, 'stop');
+        if (phase === 'developing' && preDispatch) {
+          const check = await preDispatch({ item, state, worktree: item.worktree ?? repoRoot });
+          if (!check.ok) return await finish('stop', 'predispatch_failed', check.reason, 'stop');
+        }
         await store.beginPhase(id, phase);
         if (!(await refreshLock())) return lost();
         state = await store.load(id);
