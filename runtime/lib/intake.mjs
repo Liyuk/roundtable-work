@@ -110,7 +110,7 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
 }
 
 // Linked pull requests are a best-effort dedupe signal, as in status: a failed read leaves intake running without them.
-const linkedPullRequests = (reader, signal) => reader.getRepository({ signal })
+export const linkedPullRequests = (reader, signal) => reader.getRepository({ signal })
   .then(repository => reader.listLinkedPullRequests(repository, { signal }))
   .catch(error => { if (signal?.aborted) throw error; return {}; });
 

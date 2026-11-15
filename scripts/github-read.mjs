@@ -48,6 +48,12 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
       }
       return linked;
     },
+    async listOpenPullRequestTitles({ owner, name } = {}, options) {
+      if (typeof owner !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(owner) || typeof name !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(name)) throw new TypeError('Invalid repository identity');
+      const result = await run(['pr', 'list', '--repo', `${owner}/${name}`, '--state', 'open', '--limit', '1000', '--json', 'number,title'], options);
+      if (!Array.isArray(result) || result.length >= 1000 || result.some(pr => !Number.isSafeInteger(pr?.number) || typeof pr?.title !== 'string')) throw new TypeError('Invalid open pull requests');
+      return result.map(({ number, title }) => ({ number, title }));
+    },
     async listIssues(options) {
       const result = await run(['issue', 'list', ...repository, '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,updatedAt,body,url'], options);
       if (!Array.isArray(result) || result.length >= 1000) throw new TypeError('Issue list is invalid or may be truncated');
