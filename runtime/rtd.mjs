@@ -2,7 +2,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { PathEscapeError } from './lib/paths.mjs';
 import { acquireLock } from './lib/lock.mjs';
@@ -29,12 +29,17 @@ import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { runMetrics } from './lib/metrics.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
+import { preload } from './lib/role-memory.mjs';
+import { reflect } from './lib/reflect.mjs';
+import { openMemoryStore } from './lib/memory-store.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
-import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { runLoop, loopWorkspace, cycleSteps, fileLedgerStore, LEDGER_PATH, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { createResourceGovernor } from './lib/prune.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
 import { openActionJournal } from './lib/action-journal.mjs';
+import { loadAutonomy } from './lib/autonomy.mjs';
 import { applyActionReply } from './lib/action-replies.mjs';
 import { recordOwnerEvent } from './lib/intervention-producers.mjs';
 import { openInterventions } from './lib/interventions.mjs';
@@ -44,6 +49,8 @@ import { loadGoals } from './lib/goals.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
+import { selfMetrics } from './lib/self-metrics.mjs';
+import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
@@ -54,6 +61,13 @@ const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
 /** Outbox retry policy: a failed item waits backoff * 2^(failures-1) ms, and is dead-lettered after this many failures. */
 const OUTBOX_BACKOFF_MS = 60_000;
 const OUTBOX_DEAD_AFTER = 5;
+
+// Self-supervision signals for the digest and the anomaly rules, read from the intervention ledger and the freeze ledger.
+function supervisionSignals({ workspace, goals, outbox, now }) {
+  const entries = openInterventions(workspace).entries().entries;
+  const freezes = fileLedgerStore(join(workspace, LEDGER_PATH)).load();
+  return { entries, metrics: selfMetrics({ entries, freezes, now, windowDays: goals.metrics.windowDays }), thresholds: goals.metrics, deadLetters: deadLetterCount(outbox) };
+}
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
 const DECISION_REASK = 'Your DECISION was missing or invalid. Reply with only the decision file for this turn, starting with the DECISION=<do|continue|ask|out-of-scope|decompose|done> line, then its required lines. Do no other work.';
 const parsesAsDecision = (raw) => { try { typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw); return true; } catch { return false; } };
@@ -68,6 +82,25 @@ export function exitCodeFor(result) {
   if (result?.status === 'locked') return EXIT_LOCKED;
   if (result?.status === 'lock_lost') return EXIT_LOCK_LOST;
   return 0;
+}
+
+/** Appends the role's preloaded memory (capped by preload) under `## Memory`; the prompt is unchanged when there is none. */
+export function appendMemory(promptText, { store, role }) {
+  const memory = preload({ store, role });
+  return memory ? `${promptText}\n\n## Memory\n${memory}` : promptText;
+}
+
+/**
+ * One reflection per event id: a marker row `event:<id>` (layer 0, which preload, promote and prune ignore) is written after
+ * `reflect` and makes a replayed event a no-op, so the provider is called once and at most one layer-2 row exists.
+ * A provider error leaves no marker, so the event may be retried later.
+ */
+export async function reflectOnce({ store, provider, event, role }) {
+  const marker = `event:${event.id}`;
+  if (store.get(marker)) return { status: 'replayed' };
+  const result = await reflect({ event, provider, store, role });
+  store.save({ layer: 0, role, id: marker });
+  return result;
 }
 
 /**
@@ -157,7 +190,7 @@ export async function runQueue({
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -188,6 +221,14 @@ export async function runQueue({
   if (!lock.acquired) return { status: 'locked', holder: lock.holder, reason: lock.reason };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
   store.setFence({ highWater: () => lock.anchorHighWater() }); // and by the anchor high-water mark, not the state file
+
+  // Best effort: a reflection failure never fails the wake. No marker is written, so a later wake may retry the event.
+  const reflectEvent = async ({ kind, attempt, role = 'chief', issue, reason }) => {
+    if (!memory) return;
+    try {
+      await reflectOnce({ store: memory.store, provider: memory.provider, role, event: { id: `${issue}:${kind}:${attempt}`, type: kind, issue, reason } });
+    } catch { /* best effort: nothing else is recorded */ }
+  };
 
   // Set when a timed-out handler did not settle within graceMs: lock and issue lease stay renewed until it settles.
   let abandonedHandler = false;
@@ -890,19 +931,25 @@ export async function runQueue({
           }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
-          if (phase === 'finalizing') return { ...(await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done')), ...(step.merged === true && { merged: true }) };
+          if (phase === 'finalizing') {
+            const done = await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
+            await reflectEvent({ kind: 'done', attempt: state.attempts.wakes, issue: id, reason: cls });
+            return { ...done, ...(step.merged === true && { merged: true }) };
+          }
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
           // After a phase timeout the abandoned handler may still be running: never start the retry in this wake.
           const next = await store.retryDeveloper(id, cls, reason, { ...(phaseTimedOut ? { suspendPhase: phase } : {}), retryFinding: step.retryFinding });
           if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop', verdict.ruleRelated === true);
+          await reflectEvent({ kind: 'fix', attempt: next.attempts.developer, role, issue: id, reason });
           if (phaseTimedOut) return out('queued', { class: cls, reason, decision: 'wait', phase: PHASES[0] });
           phase = PHASES[0];
         } else if (cls === 'finalize_failure') {
           // Finalizing may already have had external side effects: never re-run it automatically.
           await store.markInterrupted(id, phase, cls);
           await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
+          await reflectEvent({ kind: 'gate_fail', attempt: state.attempts.wakes, issue: id, reason });
           return out('interrupted', { class: cls, reason, decision: 'ask', phase });
         } else if (cls === 'reviewer_unavailable') {
           // A reviewer outage is not work done by this wake: refund the wake and count only the reviewer budget.
@@ -1066,10 +1113,11 @@ async function main(argv) {
     console.error(error.message.replace(/^routing /, 'routing: '));
     return 2;
   }
+  const memoryStore = openMemoryStore({ dir: resolve(args['work-root'], 'state') });
   const prompts = {};
   for (const role of ['chief', 'developer', 'fixer', 'reviewer', 'researcher']) {
     const prompt = await readFile(new URL(`../.agents/skills/roundtable-work/prompts/roles/${role}.md`, import.meta.url), 'utf8');
-    prompts[role] = renderRolePrompt(prompt, facts);
+    prompts[role] = appendMemory(renderRolePrompt(prompt, facts), { store: memoryStore, role });
   }
   const routing = { facts, prompts };
   const models = { reviewer: facts.roles.reviewer.model, crossCheck: facts.roles.crosscheck.model };
@@ -1082,6 +1130,8 @@ async function main(argv) {
     console.error('handler module must export preDispatch (the pre-dispatch preflight)');
     return 2;
   }
+  // Reflection runs only when the handler module supplies a provider; otherwise no model is called.
+  const memory = handlerModule.reflectionProvider ? { store: memoryStore, provider: handlerModule.reflectionProvider } : undefined;
   const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
   const maxEscalationAttempts = escalationAdapter ? escalationAttemptBudget(process.env) : undefined;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
@@ -1100,15 +1150,16 @@ async function main(argv) {
   const outbox = args.loop ? openOutbox(workspace) : undefined;
   const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
   // Daily self-review (RT-S8b) runs in GitHub loop mode only; the hygiene denylist is pinned by the operator through the environment.
+  const goals = args.loop ? await loadGoals() : null;
   const selfReview = args.loop && reader && {
-    goals: await loadGoals(),
+    goals,
     hygiene: { denylistPath: process.env.RT_HYGIENE_DENYLIST, expectedSha256: process.env.RT_HYGIENE_DENYLIST_SHA256, repoRoot: resolve(args['repo-root'] ?? '.') },
     client: { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: writer.createIssue, createLabel: writer.createLabel, addLabel: writer.addLabel, removeLabel: writer.removeLabel },
   };
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
@@ -1121,30 +1172,43 @@ async function main(argv) {
     const stateStore = await createStateStore({ workRoot: args['work-root'] });
     // An inbox write from this process ends the inter-cycle wait early.
     const wake = createWakeSignal();
-    const code = await runLoop({ pass: async ({ workers }) => {
+    const governor = createResourceGovernor({ root: workspace });
+    const code = await runLoop({ pass: async ({ workers, admit }) => {
       // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
       const owner = ownerOf(args.repo);
       const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
       const journal = openActionJournal(workspace, { git: autoMerge?.git, github: shadow ? createShadowGitHub(writer) : writer });
-      const dispatchLine = makeDispatchLine({ root: workspace, owner });
       const ledger = openInterventions(workspace);
+      const policy = { autonomy: (await loadAutonomy()).autonomy, journal, ledger };
+      const dispatchLine = makeDispatchLine({ root: workspace, owner, policy });
       const timers = openTimers(workspace);
       if (selfReview) ensureSelfReviewTimer(timers, selfReview.goals, Date.now());
+      if (selfReview) ensureDigestTimer(timers, goals, Date.now());
       await cycleSteps({ root: workspace, inbox, timers, reader,
         dispatchLine: async (batch) => {
           for (const event of batch.events) if (event.kind === 'owner_comment') {
             recordOwnerEvent({ ledger, event, state: await stateStore.load(String(batch.issue)), owner });
             await applyActionReply({ root: workspace, journal, inbox, owner, event });
           }
-          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job) {
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job === 'digest') {
+            const signals = supervisionSignals({ workspace, goals, outbox, now: Date.now() });
+            const since = Date.parse(signals.metrics.window.since);
+            const merged = ((await reader.listRecentMerges()) ?? []).filter((pr) => Date.parse(pr.mergedAt) >= since);
+            const actions = journal.list().filter((a) => a.at >= since);
+            const text = buildDigest({ window: signals.metrics.window, metrics: signals.metrics, entries: signals.entries, merged, actions, stage: 'not computed (RT-S12)', thresholds: signals.thresholds, deadLetters: signals.deadLetters });
+            await enqueueDigest({ outbox, now: Date.now(), issue: goals.reporting.digestIssue, text, hygiene: selfReview.hygiene });
+          }
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job && event.payload.job !== 'digest') {
             await runSelfJob({ root: workspace, now: Date.now(), event, goals: selfReview.goals, inputs: gatherInputs(workspace), client: selfReview.client, hygiene: selfReview.hygiene });
           }
           await dispatchLine(batch);
         } });
-      console.log(JSON.stringify(await pass(workers)));
-      // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
-      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
-    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake });
+      // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
+      if (admit) console.log(JSON.stringify(await pass(workers)));
+      // End of each cycle: raise anomaly alerts, then flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
+      if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
+      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }
     return code;
