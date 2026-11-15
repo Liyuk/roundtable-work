@@ -1,6 +1,105 @@
-// Progressive enhancement for the synthetic walkthrough. Plain JS, no frameworks, no network.
-// The no-JS page already lists every step; this script adds a stepper over that same markup.
+// Progressive enhancement. Plain JS, no frameworks, no network.
+// 1. The architecture diagram: selecting a module shows its description, status, code and issues. The same
+//    facts are in the module table of the page (rendered from docs/architecture.md), which this script reads.
+// 2. The synthetic walkthrough: a stepper over the step list that is already in the page.
 (() => {
+  'use strict';
+
+  const arch = document.querySelector('[data-arch]');
+  if (!arch) return;
+  const panel = document.getElementById('module-panel');
+  const dock = document.getElementById('panel-slot');
+  const live = document.getElementById('arch-live');
+  const index = document.getElementById('module-index');
+  const buttons = Array.from(arch.querySelectorAll('button.mod'));
+  const wide = window.matchMedia('(min-width: 64rem)');
+  const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let current = null;
+
+  const cell = (row, label) => row.querySelector(`[data-label="${label}"]`);
+
+  function element(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  function fact(label, content) {
+    const wrap = element('div');
+    wrap.append(element('dt', '', label));
+    const dd = element('dd');
+    dd.append(content);
+    wrap.append(dd);
+    return wrap;
+  }
+
+  // Builds the panel for one module from its row in the module table.
+  function build(button) {
+    const row = document.querySelector(`tr[data-module="${button.dataset.module}"]`);
+    if (!row) return null;
+    const name = row.querySelector('th').textContent;
+    const status = cell(row, 'Status').firstElementChild.cloneNode(true);
+    const meaning = document.querySelector(`.key-item.st-${button.dataset.status} .key-meaning`);
+    const description = cell(row, 'What it does').textContent;
+    const issues = cell(row, 'Issues').textContent;
+    const body = element('div', 'panel-body');
+    body.append(element('p', '', description));
+    const facts = element('dl');
+    facts.append(fact('Code', cell(row, 'Code').firstChild.cloneNode(true)));
+    facts.append(fact('Issues', document.createTextNode(issues)));
+    body.append(facts);
+    const heading = element('h4', '', name);
+    const meant = element('p', 'panel-meaning');
+    meant.append(status, document.createTextNode(meaning ? ` ${meaning.textContent}` : ''));
+    panel.replaceChildren(heading, meant, body);
+    return { name, status: status.textContent.trim(), description };
+  }
+
+  // On a wide screen the panel sits under the diagram; on a narrow one it opens right under the module.
+  function place(button) {
+    if (wide.matches || !button) dock.append(panel);
+    else button.closest('li').append(panel);
+  }
+
+  function close() {
+    if (current) current.setAttribute('aria-expanded', 'false');
+    current = null;
+    panel.hidden = true;
+    dock.append(panel);
+  }
+
+  function open(button) {
+    if (current) current.setAttribute('aria-expanded', 'false');
+    const info = build(button);
+    if (!info) return;
+    current = button;
+    button.setAttribute('aria-expanded', 'true');
+    place(button);
+    panel.hidden = false;
+    live.textContent = `${info.name}: ${info.status}. ${info.description}`;
+    panel.scrollIntoView({ block: 'nearest', behavior: motion.matches ? 'auto' : 'smooth' });
+  }
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => { if (button === current) close(); else open(button); });
+  }
+  arch.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !current) return;
+    const back = current;
+    close();
+    back.focus();
+  });
+  // With JavaScript the diagram is the way in; the table stays in the page, folded, for anyone who wants all modules at once.
+  if (index) index.open = false;
+
+  const rehome = () => { if (current) place(current); };
+  if (typeof wide.addEventListener === 'function') wide.addEventListener('change', rehome);
+  else if (typeof wide.addListener === 'function') wide.addListener(rehome);
+})();
+
+(() => {
+
   'use strict';
 
   const root = document.querySelector('[data-stepper]');

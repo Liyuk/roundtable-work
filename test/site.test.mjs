@@ -7,8 +7,10 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { buildSite } from '../scripts/build-site.mjs';
 
-// Checks for the static demo site in site/. No browser is needed: the page is generated HTML,
-// so structure, links, text and assets are verified by reading the files.
+// Checks for the static site in site/. No browser is needed here: the page is generated HTML, so structure,
+// links, text and assets are verified by reading the files. test/site-architecture.test.mjs covers the
+// architecture diagram against docs/architecture.md; test/site-browser.test.mjs drives a real browser when
+// one is installed. This file covers the page as a whole and the synthetic single-ticket walkthrough.
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const siteDir = join(root, 'site');
@@ -51,7 +53,7 @@ test('site/ holds exactly the expected static files', () => {
   assert.deepEqual(readdirSync(siteDir).sort(), ['app.js', 'index.html', 'styles.css']);
 });
 
-test('the checked-in site equals a fresh build from scenario.json (text and data cannot drift)', () => {
+test('the checked-in site equals a fresh build from architecture.md and scenario.json (text and data cannot drift)', () => {
   const fresh = buildSite();
   for (const [name, text] of Object.entries(fresh)) {
     assert.equal(read(join(siteDir, name)), text, `site/${name} is out of date; run npm run build:site`);
@@ -120,9 +122,14 @@ test('one h1 and headings never skip a level', () => {
     assert.ok(text.length > 0, 'empty heading');
     prev = level;
   }
-  for (const word of ['What it is', 'The flow at a glance', 'Roles', 'Walkthrough', 'When things go wrong', 'Pause controls', 'Implemented today vs planned', 'Limits']) {
-    assert.ok(headings.some(([l, t]) => l === 2 && t === word), `h2 ${word} missing`);
-  }
+  const h2 = headings.filter(([l]) => l === 2).map(([, t]) => t);
+  assert.deepEqual(h2, ['How the loop is built', 'Why the loop is constrained', 'Three completion tiers', 'Execute by default, then confirm, amend or roll back',
+    'Where production runs today', 'A single ticket walkthrough']);
+  // The walkthrough is one section of the page; its own headings sit below it.
+  const walkAt = headings.findIndex(([l, t]) => l === 2 && t === 'A single ticket walkthrough');
+  const walkH3 = headings.slice(walkAt + 1).filter(([l]) => l === 3).map(([, t]) => t);
+  for (const word of ['The flow at a glance', 'Roles', 'When things go wrong', 'Pause controls', 'Limits']) assert.ok(walkH3.includes(word), `walkthrough h3 ${word} missing`);
+  assert.equal(headings.slice(walkAt + 1).filter(([l]) => l === 2).length, 0, 'the walkthrough has no further h2');
 });
 
 test('every scenario step is rendered in full as an ordered list (no-JS presentation)', () => {
@@ -148,13 +155,13 @@ test('every scenario step is rendered in full as an ordered list (no-JS presenta
 
 test('failure table, pause controls, claims and limits are rendered from the data', () => {
   const tables = [...html.matchAll(/<table\b[\s\S]*?<\/table>/g)].map((m) => m[0]);
-  assert.equal(tables.length, 2);
+  assert.equal(tables.length, 3, 'module table, failure branches, claims');
   for (const t of tables) {
     assert.match(t, /<caption>[^<]+<\/caption>/);
     const ths = [...t.matchAll(/<th\b([^>]*)>/g)].map((m) => m[1]);
     assert.ok(ths.length > 3 && ths.every((a) => /scope="(col|row)"/.test(a)), 'every th needs a scope');
   }
-  const [fail, claims] = tables;
+  const [, fail, claims] = tables; // the first table lists the architecture modules (test/site-architecture.test.mjs)
   assert.equal([...fail.matchAll(/<tr\b/g)].length, scenario.failureRecovery.length + 1);
   for (const f of scenario.failureRecovery) for (const k of ['id', 'trigger', 'handling', 'outcome']) assert.ok(fail.includes(esc(f[k])), `${f.id}.${k}`);
   assert.equal([...claims.matchAll(/<tr\b/g)].length, scenario.claims.length + 1);
@@ -173,8 +180,11 @@ test('failure table, pause controls, claims and limits are rendered from the dat
   assert.match(html, /A visual control on this page that pauses or steps its animation/);
   for (const l of scenario.limits) assert.ok(html.includes(esc(l)), `limit: ${l}`);
   assert.ok(html.includes(esc(scenario.disclaimer)), 'the synthetic disclaimer banner');
-  const banner = html.indexOf('class="banner"');
-  assert.ok(banner > 0 && banner < html.indexOf('<main'), 'the synthetic banner sits in the header, above the content');
+  // The walkthrough is demoted to one section, so its synthetic-data banner opens that section, before any of its content.
+  const walk = html.indexOf('<section id="walkthrough"');
+  const banner = html.indexOf('<strong>Synthetic data.</strong>');
+  assert.ok(walk > 0 && banner > walk && banner < html.indexOf('<h3>The flow at a glance</h3>'), 'the synthetic banner opens the walkthrough');
+  assert.ok(html.indexOf('<section id="architecture"') < walk, 'the architecture comes before the walkthrough');
   assert.match(html, /<strong>Demo playback only<\/strong> — pauses the animation on this page and nothing else\./);
 });
 
@@ -230,17 +240,19 @@ test('synthetic data only: no forbidden data patterns and no promises (rules sha
     });
     assert.doesNotMatch(text, /github\.com/i);
   }
-  // Promise phrases may only come from the disclaimer or the limits, and always negated.
+  // Promise phrases may only come from the disclaimer, the limits, or the opening paragraph that defines
+  // "always-on" as an experience and not a guarantee, and always negated.
   const allowed = new Set([scenario.disclaimer, ...scenario.limits].map(esc));
   for (const line of html.split('\n')) {
     if (!PROMISE_PHRASES.some((re) => re.test(line))) continue;
-    assert.ok([...allowed].some((a) => line.includes(a)), `promise phrase outside the disclaimer or limits: ${line.slice(0, 80)}`);
+    const opening = line.startsWith('<p class="lead">') && /not a process that never rests/.test(line);
+    assert.ok(opening || [...allowed].some((a) => line.includes(a)), `promise phrase outside the disclaimer, limits or opening paragraph: ${line.slice(0, 80)}`);
   }
   // Planned claims are never presented as implemented: the row says "Planned, not claimed", has no evidence
   // path, no "Implemented" badge and is not marked as implemented in the row class.
   const planned = scenario.claims.filter((c) => c.status === 'planned');
   assert.ok(planned.length >= 1);
-  const claimsTable = html.match(/<table\b[\s\S]*?<\/table>/g)[1];
+  const claimsTable = html.match(/<table\b[\s\S]*?<\/table>/g)[2];
   const rows = claimsTable.match(/<tr\b[\s\S]*?<\/tr>/g);
   for (const c of planned) {
     const row = rows.find((r) => r.includes(esc(c.text)));
@@ -297,23 +309,43 @@ test('contrast: text, UI and focus colors meet WCAG 2.2 AA in light and dark', (
   };
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
   const text = [['ink', 'bg'], ['ink', 'surface'], ['ink', 'surface-2'], ['muted', 'bg'], ['muted', 'surface'], ['muted', 'surface-2'],
-    ['teal', 'bg'], ['teal', 'surface'], ['teal', 'teal-tint'], ['teal', 'surface-2'], ['on-teal', 'teal'], ['amber', 'amber-tint'], ['amber', 'bg'], ['amber', 'surface'],
-    ['red', 'red-tint'], ['red', 'bg'], ['red', 'surface'], ['ink', 'amber-tint'], ['ink', 'teal-tint'], ['ink', 'red-tint']];
-  const nonText = [['line', 'bg'], ['line', 'surface'], ['focus', 'bg'], ['focus', 'surface'], ['amber', 'bg'], ['red', 'bg'], ['teal', 'bg']];
+    ['accent', 'bg'], ['accent', 'surface'], ['accent', 'surface-2'], ['accent', 'accent-tint'], ['on-accent', 'accent'],
+    ['good', 'good-tint'], ['good', 'surface'], ['good', 'bg'], ['good', 'surface-2'], ['warn', 'warn-tint'], ['warn', 'surface'], ['warn', 'bg'], ['warn', 'surface-2'],
+    ['info', 'info-tint'], ['info', 'surface'], ['info', 'bg'], ['info', 'surface-2'], ['bad', 'bad-tint'], ['bad', 'surface'], ['bad', 'bg'], ['bad', 'surface-2'],
+    ['ink', 'accent-tint'], ['ink', 'good-tint'], ['ink', 'warn-tint'], ['ink', 'bad-tint'], ['muted', 'accent-tint']];
+  const nonText = [['line', 'bg'], ['line', 'surface'], ['line', 'surface-2'], ['focus', 'bg'], ['focus', 'surface'], ['focus', 'surface-2'], ['accent', 'bg'], ['accent', 'surface-2'],
+    ['warn', 'bg'], ['bad', 'bg'], ['good', 'bg'], ['info', 'bg']];
   for (const [mode, v] of [['light', light], ['dark', dark]]) {
     for (const [fg, bg] of text) assert.ok(ratio(v[fg], v[bg]) >= 4.5, `${mode}: ${fg} on ${bg} is ${ratio(v[fg], v[bg]).toFixed(2)}`);
     for (const [fg, bg] of nonText) assert.ok(ratio(v[fg], v[bg]) >= 3, `${mode}: ${fg} vs ${bg} is ${ratio(v[fg], v[bg]).toFixed(2)}`);
   }
 });
 
-test('layout and sizing safeguards: stacked tables on small screens, no fixed widths over 320px, relative units', () => {
+test('layout and sizing safeguards: stacked tables on small screens, no fixed pixel widths beyond hairlines, relative units', () => {
   assert.match(css, /@media \(max-width: 42rem\)[\s\S]*display: block/);
   assert.match(css, /@media \(min-width: 60rem\)[\s\S]*grid-template-columns: minmax\(0, 26rem\)/);
-  for (const m of css.matchAll(/(?<![-a-z])(?:width|min-width):\s*(\d+(?:\.\d+)?)px/g)) assert.ok(Number(m[1]) <= 1, `fixed pixel width ${m[0]}`);
+  for (const m of css.matchAll(/(?<![-a-z])(?:width|min-width):\s*(\d+(?:\.\d+)?)px/g)) assert.ok(Number(m[1]) <= 3, `fixed pixel width ${m[0]} (hairlines up to 3px are fine, anything wider must be relative)`);
   assert.match(css, /overflow-wrap/);
   assert.match(css, /font: 1rem\//);
   assert.match(css, /min-height: 2\.75rem/, 'targets of at least 24px (44px used for buttons)');
   assert.doesNotMatch(css, /font-size:\s*\d+px/);
+});
+
+test('CSS that would overflow a 320px screen is absent (structural guard; test/site-browser.test.mjs measures the real layout)', () => {
+  // Grid tracks may only have a minimum of 0 or one that is capped by min(100%, ...), so a track can always shrink.
+  for (const m of css.matchAll(/minmax\(([^,]+),/g)) {
+    const min = m[1].trim();
+    assert.ok(min === '0' || min.startsWith('min(100%'), `grid track minimum "${min}" can force a horizontal scroll bar`);
+  }
+  // A page at 320px has 288px (18rem) for content after the page padding. No minimum width may exceed it.
+  for (const m of css.matchAll(/(?<![-a-z(])min-width:\s*(\d+(?:\.\d+)?)rem/g)) assert.ok(Number(m[1]) <= 18, `${m[0]} is wider than a 320px screen`);
+  // Text may only refuse to wrap in small pills and the visually hidden helper.
+  for (const [, selector] of css.matchAll(/([^{}]+)\{[^}]*white-space:\s*nowrap/g)) {
+    assert.match(selector.trim(), /(?:\.badge|\.chips li|\.visually-hidden)$/, `white-space: nowrap on ${selector.trim()} could overflow`);
+  }
+  assert.doesNotMatch(css, /overflow-x:\s*(?:scroll|auto)/, 'no inner horizontal scrolling regions');
+  assert.match(css, /\.wrap \{[^}]*max-width: 76rem[^}]*padding-inline: clamp\(1rem/);
+  assert.doesNotMatch(html, /<meta name="viewport"[^>]*(?:user-scalable|maximum-scale)/);
 });
 
 test('the "Outside the demo" box never covers the round-table diagram (320px and up, no browser needed)', () => {
@@ -428,7 +460,8 @@ function runApp({ reducedAtStart = false } = {}) {
   const documentStub = new El();
   documentStub.documentElement = new El();
   documentStub.hidden = false;
-  documentStub.querySelector = (sel) => { assert.equal(sel, '[data-stepper]'); return el.root; };
+  // The architecture block of app.js looks for its diagram first; this page stub has none, so it does nothing.
+  documentStub.querySelector = (sel) => { if (sel === '[data-arch]') return null; assert.equal(sel, '[data-stepper]'); return el.root; };
   documentStub.getElementById = (id) => ({ 'step-list': list, 'all-steps': el.allSteps })[id];
   documentStub.querySelectorAll = (sel) => (sel === '[data-goto]' ? gotoButtons : sel === 'a[data-step]' ? [] : (() => { throw new Error(`stub: unexpected selector ${sel}`); })());
   const windowStub = {
