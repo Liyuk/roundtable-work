@@ -85,7 +85,7 @@ test('reasons with a home path, IPv4 address, or credential-like token are rejec
   const sensitive = [
     ['see', '', 'home', 'placeholder', 'work'].join('/'),
     ['see', '', 'Users', 'placeholder', 'work'].join('/'),
-    'see /root/work',
+    ['see', '', 'root', 'placeholder', 'work'].join('/'),
     'see ~/work',
     'host at 192.0.2.10 failed',
     'password=hunter2',
