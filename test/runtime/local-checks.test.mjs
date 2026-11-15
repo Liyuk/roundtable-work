@@ -145,7 +145,7 @@ function mergeFixture({ checks = absent, localChecks = LOCAL, ledgerEntries = []
   const calls = [];
   const ledger = [...ledgerEntries];
   const entry = createMergeEntryPoint({
-    localChecks,
+    mode: 'agent', localChecks,
     gateState: { async get() { return persisted; } },
     store: { async load() { return { ledger }; }, async append() {} },
     github: {
