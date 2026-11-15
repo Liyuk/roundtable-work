@@ -1,5 +1,8 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import { assertSafeId, createConfinement } from './paths.mjs';
+
 // Per-issue and per-role record of every model call. Recording only: totals are read, never gated.
-// Pure: rows are plain objects in `ledger.rows`; no fs, clock or network.
+// Pure: rows are plain objects in `ledger.rows`; no clock or network. Persistence (fs) is the thin tail below.
 
 export const createLedger = () => ({ rows: [] });
 
@@ -24,3 +27,23 @@ export const roleTotals = (ledger, issue, role) => totalsOf(ledger.rows.filter((
 export const tokensSince = (ledger, { issue, afterAt }) => ledger.rows
   .filter((r) => r.issue === issue && r.at > afterAt)
   .reduce((sum, r) => sum + r.inputTokens + r.outputTokens, 0);
+
+const usagePath = (issue) => `state/usage/${assertSafeId(issue)}.json`;
+
+/** Rows for one issue as persisted; a missing file is an empty ledger. */
+export async function loadUsageLedger(workRoot, issue) {
+  const confinement = await createConfinement(workRoot);
+  const file = await confinement.resolve(usagePath(issue));
+  try { return { rows: JSON.parse(await readFile(file, 'utf8')) }; } catch (err) {
+    if (err.code === 'ENOENT') return createLedger();
+    throw err;
+  }
+}
+
+/** Append one row to its issue's persisted ledger. */
+export async function recordUsageRow(workRoot, row) {
+  const confinement = await createConfinement(workRoot);
+  const { rows } = await loadUsageLedger(workRoot, row.issue);
+  rows.push({ ...row });
+  await confinement.withParent(usagePath(row.issue), (dir, base) => writeFile(`${dir}/${base}`, JSON.stringify(rows)), { create: true });
+}

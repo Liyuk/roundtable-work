@@ -78,10 +78,10 @@ export async function statusOf(workspace, readFile = fsReadFile) {
 
 /**
  * Start (or resume) the front Chief session. Returns `{ started: false, reason: 'already_running' }` when another
- * holder has the lock; otherwise runs `launch({ workspace, sessionId, resume, prompt })` and returns its exit code.
+ * holder has the lock; otherwise runs `launch({ workspace, sessionId, resume, prompt, issue, role, model })` and returns its exit code.
  */
 export async function startFrontChief({
-  workspace, launch, rolePrompt, anchorRoot, now = Date.now, newId = randomUUID, ttlMs = TTL_MS, readFile = fsReadFile,
+  workspace, launch, rolePrompt, anchorRoot, now = Date.now, newId = randomUUID, ttlMs = TTL_MS, readFile = fsReadFile, issue, model,
 }) {
   const paths = pathsOf(workspace);
   const lock = await acquireLock({ lockPath: paths.lock, repoRoot: workspace, anchorRoot, owner: 'front-chief', now, ttlMs });
@@ -98,7 +98,7 @@ export async function startFrontChief({
     await rename(tmp, paths.session);
     timer = setInterval(() => { lock.refresh().catch(() => false); }, ttlMs / 3);
     timer.unref();
-    const exitCode = (await launch({ workspace, sessionId, resume, prompt })) ?? 0;
+    const exitCode = (await launch({ workspace, sessionId, resume, prompt, issue, role: 'chief', model })) ?? 0;
     return { started: true, sessionId, resume, exitCode };
   } finally {
     clearInterval(timer);

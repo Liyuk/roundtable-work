@@ -42,7 +42,9 @@ test('poll and signed webhook store byte-identical events with the same source_e
     const fromPoll = await readFile(join(pollRoot, INBOX_PATH));
     assert.deepEqual(fromPoll, await readFile(join(hookRoot, INBOX_PATH)));
     assert.deepEqual(await hook(pollRoot), { accepted: 0 });
-    assert.deepEqual(await readFile(join(pollRoot, INBOX_PATH)), fromPoll);
+    const after = (await readFile(join(pollRoot, INBOX_PATH), 'utf8')).split('\n').filter(Boolean);
+    assert.equal(after[0] + '\n', fromPoll.toString());
+    assert.deepEqual(after.slice(1).map((l) => JSON.parse(l).type), ['dropped']);
     assert.equal(JSON.parse(fromPoll.toString()).source_event_id, 'w-1');
   } finally {
     await rm(pollRoot, { recursive: true, force: true });

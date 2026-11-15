@@ -1,6 +1,7 @@
 // Deterministic supervisor watchdog. Pure: `now` is the clock; no fs, network or Date.now.
 // Input: `snapshot` from collect() (heartbeat, sinceLastMaterialProgressMs, optional pauseProvenance {at, ref}),
 // and `config` with thresholds plus `events` (typed event rows) and `queue` ({ waiting }).
+// `config.ledger` and `config.issue` (usage rows for one issue, loaded by the caller) feed tokens-no-commit.
 // Output: findings [{ rule, signature, at, evidence }]. A signature keys on the condition, not the time,
 // so the same ongoing condition gets the same signature on every cycle.
 import { detectStalls, signatureOf } from '../lib/stall.mjs';
@@ -51,7 +52,7 @@ export function watchdog({ snapshot, now, config = {} }) {
   const events = config.events ?? [];
   const findings = heartbeatFindings(snapshot.heartbeat, now, c);
 
-  for (const stall of detectStalls({ events, now, config })) {
+  for (const stall of detectStalls({ events, now, config, ledger: config.ledger, issue: config.issue })) {
     if (STALL_RULE[stall.signal]) findings.push(finding(STALL_RULE[stall.signal], signatureOf(stall), now, stall.evidence));
   }
   for (const [reason, count] of repeats(events, 'reject', (e) => normalize(e.reason), c.rejectRepeats)) {
