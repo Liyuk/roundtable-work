@@ -22,6 +22,7 @@ import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
 import { readMergeConfig } from './lib/merge-mode.mjs';
+import { loadLocalChecksConfig } from './lib/local-checks.mjs';
 import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
@@ -153,6 +154,7 @@ export async function runQueue({
   if ((autoMerge?.production || githubClient) && !observationClients) throw new TypeError('production observation clients are required');
   if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
   const mergeMode = await readMergeConfig();
+  const localChecks = await loadLocalChecksConfig();
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -430,8 +432,8 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode });
-        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks });
+        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
         if (gated.result?.held) throw new Error(`${gated.result.mode} mode: revert merge not executed`);
         return gated.result;
@@ -751,7 +753,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode });
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode, localChecks });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
@@ -760,7 +762,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;
