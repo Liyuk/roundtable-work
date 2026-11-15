@@ -1,8 +1,8 @@
 // Regression tests for the threat model of issue #49 (sections 2-6: rtd, state, classify, queue, paths).
 // Test names start with the area, as listed in the threat table; the threat id is in the comment above each test.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, rmSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import fsp, { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +22,7 @@ const tmp = () => mkdtemp(join(tmpdir(), 'rt-hard-'));
 // work root. `.roundtable/state/rtd.lock.d` is only the caller-side path whose last component names the lock.
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-hard-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
+after(() => rm(ANCHOR, { recursive: true, force: true }));
 const lockDirOf = (root) => lockDirectoryFor({ lockPath: join(root, '.roundtable', 'state', 'rtd.lock.d'), repoRoot: root, anchorRoot: ANCHOR });
 const PASS = '审查结论：通过\nok';
 const okHandler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' });
@@ -35,7 +35,11 @@ const stateFile = (root, id) => {
   return join(dir, epochs.length ? `${prefix}${Math.max(...epochs)}.json` : `${id}.json`);
 };
 const seedState = async (root, id, text) => { await mkdir(join(root, 'state'), { recursive: true }); await writeFile(stateFile(root, id), typeof text === 'string' ? text : JSON.stringify(text)); };
-const withRoot = (fn) => async () => { const root = await tmp(); try { await fn(root); } finally { await rm(root, { recursive: true, force: true }); } };
+// Children a test spawned are killed and awaited before its temp dir is removed, so a failed or timed-out test leaves none running.
+const children = new Set();
+const track = (child) => { children.add(child); child.once('exit', () => children.delete(child)); return child; };
+const reap = () => Promise.all([...children].map((c) => new Promise((resolve) => { c.once('exit', resolve); c.kill('SIGKILL'); })));
+const withRoot = (fn) => async () => { const root = await tmp(); try { await fn(root); } finally { await reap(); await rm(root, { recursive: true, force: true }); } };
 
 // ---- R1: a handler result that is not a real success never reaches done ----
 for (const [name, bad] of [['undefined', () => undefined], ['null', () => null], ['exitCode null with a signal', () => ({ exitCode: null, signal: 'SIGKILL', output: 'x' })], ['no exitCode', () => ({ output: 'x' })]]) {
@@ -491,7 +495,7 @@ test('timeout: a timed-out developer phase spends the retry budget and stops at 
 }));
 
 const runChild = (args, env = {}) => new Promise((resolve) => {
-  const child = spawn(process.execPath, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = track(spawn(process.execPath, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }));
   let out = '';
   let err = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -642,7 +646,7 @@ test('state: a paused old epoch cannot replace a successor checkpoint or artifac
   const pending = old.update('race', (s) => { s.checkpoint = { phase: 'developing', at: 1 }; s.artifacts.output = 'old'; });
   await paused;
   const moduleUrl = new URL('../../runtime/lib/state.mjs', import.meta.url).href;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', `import { createStateStore } from ${JSON.stringify(moduleUrl)}; const s = await createStateStore({workRoot: process.argv[1]}); s.setEpoch(2); await s.update('race', x => { x.checkpoint = {phase:'testing', at:2}; x.artifacts.output = 'new'; });`, root], { stdio: 'inherit' });
+  const child = track(spawn(process.execPath, ['--input-type=module', '-e', `import { createStateStore } from ${JSON.stringify(moduleUrl)}; const s = await createStateStore({workRoot: process.argv[1]}); s.setEpoch(2); await s.update('race', x => { x.checkpoint = {phase:'testing', at:2}; x.artifacts.output = 'new'; });`, root], { stdio: 'inherit' }));
   const code = await new Promise((resolve) => child.on('exit', resolve));
   assert.equal(code, 0);
   resume();
@@ -681,7 +685,7 @@ test('timeout: renewal prevents a second runner after the original TTL while the
     const runnerUrl = new URL('../../runtime/rtd.mjs', import.meta.url).href;
     const script = `import { runQueue } from ${JSON.stringify(runnerUrl)}; import { writeFile } from 'node:fs/promises'; const r = await runQueue({workRoot:process.argv[1], queue:['A'], handler:async () => ({exitCode:0}), lockTtlMs:5000, lockRenewMinMs:1000, leaseTtlMs:5000, now:() => Number(process.argv[3])}); await writeFile(process.argv[2], r.status);`;
     const resultFile = join(root, 'contender-result');
-    const child = spawn(process.execPath, ['--input-type=module', '-e', script, root, resultFile, String(clock)], { stdio: 'inherit' });
+    const child = track(spawn(process.execPath, ['--input-type=module', '-e', script, root, resultFile, String(clock)], { stdio: 'inherit' }));
     assert.equal(await new Promise((resolve) => child.on('exit', resolve)), 0);
     assert.equal(await readFile(resultFile, 'utf8'), 'locked');
     const state = await createStateStore({ workRoot: root }).then((store) => store.load('A'));
