@@ -87,6 +87,7 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
       return { number: Number(match[1]) };
     },
     addLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--add-label', label]),
+    createLabel: (name) => run(['label', 'create', name, ...repository, '--force']),
     removeLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--remove-label', label]),
     createComment: (number, body) => run(['issue', 'comment', id(number), ...repository, '--body', body]),
     listComments: async (number) => JSON.parse(await run(['issue', 'view', id(number), ...repository, '--json', 'comments'])).comments,
