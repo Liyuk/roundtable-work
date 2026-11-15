@@ -32,8 +32,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function launch(chrome) {
   const dir = mkdtempSync(join(tmpdir(), 'rt-site-chrome-'));
   const child = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    `--user-data-dir=${dir}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore' });
-  const stop = () => { child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); };
+    `--user-data-dir=${dir}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore', detached: true });
+  // Resolves once the browser group has exited: until then Chrome can still write into `dir`, racing the removal.
+  const stop = () => new Promise((resolve) => {
+    const remove = () => { rmSync(dir, { recursive: true, force: true }); resolve(); };
+    if (child.exitCode !== null || child.signalCode !== null) return remove();
+    child.once('exit', remove);
+    process.kill(-child.pid, 'SIGKILL');
+  });
   let endpoint = null;
   for (let i = 0; i < 100 && !endpoint; i++) {
     if (child.exitCode !== null) break;
@@ -43,7 +49,7 @@ async function launch(chrome) {
     } catch { /* not written yet */ }
     if (!endpoint) await sleep(100);
   }
-  if (!endpoint) { stop(); return null; }
+  if (!endpoint) { await stop(); return null; }
   const ws = new WebSocket(endpoint);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('cannot connect to the browser')); });
   let next = 0;
@@ -82,7 +88,7 @@ async function launch(chrome) {
     await call('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code, windowsVirtualKeyCode: vk, ...(text ? { text } : {}) });
     await call('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code, windowsVirtualKeyCode: vk });
   };
-  return { evaluate, open, key, stop: () => { try { ws.close(); } catch { /* closed */ } stop(); } };
+  return { evaluate, open, key, stop: () => { try { ws.close(); } catch { /* closed */ } return stop(); } };
 }
 
 // Elements that stick out of the viewport (ignoring the visually hidden ones, which are clipped on purpose).
@@ -122,7 +128,7 @@ test('in a real browser: no horizontal scrolling at 320, 375, 768 and 1280px, in
         await browser.evaluate(`document.querySelector('[data-goto]:last-of-type, .dot:last-child')?.click()`);
         await check('with the walkthrough on its last step');
       }
-    } finally { browser.stop(); }
+    } finally { await browser.stop(); }
   });
 
 test('in a real browser: the skip link is the first tab stop, and a module opens with Enter and Space and shows its facts',
@@ -156,5 +162,5 @@ test('in a real browser: the skip link is the first tab stop, and a module opens
       await browser.key('Escape', 'Escape', 27);
       s = await state('timers');
       assert.deepEqual([s.expanded, s.hidden, s.focus], ['false', true, true], 'Escape closes the panel and keeps focus on the module');
-    } finally { browser.stop(); }
+    } finally { await browser.stop(); }
   });
