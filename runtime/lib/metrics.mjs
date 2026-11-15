@@ -15,6 +15,9 @@
 // - time-weighted concurrency: model-call time (wallMs ending at `at`) clipped to the period, divided by period length.
 // - tokens per merged PR: input+output tokens of usageKnown calls on issues with a merged entry, divided by the merged
 //   PR count. usageKnownShare = usageKnown calls / all calls on those issues. issuesWithoutUsage counts merged issues with no calls.
+// - asks: one ask (issue + key) counts once. supervisorHeld = asks with any supervisor-route record (policy or timeout
+//   default), timed at the earliest such record. ownerInterruptions = asks with only owner-route records, timed at the
+//   earliest. Source: the ask ledger (ask-ledger.mjs). Absent ledger: n/a.
 import { readdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -52,8 +55,18 @@ function periodsOf(since, until) {
 }
 
 /** Pure: metrics for [since, until) per UTC day and in total. Sources are arrays or null (absent). */
-export function computeMetrics({ since, until, owner = null, inbox = null, issues = null, usage = null, freezes = null }) {
+export function computeMetrics({ since, until, owner = null, inbox = null, issues = null, usage = null, freezes = null, asks = null }) {
   const byId = new Map((issues ?? []).map((issue) => [String(issue.id), issue]));
+  // Per ask: the route and time that decide it. Supervisor-held wins over owner-held.
+  const askDecisions = asks && (() => {
+    const groups = new Map();
+    for (const r of asks) {
+      const group = groups.get(`${r.issue}\0${r.key}`) ?? {};
+      group[r.route] = Math.min(group[r.route] ?? Infinity, r.at);
+      groups.set(`${r.issue}\0${r.key}`, group);
+    }
+    return [...groups.values()].map((g) => (g.supervisor !== undefined ? { route: 'supervisor', at: g.supervisor } : { route: 'owner', at: g.owner }));
+  })();
   const issueIds = [...new Set((usage ?? []).map((row) => String(row.issue)))];
   const callsOf = (id) => (usage ?? []).filter((row) => String(row.issue) === id);
   const implementerCalls = (id) => callsOf(id).filter((row) => IMPLEMENTER_ROLES.includes(row.role)).sort((a, b) => a.at - b.at);
@@ -120,6 +133,12 @@ export function computeMetrics({ since, until, owner = null, inbox = null, issue
       };
     };
 
+    const asksMeasure = () => {
+      if (!askDecisions) return na('ask ledger not present');
+      const inP = askDecisions.filter((a) => inPeriod(a.at, p));
+      return { supervisorHeld: inP.filter((a) => a.route === 'supervisor').length, ownerInterruptions: inP.filter((a) => a.route === 'owner').length };
+    };
+
     return {
       ownerPullBacks: pullBacks(),
       firstDispatchSuccess: dispatch(),
@@ -130,6 +149,7 @@ export function computeMetrics({ since, until, owner = null, inbox = null, issue
       frozen: frozen(),
       concurrency: concurrency(),
       tokensPerMergedPr: tokensPerMergedPr(),
+      asks: asksMeasure(),
     };
   };
 
@@ -168,6 +188,7 @@ export async function loadMetricSources(workRoot) {
   const state = join(workRoot, 'state');
   const lines = await readLines(join(state, 'event-inbox.jsonl'));
   const freezeFile = join(state, 'freeze-ledger.jsonl');
+  const askLines = await readLines(join(state, 'ask-ledger.jsonl'));
   let names = null;
   if (existsSync(state)) names = await readdir(state);
   const usageNames = existsSync(join(state, 'usage')) ? await readdir(join(state, 'usage')) : null;
@@ -180,6 +201,7 @@ export async function loadMetricSources(workRoot) {
   return {
     inbox: lines && lines.map((line) => JSON.parse(line)).filter((record) => record.type === undefined),
     freezes: existsSync(freezeFile) ? fileLedgerStore(freezeFile).load() : null,
+    asks: askLines && askLines.flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } }),
     issues: names && await Promise.all([...new Set(ids)].map((id) => store.load(id))),
     usage: usageNames && (await Promise.all(usageNames.filter((n) => n.endsWith('.json')).map((n) => loadUsageLedger(workRoot, n.slice(0, -5))))).flatMap((l) => l.rows),
   };

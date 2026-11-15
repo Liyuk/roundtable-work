@@ -8,6 +8,7 @@ import { isGoalChange, resolveAsk } from './ask-policy.mjs';
 import { autonomyTier } from './autonomy.mjs';
 import { readLine } from './decision-cards.mjs';
 import { openOutbox } from './outbox.mjs';
+import { recordAsk } from './ask-ledger.mjs';
 
 export const askHash = (question) => createHash('sha256').update(question).digest('hex').slice(0, 16);
 /** The owner notice for an action: the journal's notices become outbox notifications for the issue. */
@@ -38,5 +39,6 @@ export async function decideByPolicy({ root, card, policy, now = Date.now }) {
   const { id, state } = await journal.perform({ action: { ...action, reasons }, tier, apply, notify: notifyAction(root, issue) });
   if (state === 'rolled_back') return 'route';
   ledger.append({ category: 'decision', ref: `#${issue}`, reason: `ask resolved by policy: ${verdict.rule}`, internalized: 'no', source: 'self' }, { key: id });
+  recordAsk(root, { issue, key: askHash(question), route: 'supervisor', at: now() });
   return 'resolved';
 }
