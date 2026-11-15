@@ -1,4 +1,4 @@
-const isBalanceError = (error) => error?.status === 402 || error?.statusCode === 402;
+export const isBalanceError = (error) => error?.status === 402 || error?.statusCode === 402;
 
 /** Budget exhaustion is a quota limit on the same wait-and-probe path as a balance error (#64), not no-progress or a block. */
 export const isQuotaLimit = (event) => event?.reason === 'budget_exhausted';
@@ -29,6 +29,85 @@ export function createFallbackRouter({ routes, fallback, ttlMs, now }) {
       return invoke(fallback[harness]);
     }
   };
+}
+
+export const isRateLimit = (error) => error?.status === 429 || error?.statusCode === 429;
+
+/** Why a candidate cannot serve a call, or null. A timeout counts only when it produced no output (#308). */
+export function unavailableReason(outcome) {
+  if (isBalanceError(outcome)) return '402';
+  if (isRateLimit(outcome)) return '429';
+  if (isQuotaLimit(outcome)) return 'quota';
+  if (outcome?.timedOut && !(typeof outcome.output === 'string' && outcome.output.trim() !== '')) return 'timeout';
+  return null;
+}
+
+// Retry-After as delta-seconds or an HTTP date; `retryAfter` is the same field under the host's name.
+function retryAtOf(error, at) {
+  const raw = error?.retryAfter ?? error?.headers?.['retry-after'] ?? error?.headers?.['Retry-After'];
+  if (raw === undefined) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return at + seconds * 1000;
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? undefined : date;
+}
+
+/**
+ * Candidate-level fallback over the ordered per-role list (#308). A call tries each candidate in order and skips a
+ * candidate that is still unavailable. A 402, 429, quota, or output-less timeout marks that candidate unavailable until
+ * its `retryAt` (from the error's Retry-After) or `ttlMs` later. Other outcomes are returned for classify() to judge, so
+ * the router spends no budget. When every candidate is unavailable, the last failure is returned for classify().
+ * `candidates`: role -> [{ harness, model }]. `call(role, invoke, { authorSession })` skips a reviewer candidate whose
+ * session (`session`, else `harness`) equals `authorSession`, the author's own session.
+ */
+export function createCandidateRouter({ candidates, ttlMs, now = Date.now }) {
+  const records = new Map();
+  const outages = new Map();
+  const keyOf = (candidate) => JSON.stringify([candidate.harness, candidate.model]);
+  const isOpen = (candidate) => {
+    const record = records.get(keyOf(candidate));
+    return !record || now() >= (record.retryAt ?? record.at + ttlMs);
+  };
+  const outageOf = (role) => {
+    if (!outages.has(role)) outages.set(role, { cycles: 0, wallMs: 0, since: undefined });
+    return outages.get(role);
+  };
+
+  async function call(role, invoke, { authorSession } = {}) {
+    let last;
+    for (const candidate of candidates[role]) {
+      if (role === 'reviewer' && authorSession !== undefined && (candidate.session ?? candidate.harness) === authorSession) continue;
+      if (!isOpen(candidate)) continue;
+      let outcome;
+      try {
+        outcome = await invoke(candidate);
+      } catch (error) {
+        if (!unavailableReason(error)) throw error;
+        outcome = error;
+      }
+      const reason = unavailableReason(outcome);
+      if (!reason) {
+        const outage = outageOf(role);
+        if (outage.since !== undefined) { outage.wallMs += now() - outage.since; outage.since = undefined; }
+        return outcome;
+      }
+      const at = now();
+      records.set(keyOf(candidate), { role, harness: candidate.harness, model: candidate.model, reason, at, retryAt: retryAtOf(outcome, at), outcome });
+      last = outcome;
+    }
+    const outage = outageOf(role);
+    outage.cycles += 1;
+    outage.since ??= now();
+    const latest = candidates[role].map((candidate) => records.get(keyOf(candidate))).filter(Boolean).sort((a, b) => b.at - a.at)[0];
+    return last ?? latest?.outcome ?? { unavailable: true };
+  }
+
+  call.unavailable = () => [...records.values()].map(({ outcome, ...record }) => record);
+  call.unavailableStats = (role) => {
+    const outage = outageOf(role);
+    return { cycles: outage.cycles, wallMs: outage.wallMs + (outage.since === undefined ? 0 : now() - outage.since) };
+  };
+  return call;
 }
 
 /** Wait until `until`, running the injected main-CI check on every pass (at least once). */
