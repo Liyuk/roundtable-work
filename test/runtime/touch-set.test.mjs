@@ -108,8 +108,15 @@ test('disjoint siblings under a shared ancestor directory are never skipped in o
   const root = await temp();
   try {
     const completedRuns = [];
+    let active = 0, peak = 0;
     const sibling = (id, file) => ({ id, title: `code ${id}`, body: section(`- runtime/lib/${file}`) });
-    const result = await runWorkers({ issues: [sibling('1', 'a.mjs'), sibling('2', 'b.mjs')], workRoot: root, workers: 2, run: async (issue) => { completedRuns.push(issue.id); } });
+    const result = await runWorkers({ issues: [sibling('1', 'a.mjs'), sibling('2', 'b.mjs')], workRoot: root, workers: 2, run: async (issue) => {
+      completedRuns.push(issue.id);
+      active++; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active--;
+    } });
+    assert.equal(peak, 2);
     assert.deepEqual(result.skipped, []);
     assert.deepEqual(result.failed, []);
     assert.deepEqual([...result.completed].sort(), ['1', '2']);
@@ -151,5 +158,48 @@ test('a touch lock stays alive for the whole run so a second acquirer is refused
     assert.deepEqual(result.failed, []);
     assert.equal(intruder.acquired, false);
     assert.deepEqual(result.completed, ['1']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('same-series issues with disjoint parseable touch sets run in parallel; a missing touch set keeps them serial', async () => {
+  const root = await temp();
+  const peakOf = async (issues) => {
+    let active = 0, peak = 0;
+    await runWorkers({ issues, workRoot: root, workers: 2, run: async () => {
+      active++; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active--;
+    } });
+    return peak;
+  };
+  try {
+    const a = { id: 'a', title: '[X-7a] one', series: 'X-7', body: section('- fixture-a.txt') };
+    const b = { id: 'b', title: '[X-7b] two', series: 'X-7', body: section('- fixture-b.txt') };
+    assert.equal(await peakOf([a, b]), 2);
+    assert.equal(await peakOf([a, { ...b, body: '## Goal\nnone' }]), 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('serialization reasons are reported once per pair: dependency, touch-set overlap, series fallback', async () => {
+  const root = await temp();
+  try {
+    const events = [];
+    const slow = async () => new Promise((resolve) => setTimeout(resolve, 20));
+    await runWorkers({ workRoot: root, workers: 2, onSerialize: (event) => events.push(event), run: slow, issues: [
+      { id: '1', title: '[A] one', body: section('- fixture-1.txt') },
+      { id: '2', title: '[B] two', body: section('- fixture-1.txt') },
+      { id: '3', title: '[C] three', dependencies: ['1'], body: section('- fixture-3.txt') },
+    ] });
+    const reasonOf = (id, other) => events.find((event) => event.id === id && event.other === other)?.reason;
+    assert.equal(reasonOf('2', '1'), 'touch-set overlap');
+    assert.equal(reasonOf('3', '1'), 'dependency');
+    const series = [];
+    await runWorkers({ workRoot: root, workers: 2, onSerialize: (event) => series.push(event), run: slow, issues: [
+      { id: '4', title: '[D] four', series: 'S', body: section('- fixture-4.txt') },
+      { id: '5', title: '[E] five', series: 'S', body: '## Goal\nnone' },
+    ] });
+    assert.deepEqual(series, [{ id: '5', other: '4', reason: 'series fallback' }]);
+    assert.equal(events.filter((event) => event.id === '2' && event.other === '1').length, 1);
+    assert.equal(events.length, new Set(events.map((event) => `${event.id}|${event.other}`)).size);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

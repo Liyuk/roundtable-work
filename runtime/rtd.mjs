@@ -503,6 +503,7 @@ export async function runQueue({
       const stopSchedulingRenewal = startRenewal();
       let scheduled;
       try { scheduled = await runWorkers({ issues: items, workRoot, repoRoot, workers, worktreeManager: manager, now,
+        onSerialize: (event) => console.error(JSON.stringify({ event: 'serialize', ...event })),
         shouldStop: () => lockLost || abandonedHandler,
         prepare: async (item) => exclusive(async () => {
           if (await readMonitor()) { skipped.push({ id: item.id, reason: 'main_paused' }); return false; }
