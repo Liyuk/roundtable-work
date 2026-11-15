@@ -15,6 +15,9 @@ const CI_RERUN = 'ci_rerun';
 /** How many attempts a recorded-approval read gets before the gate holds for a later pass. */
 const MAX_APPROVAL_READS = 3;
 
+/** Pure: true when the pull request body closes `issueNumber` with a GitHub closing keyword (`Closes #N`). */
+export const closesLink = (body, issueNumber) => new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\\s+#${Number(issueNumber)}(?!\\d)`, 'i').test(String(body ?? ''));
+
 /** A small durable gate record store. The host can inject a transactional state backend instead. */
 export function createGateStateStore({ load, save }) {
   required({ load, save }, 'load/save');
@@ -43,9 +46,11 @@ export function createGateStateStore({ load, save }) {
  * Absent required CI (`status: 'absent'`) passes only when `localChecks.enabled` is true and the ledger holds a passing
  * `local-check:<head>` record; otherwise, with an injected `gates.localCheck({ issue, head, tree, command })` provider,
  * exit code 0 records it and a non-zero exit or missing provider blocks (`hold: false`), and a throwing provider holds.
+ * A pull request whose body does not close the issue (`closesLink`) fails the `pr-link` gate with `hold: false`
+ * before any review, so the merge never proceeds for an unlinked loop PR.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
-export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation, precondition, localChecks = { enabled: false } }) {
+export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation, precondition, localChecks = { enabled: false }, requireClosesLink = true }) {
   const id = assertSafeId(issue);
   if (![head, tree].every((v) => typeof v === 'string' && v.length)) throw new TypeError('head and tree are required');
   required(gates, 'gates'); required(ci, 'ci'); required(merge, 'merge'); required(state, 'state'); required(github, 'github');
@@ -75,6 +80,9 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   const reviewModel = models.reviewer ?? modelRouter?.('review');
   const crossCheckModel = models.crossCheck ?? modelRouter?.('cross-check');
 
+  let body;
+  try { ({ body } = await github.getPullRequest(pr)); } catch (error) { return failed('pr-link', error.message, true); }
+  if (requireClosesLink && !closesLink(body, id)) return failed('pr-link', `Pull request body must close the issue with "Closes #${id}"`);
   if (!passed.has('gate0')) {
     let result;
     try { result = await gates.gate0({ issue: id, head, tree, changedFiles }); } catch (error) { return failed('gate0', error.message, true); }

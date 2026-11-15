@@ -86,3 +86,48 @@ test('selectIssues accepts closed issues as scope input', () => {
   assert.deepEqual(result.issues, []);
   assert.equal(result.admission[0].decision, 'reask');
 });
+
+// Criterion 7: an open issue or pull request for the same work is a duplicate; the link is recorded and the draft is skipped.
+const openSame = (number, title = draft.title, extra = {}) => ({ number, title, state: 'OPEN', labels: [], body: 'unrelated text', ...extra });
+
+test('a newer draft duplicating an older open issue is skipped with a duplicate link, not re-asked', () => {
+  const result = admission(draft, { closed: [], open: [openSame(100)], now: NOW });
+  assert.equal(result.admitted, false);
+  assert.deepEqual(result.reasons.find(reason => reason.code === 'duplicate'), { code: 'duplicate', issues: [100], decision: 'skip' });
+  assert.equal(result.decision, 'skip');
+});
+
+test('of two similar open issues only the newer one is a duplicate', () => {
+  assert.equal(admission(draft, { open: [openSame(300)], now: NOW }).admitted, true, 'draft 287 is older than 300');
+  assert.deepEqual(admission({ ...draft, number: 300 }, { open: [openSame(287)], now: NOW }).reasons.find(reason => reason.code === 'duplicate').issues, [287]);
+});
+
+test('an open pull request linked to the draft number, or with a similar title, is a duplicate', () => {
+  const linked = { 287: [{ number: 555, title: 'Unrelated work' }] };
+  assert.deepEqual(admission(draft, { linked, now: NOW }).reasons.find(reason => reason.code === 'duplicate').issues, [555]);
+  const titled = { 12: [{ number: 556, title: draft.title }] };
+  assert.deepEqual(admission(draft, { linked: titled, now: NOW }).reasons.find(reason => reason.code === 'duplicate').issues, [556]);
+});
+
+test('an open issue or pull request with unrelated text is not a duplicate, and held parents never count', () => {
+  assert.equal(admission(draft, { open: [openSame(100, 'Fix dark mode colors in settings page')], now: NOW }).admitted, true);
+  assert.equal(admission(draft, { open: [openSame(100, draft.title, { labels: [{ name: 'rt:hold' }] })], now: NOW }).admitted, true);
+});
+
+test('intake reads linked pull requests for the repository and skips the duplicate, keeping the closed-issue re-ask', async () => {
+  const issues = [draft];
+  const provider = createIntakeProvider({
+    getOwner: async () => 'owner', listIssues: async () => issues,
+    getRepository: async () => ({ owner: 'o', name: 'r' }), listLinkedPullRequests: async () => ({ 287: [{ number: 700, title: 'Linked' }] }),
+  });
+  assert.deepEqual(await provider({}), []);
+  assert.deepEqual(provider.admission[0].reasons.map(reason => [reason.code, reason.decision]), [['duplicate', 'skip']]);
+});
+
+test('a failed linked-pull-request read is best-effort: intake keeps running without it', async () => {
+  const provider = createIntakeProvider({
+    getOwner: async () => 'owner', listIssues: async () => [draft],
+    getRepository: async () => ({ owner: 'o', name: 'r' }), listLinkedPullRequests: async () => { throw new Error('gh down'); },
+  });
+  assert.equal((await provider({})).length, 1);
+});

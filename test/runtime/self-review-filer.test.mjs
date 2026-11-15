@@ -144,6 +144,26 @@ test('a candidate is skipped when overlappingIssues reports a closed issue from 
   } finally { await cleanup(); }
 });
 
+test('a candidate is skipped as a duplicate of an open issue with the same title, and no issue is filed', async () => {
+  const { root, hygiene, cleanup } = await workspace();
+  try {
+    const open = [{ number: 1, title: 'Inventory row not ported: tag-d', body: 'unrelated', labels: [], state: 'OPEN' }];
+    const client = { ...fakeClient({ open }), listLinked: async () => ({}) };
+    const results = await fireDaily(root, { client, hygiene, extra: { inventory: inventory('tag-d') } });
+    assert.deepEqual(results.map((r) => [r.outcome, r.reason, r.issues]), [['skipped', 'duplicate', [1]]]);
+    assert.equal(client.issues.filter((i) => i.number >= 100).length, 0);
+  } finally { await cleanup(); }
+});
+
+test('a candidate is skipped as a duplicate of a pull request linked to the same work by title', async () => {
+  const { root, hygiene, cleanup } = await workspace();
+  try {
+    const client = { ...fakeClient(), listLinked: async () => ({ 9: [{ number: 60, title: 'Inventory row not ported: tag-d' }] }) };
+    const results = await fireDaily(root, { client, hygiene, extra: { inventory: inventory('tag-d') } });
+    assert.deepEqual(results.map((r) => [r.outcome, r.reason, r.issues]), [['skipped', 'duplicate', [60]]]);
+  } finally { await cleanup(); }
+});
+
 test('the body comes from the completer, or a deterministic evidence body when its JSON is invalid; both are admitted and hygiene-clean', async () => {
   const { root, hygiene, cleanup } = await workspace();
   try {

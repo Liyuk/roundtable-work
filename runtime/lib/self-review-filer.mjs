@@ -7,7 +7,7 @@ import { proposals } from './self-review.mjs';
 import { openTimers } from './event-timers.mjs';
 import { openInterventions } from './interventions.mjs';
 import { admission } from './intake.mjs';
-import { overlappingIssues } from './overlap.mjs';
+import { duplicatesOf, overlappingIssues } from './overlap.mjs';
 import { scanHygiene } from './hygiene.mjs';
 import { safetyFiles } from './safety.mjs';
 import { intakeRequestIssue } from './intake-backlog.mjs';
@@ -82,6 +82,7 @@ export async function fileSelfReview({ root, now, goals, inputs, client, complet
   const { maxPerDay, maxOpen } = goals.selfReview;
   const open = (await client.listOpen()).map((issue) => ({ ...issue, labels: names(issue.labels), body: issue.body ?? '' }));
   const closed = (await client.listClosed()).map((issue) => ({ ...issue, labels: names(issue.labels), body: issue.body ?? '' }));
+  const linked = typeof client.listLinked === 'function' ? await client.listLinked() : {};
   const recentlyClosed = closed.filter((issue) => Date.parse(issue.closedAt) > now - 30 * DAY);
   const day = new Date(now).toISOString().slice(0, 10);
   let filedToday = readLog(root).filter((r) => r.outcome === 'filed' && r.at.slice(0, 10) === day).length;
@@ -102,6 +103,8 @@ export async function fileSelfReview({ root, now, goals, inputs, client, complet
     const spec = specOf(await completer?.(candidate)) ?? evidenceSpec(candidate);
     const draft = draftOf(candidate, spec);
     if (overlappingIssues(draft, closed, { now }).length) { record(candidate, 'skipped', { reason: 'overlap' }); continue; }
+    const duplicates = duplicatesOf(draft, { open, linked });
+    if (duplicates.length) { record(candidate, 'skipped', { reason: 'duplicate', issues: duplicates }); continue; }
     if (!admission(draft).admitted) { record(candidate, 'refused', { reason: 'admission' }); continue; }
     if ((await scanHygiene({ entries: [{ value: draft.title }, { value: draft.body }], ...hygiene })).length) { record(candidate, 'refused', { reason: 'hygiene' }); continue; }
     if (await findFiled(client, fp)) { record(candidate, 'skipped', { reason: 'fingerprint' }); continue; }
