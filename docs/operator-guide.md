@@ -22,6 +22,13 @@ Nothing is posted, labelled, merged or closed on GitHub. Pass `--live` only when
 
 The supervisor has its own observe-only mode, described in [supervisor.md](supervisor.md). `runtime/supervise.mjs --mode observe` (the default) reads a GitHub fixture file and records decisions in `<workspace>/.roundtable/state/supervisor-ledger.jsonl`. It does not act. It makes no network calls.
 
+## Cutover and rollback
+
+- **Switch to live**: add `--live` to the `ExecStart` line of the installed `rtd.service`, then reload and restart the unit. This is a configuration change only. The template in `deploy/systemd/rtd.service` has no `--live`, so its default is shadow.
+- **Rollback**: remove `--live` from `ExecStart`, then reload and restart the unit. The daemon code is unchanged by either step.
+- **Shadow diff**: `<work-root>/shadow/cycle-<n>.jsonl`, one line per decision that differs from the live decisions in `--live-decisions FILE`. It is written only when `--live` is absent.
+- **Production switch**: a deployer action. The tests in this repository exercise shadow and live runs against fixtures and fake providers only.
+
 ## Reading the heartbeat
 
 The supervisor reads `<workspace>/.roundtable/state/heartbeat.json`. The field names and allowed values are defined in [supervisor.md](supervisor.md#schema):
