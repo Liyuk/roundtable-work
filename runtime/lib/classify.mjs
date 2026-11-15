@@ -1,4 +1,5 @@
 import { parseVerdict } from '../../lib/verdict.mjs';
+import { isBalanceError, isQuotaLimit } from './fallback.mjs';
 
 /** Continuation decision words (machine contract, kept verbatim). */
 export const DECISIONS = Object.freeze(['continue', 'wait', 'ask', 'done', 'stop']);
@@ -8,6 +9,7 @@ export const CLASSES = Object.freeze([
   'developer_failure',
   'test_failure',
   'reviewer_unavailable',
+  'quota_wait',
   'review_passed',
   'review_rejected',
   'human_block',
@@ -48,6 +50,8 @@ export function classify(event) {
   if (!event || typeof event !== 'object') throw new TypeError('event must be an object');
   if (event.scopeMismatch) return result('scope_mismatch', 'ask', { reason: 'scope_mismatch' });
   if (event.humanBlock) return result('human_block', 'ask', { reason: 'human_block' });
+  // A quota or balance (HTTP 402) failure is a wait, not a developer failure. Finalizing keeps its own no-auto-rerun rule.
+  if (event.stage !== 'finalize' && failed(event) && (isBalanceError(event) || isQuotaLimit(event))) return result('quota_wait', 'wait', { reason: 'quota' });
 
   switch (event.stage) {
     case 'developer':
