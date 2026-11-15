@@ -217,3 +217,32 @@ test('expire moves old pending entries to expired and reverts nothing', async ()
     assert.deepEqual(github.calls, []);
   });
 });
+
+test('perform stores sessionId and amends only when given, and confirm settles the record', async () => {
+  await withRoot(async (root) => {
+    const journal = openActionJournal(root, { git: fakeGit(), github: fakeGithub() });
+    const plain = await journal.perform({ action: action({ key: 'p' }), tier: 'auto-notify', notify() {}, apply: async () => ({}) });
+    const linked = await journal.perform({ action: action({ key: 'q', sessionId: 's-7', amends: plain.id }), tier: 'auto-notify', notify() {}, apply: async () => ({}) });
+    const [a, b] = records(root).filter((r) => r.type === 'action');
+    assert.equal('sessionId' in a, false);
+    assert.equal('amends' in a, false);
+    assert.equal(b.sessionId, 's-7');
+    assert.equal(b.amends, plain.id);
+    assert.equal(journal.pendingAmend(5), undefined);
+    journal.confirm(linked.id);
+    assert.equal(journal.state(linked.id), 'settled');
+    await assert.rejects(async () => journal.confirm(linked.id), /cannot confirm from settled/);
+  });
+});
+
+test('requestAmend moves a pending action to amend_requested and pendingAmend finds it by issue', async () => {
+  await withRoot(async (root) => {
+    const journal = openActionJournal(root, { git: fakeGit(), github: fakeGithub() });
+    const { id } = await journal.perform({ action: action(), tier: 'auto-notify', notify() {}, apply: async () => ({}) });
+    journal.requestAmend(id);
+    assert.equal(journal.state(id), 'amend_requested');
+    assert.equal(journal.pendingAmend(5), id);
+    assert.equal(journal.pendingAmend(6), undefined);
+    assert.deepEqual(journal.list().map((a) => [a.id, a.state, a.issue]), [[id, 'amend_requested', 5]]);
+  });
+});

@@ -30,14 +30,19 @@ export async function dispatchAsk({ root, issue, category, question, evidence, p
 
 /**
  * The `dispatchLine(batch)` for the cycle. `decisionOf(issue)` returns `{ category, question, evidence }` for an ask or
- * undefined. Owner decisions resume only when the comment author is the owner.
+ * undefined. Owner decisions resume only when the comment author is the owner. An amend comment resumes the line's
+ * session through `resume({ root, issue, sessionId, text, actionId })`; the default resume does nothing.
  */
-export function makeDispatchLine({ root, owner, decisionOf = () => undefined, provider }) {
+export function makeDispatchLine({ root, owner, decisionOf = () => undefined, provider, resume = async () => {} }) {
   return async (batch) => {
     console.error(JSON.stringify({ event: 'dispatch_line', issue: batch.issue, kinds: batch.events.map((e) => e.kind) }));
     const ask = decisionOf(batch.issue);
     if (ask) await dispatchAsk({ root, issue: batch.issue, provider, ...ask });
     for (const event of batch.events) {
+      if (event.kind === 'owner_comment' && event.payload.command === 'amend') {
+        const { sessionId, text, actionId } = event.payload;
+        await resume({ root, issue: batch.issue, sessionId, text, actionId });
+      }
       if (event.kind === 'owner_comment' && event.payload.decision && owner && event.payload.author === owner) {
         await resumeFromApproval({ root, inbox: approvalInbox, event });
       }
