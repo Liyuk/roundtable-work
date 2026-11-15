@@ -151,7 +151,7 @@ function livePullRequest(files) {
 
 function mergeFixture({ tierOf, files = ['runtime/lib/x.mjs'], persisted } = {}) {
   const calls = [];
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return persisted ?? { issue: '380', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false }; } },
     github: {
       async getPullRequest() { calls.push('pr'); return livePullRequest(files); },

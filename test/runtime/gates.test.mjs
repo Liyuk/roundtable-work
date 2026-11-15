@@ -44,7 +44,7 @@ function livePullRequest(files) {
 
 function entryFixture({ persisted = gatedRecord(), live = livePullRequest([]) } = {}) {
   const calls = [];
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return persisted; } },
     github: {
       async getPullRequest() { calls.push('pr'); return live; },
@@ -100,7 +100,7 @@ test('reviewer unavailable is retried once, then only ready-to-merge is labeled'
 
 test('single merge entry point rechecks persisted gates, live head, mergeability, and CI', async () => {
   const calls = [];
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false }; } },
     github: {
       async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
@@ -114,7 +114,7 @@ test('single merge entry point rechecks persisted gates, live head, mergeability
 
 test('single merge entry point refuses stale heads and red CI without invoking merge', async () => {
   let merges = 0;
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return { issue: '53', head: 'oldhead', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'] }; } },
     github: {
       async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true }; },
@@ -336,7 +336,7 @@ test('approved safety-file change records approval at gate time and merges throu
   assert.deepEqual(persisted.safetyFiles, ['.github/workflows/check.yml']);
   assert.equal(persisted.safetyApproved, true);
   // The provider supplies only live changed files, no safetyFiles/safetyApprovalHead hint fields.
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return persisted; } },
     github: {
       async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files }; },

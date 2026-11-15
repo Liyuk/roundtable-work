@@ -4,6 +4,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { basename, dirname, join, resolve } from 'node:path';
 import { GAP_FACTOR, boundedWait, createCapState, createFreezeLedger, effectiveCap, recordCycleGap } from './liveness.mjs';
 import { HEARTBEAT_PATH, SCHEMA_VERSION, parseHeartbeat, writeHeartbeat } from '../supervisor/heartbeat.mjs';
+import { openTimers } from './event-timers.mjs';
+import { processPending } from './event-claim.mjs';
+import { produceEvents } from './daemon-events.mjs';
 
 export const EXIT_CYCLE_DEADLINE = 77;
 export const DEFAULT_POLL_MS = 300_000;
@@ -56,7 +59,7 @@ export function watchdogVerdict({ heartbeat, ledgerEntries, now, pollMs }) {
  * Runs `pass({ workers })` once per cycle until `signal` aborts. Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass
  * does not settle within `cycleDeadlineMs`. A throwing pass writes a stopped heartbeat and rethrows.
  */
-export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal }) {
+export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal, wake }) {
   const ledger = createFreezeLedger({ store: fileLedgerStore(join(workRoot, LEDGER_PATH)) });
   const cap = createCapState(baseWorkers);
   const aborted = new Promise((resolve) => signal?.addEventListener('abort', resolve, { once: true }));
@@ -95,9 +98,20 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
       return EXIT_CYCLE_DEADLINE;
     }
     heartbeat('running', start);
-    // Ends early when aborted; the pending boundedWait is then simply dropped.
-    await Promise.race([boundedWait({ pollMs, sleep, wall, mono }), aborted]);
+    // Ends early when aborted; the pending wait is then simply dropped. A wake signal replaces the bounded wait: its own
+    // timer runs the poll, and an inbox write ends it early.
+    await Promise.race([wake ? wake.wait(pollMs) : boundedWait({ pollMs, sleep, wall, mono }), aborted]);
   }
   heartbeat('stopped', last?.wall ?? wall());
   return 0;
+}
+
+/**
+ * One inbox cycle: due timers fire, GitHub observations become events (when a reader is given), then each session's
+ * pending events are dispatched once through `dispatchLine(batch)`. `now` is epoch ms.
+ */
+export async function cycleSteps({ root, inbox, timers, reader, since, now = Date.now(), dispatchLine }) {
+  timers.fire(now);
+  if (reader) await produceEvents({ inbox, reader, since });
+  await processPending(root, (batch) => dispatchLine(batch));
 }
