@@ -12,7 +12,9 @@
  * { mergeCommit: <SHA> }; github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
  * github.requiredGreen returns `true` or `{ green, status? }`, where `status: 'cancelled'` means cancelled-only
  * required CI; a provider may also expose the optional `rerunCancelled(pr)` used to re-run such CI. That method is
- * optional by design: without it a cancelled answer keeps today's fail-closed behaviour.
+ * optional by design: without it a cancelled answer keeps today's fail-closed behaviour. `status: 'absent'` means no
+ * required checks run automatically; only then, when local checks are enabled, does the optional `gates.localCheck`
+ * provider (called as `{ issue, head, tree, command }`, returning `{ exitCode }`) supply a per-head pass.
  * Recovery providers return the revert result, { number, head } for the PR, and { number } for the
  * bug issue. GitHub and git effects are owned by the supplied providers.
  *
