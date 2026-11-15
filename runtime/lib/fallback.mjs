@@ -60,10 +60,11 @@ function retryAtOf(error, at) {
  * `candidates`: role -> [{ harness, model }]. `call(role, invoke, { authorSession })` skips a reviewer candidate whose
  * session (`session`, else `harness`) equals `authorSession`, the author's own session.
  */
-export function createCandidateRouter({ candidates, ttlMs, now = Date.now }) {
+export function createCandidateRouter({ candidates, ttlMs = 10 * 60_000, now = Date.now, probeIntervalMs = 10 * 60_000, records: seeded = [] }) {
   const records = new Map();
   const outages = new Map();
   const keyOf = (candidate) => JSON.stringify([candidate.harness, candidate.model]);
+  for (const record of seeded) records.set(keyOf(record), record); // unavailability carried over from earlier passes (#309)
   const isOpen = (candidate) => {
     const record = records.get(keyOf(candidate));
     return !record || now() >= (record.retryAt ?? record.at + ttlMs);
@@ -72,27 +73,34 @@ export function createCandidateRouter({ candidates, ttlMs, now = Date.now }) {
     if (!outages.has(role)) outages.set(role, { cycles: 0, wallMs: 0, since: undefined });
     return outages.get(role);
   };
+  // Runs one candidate and records its outcome; returns the outcome and whether it is available.
+  async function attempt(role, candidate, invoke) {
+    let outcome;
+    try {
+      outcome = await invoke(candidate);
+    } catch (error) {
+      if (!unavailableReason(error)) throw error;
+      outcome = error;
+    }
+    const reason = unavailableReason(outcome);
+    if (!reason) {
+      records.delete(keyOf(candidate));
+      const outage = outageOf(role);
+      if (outage.since !== undefined) { outage.wallMs += now() - outage.since; outage.since = undefined; }
+      return { outcome, available: true };
+    }
+    const at = now();
+    records.set(keyOf(candidate), { role, harness: candidate.harness, model: candidate.model, reason, at, retryAt: retryAtOf(outcome, at), outcome });
+    return { outcome, available: false };
+  }
 
   async function call(role, invoke, { authorSession } = {}) {
     let last;
     for (const candidate of candidates[role]) {
       if (role === 'reviewer' && authorSession !== undefined && (candidate.session ?? candidate.harness) === authorSession) continue;
       if (!isOpen(candidate)) continue;
-      let outcome;
-      try {
-        outcome = await invoke(candidate);
-      } catch (error) {
-        if (!unavailableReason(error)) throw error;
-        outcome = error;
-      }
-      const reason = unavailableReason(outcome);
-      if (!reason) {
-        const outage = outageOf(role);
-        if (outage.since !== undefined) { outage.wallMs += now() - outage.since; outage.since = undefined; }
-        return outcome;
-      }
-      const at = now();
-      records.set(keyOf(candidate), { role, harness: candidate.harness, model: candidate.model, reason, at, retryAt: retryAtOf(outcome, at), outcome });
+      const { outcome, available } = await attempt(role, candidate, invoke);
+      if (available) return outcome;
       last = outcome;
     }
     const outage = outageOf(role);
@@ -103,6 +111,25 @@ export function createCandidateRouter({ candidates, ttlMs, now = Date.now }) {
   }
 
   call.unavailable = () => [...records.values()].map(({ outcome, ...record }) => record);
+  call.candidates = candidates;
+  // Earliest time every candidate of `role` is unavailable again, or undefined while one is open (#309).
+  call.unblockAt = (role) => {
+    const until = candidates[role].map((c) => records.get(keyOf(c)))
+      .map((r) => r && (r.retryAt ?? r.at + ttlMs));
+    return until.every((t) => t !== undefined && now() < t) ? Math.min(...until) : undefined;
+  };
+  // True when a candidate of `role` was unavailable and its time has passed, so it must be probed before work (#309).
+  call.reopened = (role) => candidates[role].some((c) => records.has(keyOf(c)) && isOpen(c));
+  // Probes each unavailable candidate that has reopened or has not been tried for `probeIntervalMs`. A probe is a cheap
+  // `invoke` (never a worker): it spends no attempt and adds no outage cycle, but a success clears the candidate and ends an open outage's wallMs.
+  call.probe = async (role, invoke) => {
+    for (const candidate of candidates[role]) {
+      const record = records.get(keyOf(candidate));
+      if (record && (isOpen(candidate) || now() >= record.at + probeIntervalMs)) await attempt(role, candidate, invoke);
+    }
+  };
+  // The next time to look at `role` again while every candidate is unavailable: the probe interval or the unblock time, whichever is first.
+  call.nextProbeAt = (role) => Math.min(...[call.unblockAt(role), now() + probeIntervalMs].filter(Number.isFinite));
   call.unavailableStats = (role) => {
     const outage = outageOf(role);
     return { cycles: outage.cycles, wallMs: outage.wallMs + (outage.since === undefined ? 0 : now() - outage.since) };
