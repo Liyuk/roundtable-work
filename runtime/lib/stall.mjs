@@ -2,7 +2,8 @@
 // nothing touches fs or network. Config keys (RT_STALL_MIN is `progressMinutes`):
 //   progressMinutes (RT_STALL_MIN, default 90), gateFailures (default 2),
 //   heartbeatGapMs (default 120000), tokenSpend (default 500000 tokens), errorSignatures (default 3),
-//   roundsNoCommit (default 3). `ledger` + `issue` make tokens-no-commit read usage-ledger rows.
+//   roundsNoCommit (default 3), excluded (default []: { start, end } intervals not charged to progress-stalled).
+//   `ledger` + `issue` make tokens-no-commit read usage-ledger rows.
 // Events are sorted by `at`, ties keep input order. Each signal yields at most one stall.
 // Breaker signals (error-signature-repeat, rounds-no-commit) trip a per-line breaker until answered.
 import { tokensSince } from './usage-ledger.mjs';
@@ -17,6 +18,8 @@ const DEFAULTS = Object.freeze({
   progressMinutes: 90, gateFailures: 2, heartbeatGapMs: 120000, tokenSpend: 500000, errorSignatures: 3, roundsNoCommit: 3,
 });
 const MINUTE = 60000;
+// Time inside excluded { start, end } intervals (host freezes, scheduler stalls) that progress must not be charged for.
+const excludedMs = (from, to, excluded = []) => excluded.reduce((sum, i) => sum + Math.max(0, Math.min(to, i.end) - Math.max(from, i.start)), 0);
 const normalize = (text) => String(text).trim().replace(/\s+/g, ' ').toLowerCase();
 
 /** Circuit breaker for one line: tripped by a breaker stall, cleared only by answerBreaker. */
@@ -41,7 +44,8 @@ export function detectStalls({ events = [], now, config = {}, ledger, issue, bre
     'progress-stalled': () => {
       const progress = ofType('progress');
       const baseline = progress.length ? progress.at(-1).at : ordered[0]?.at;
-      return baseline !== undefined && now - baseline >= c.progressMinutes * MINUTE ? { key: baseline, evidence: { lastProgressAt: baseline } } : null;
+      const idle = now - baseline - excludedMs(baseline, now, c.excluded);
+      return baseline !== undefined && idle >= c.progressMinutes * MINUTE ? { key: baseline, evidence: { lastProgressAt: baseline } } : null;
     },
     'gate-failed-repeat': () => {
       const gates = ofType('gate');
