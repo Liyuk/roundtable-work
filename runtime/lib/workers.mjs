@@ -5,8 +5,9 @@ import { acquireLock } from './lock.mjs';
 import { assertSafeId, createConfinement } from './paths.mjs';
 import { dependencies as dependenciesFromBody } from './intake.mjs';
 import { lockKeysOf, overlaps, parseTouchSet } from './touch-set.mjs';
+import { seriesKey } from './series-key.mjs';
 
-const seriesOf = (issue) => issue.series ?? /^\[([^\]]+)\]/.exec(issue.title ?? '')?.[1]?.toLowerCase() ?? null;
+const seriesOf = (issue) => issue.series ?? seriesKey(issue.title);
 const depsOf = (issue) => new Set([...(issue.dependencies ?? issue.dependsOn ?? []), ...dependenciesFromBody(issue.body ?? '')].map(String));
 const idOf = (issue) => String(issue.id ?? issue.number);
 
@@ -14,7 +15,7 @@ const idOf = (issue) => String(issue.id ?? issue.number);
  * Why `a` and `b` must not run together, or null. Checked in order: dependency, touch-set overlap, series fallback.
  * Disjoint parseable touch sets never serialize on series. A missing or unparseable touch set overlaps everything.
  */
-function serializationReason(a, b) {
+export function serializationReason(a, b) {
   if (a.id === b.id) return 'duplicate id';
   if (depsOf(a).has(String(b.id)) || depsOf(b).has(String(a.id))) return 'dependency';
   const ta = parseTouchSet(a.body ?? ''), tb = parseTouchSet(b.body ?? '');
