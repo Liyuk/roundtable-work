@@ -5,8 +5,10 @@ export const FORBIDDEN_ACTIONS = Object.freeze(['merge', 'close', 'revert', 'for
 const isText = (v) => typeof v === 'string' && v.length > 0;
 const isPositiveInt = (n) => Number.isInteger(n) && n > 0;
 const rejected = (reason) => ({ status: 'rejected', reason });
+// Intervention category of each action that ends `done` (see docs/self-supervision.md, RT-S2).
+const INTERVENTION = Object.freeze({ 'restart-daemon': 'liveness', 'pause-queue': 'liveness', 'void-stale-pause': 'merge', 'add-label': 'merge', 'convert-to-draft': 'merge', reprompt: 'self-repair', rollback: 'self-repair' });
 
-export function createActuator({ ledger, now, notify, daemon, queue, github, prompts, releases, config: { maxRestartFailures = 3, backoffBaseMs = 60000 } = {} }) {
+export function createActuator({ ledger, now, notify, daemon, queue, github, prompts, releases, interventions, config: { maxRestartFailures = 3, backoffBaseMs = 60000 } = {} }) {
   let consecutiveFailures = 0;
   let nextAllowedAt = 0;
 
@@ -78,7 +80,7 @@ export function createActuator({ ledger, now, notify, daemon, queue, github, pro
         ledger.record({ ...base, action, reason: `${why}; ${reason}` });
         return rejected(why);
       }
-      ledger.record({ ...base, action, reason: `before: ${reason}` });
+      const decision = ledger.record({ ...base, action, reason: `before: ${reason}` });
       let result;
       try {
         result = await perform[action](args, reason, base);
@@ -86,6 +88,7 @@ export function createActuator({ ledger, now, notify, daemon, queue, github, pro
         result = { status: 'failed', reason: `failed: ${err instanceof Error ? err.message : String(err)}` };
       }
       ledger.record({ ...base, action, reason: `after: ${result.reason ?? 'ok'}` });
+      if (result.status === 'done') interventions?.append({ category: INTERVENTION[action], source: 'external', ref: `rt:${action}`, reason: `supervisor ${action} done`, internalized: 'no' }, { key: decision.id });
       return result;
     },
   };
