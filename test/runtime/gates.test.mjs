@@ -493,3 +493,10 @@ test('without an escalation adapter a Gate 2 failure stays fail-closed and not a
   const result = await runGates(f.input);
   assert.deepEqual([result.status, result.gate, result.hold, result.escalated], ['blocked', 'gate2', false, undefined]);
 });
+
+test('a CI-wait timeout is a resumable hold, never a red failure', async () => {
+  const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'timeout' }; } } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', true]);
+  assert.equal(f.calls.includes('merge'), false);
+});

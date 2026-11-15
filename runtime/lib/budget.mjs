@@ -17,7 +17,7 @@ export function recordEvent(c, kind, { now }) {
 }
 
 // Returns { decision, reason, notifyOnce, counters }; the caller saves `counters`.
-export function checkBudget(c, limits, { now, maxWallMs = Infinity }) {
+export function checkBudget(c, limits, { now, maxWallMs = Infinity, hasPullRequest = false }) {
   if (!c.terminal) {
     const caps = {
       wakes: limits.maxWakeupsPerIssue,
@@ -30,7 +30,9 @@ export function checkBudget(c, limits, { now, maxWallMs = Infinity }) {
     c = { ...c, terminal: hit };
   }
   const notifyOnce = c.terminal === 'reviewRounds' && !c.notified;
-  return { decision: DECISION[c.terminal], reason: c.terminal, notifyOnce, counters: notifyOnce ? { ...c, notified: true } : c };
+  // An exhausted review budget with a PR already open goes to the merge/gate flow instead of a new implementation round.
+  const decision = c.terminal === 'reviewRounds' && hasPullRequest ? 'gate' : DECISION[c.terminal];
+  return { decision, reason: c.terminal, notifyOnce, counters: notifyOnce ? { ...c, notified: true } : c };
 }
 
 export function approveExtraReviewRound(c) {

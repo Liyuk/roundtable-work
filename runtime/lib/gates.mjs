@@ -150,7 +150,8 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
       await ci.rerunCancelled(pr);
       return failed('ci', `Required CI was cancelled by the runner; re-run requested (${ciReruns}/${MAX_CI_RERUNS})`, true);
     }
-    const pending = checks?.status === 'pending';
+    // A CI-wait timeout is not a failure: it holds like a pending run and is retried on a later pass.
+    const pending = checks?.status === 'pending' || checks?.status === 'timeout';
     return failed('ci', pending ? 'Required CI is pending' : 'Required CI is red', pending);
   }
   await persist('ci');

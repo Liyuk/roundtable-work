@@ -2,7 +2,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 
 const ASK_CATEGORIES = Object.freeze(['scope', 'credentials', 'destructive', 'direction']);
-const DECISION_TYPES = Object.freeze(['do', 'continue', 'ask', 'out-of-scope', 'decompose']);
+const DECISION_TYPES = Object.freeze(['do', 'continue', 'ask', 'out-of-scope', 'decompose', 'done']);
 
 /** Validate the machine-readable end-of-turn decision before changing durable or tracker state. */
 export function validateDecision(value) {
@@ -25,8 +25,8 @@ export function parseDecisionFile(source) {
   if (typeof source !== 'string') throw new TypeError('decision file must be text');
   const lines = source.replace(/\r\n/g, '\n').split('\n');
   while (lines.length && lines.at(-1) === '') lines.pop();
-  const match = /^DECISION=(do|continue|ask|out-of-scope|decompose)$/.exec(lines.shift() ?? '');
-  if (!match) throw new TypeError('decision file must start with DECISION=do, DECISION=continue, DECISION=ask, DECISION=out-of-scope, or DECISION=decompose');
+  const match = /^DECISION=(do|continue|ask|out-of-scope|decompose|done)$/.exec(lines.shift() ?? '');
+  if (!match) throw new TypeError('decision file must start with DECISION=do, DECISION=continue, DECISION=ask, DECISION=out-of-scope, DECISION=decompose, or DECISION=done');
   const decision = match[1];
   if (decision === 'ask') return validateDecision({ decision, category: lines.shift(), question: lines.join('\n') });
   if (decision === 'decompose') return validateDecision({ decision, drafts: lines });
@@ -40,6 +40,8 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
   const number = issue?.number ?? issue?.id;
   if (!Number.isSafeInteger(Number(number)) || Number(number) < 1) throw new TypeError('issue number is required');
   if (!store || typeof store.update !== 'function') throw new TypeError('state store is required');
+  // Finished work is handed to the merge/gate flow by the caller; it neither pauses nor labels the issue.
+  if (decision.decision === 'done') return { status: 'done', decision: 'done' };
   let queueNext = ['do', 'continue'].includes(decision.decision);
   if (!queueNext && decision.decision !== 'ask' && (!client || typeof client.createComment !== 'function' || typeof client.addLabel !== 'function' || typeof client.removeLabel !== 'function')) throw new TypeError('injected tracker client is required');
   const id = String(number);

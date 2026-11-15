@@ -8,6 +8,8 @@ const GATES = ['gate0', 'gate1', 'gate2'];
 export function deriveLabelState({ issue, state, highRisk = false }) {
   if (issue.state !== 'open') return [];
   if (state?.pause) return [state.pause.kind === 'ask' ? 'rt:ask' : 'rt:blocked'];
+  // A blocked label outranks any stale ready-to-merge label left by an earlier attempt.
+  if (issue.labels?.includes('rt:blocked')) return ['rt:blocked'];
   const required = highRisk ? GATES : GATES.slice(0, 2);
   if (required.every((gate) => state?.gateRecord?.passed?.includes(gate))) return ['rt:ready-to-merge'];
   if (state && ['working', 'queued'].includes(state.status)) return ['rt:running'];

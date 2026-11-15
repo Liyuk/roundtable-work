@@ -314,3 +314,12 @@ test('a decomposition created before the closedPullRequests field resumes and co
   assert.equal(state.decomposition.status, 'waiting');
   assert.deepEqual(state.decomposition.closedPullRequests, [55]);
 }));
+
+test('DECISION=done is parsed like the other terms and applies without pausing or labelling the issue', async () => {
+  assert.deepEqual(parseDecisionFile('DECISION=done\nAll acceptance met\n'), { decision: 'done', reason: 'All acceptance met' });
+  const writes = [];
+  const store = { load: async () => ({}), update: async () => writes.push('update') };
+  const result = await applyDecision({ decision: 'DECISION=done\nAll acceptance met', issue: { number: 288 }, store });
+  assert.deepEqual(result, { status: 'done', decision: 'done' });
+  assert.deepEqual(writes, []);
+});
