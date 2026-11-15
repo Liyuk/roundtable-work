@@ -19,7 +19,7 @@ test('daemon unit is a restartable service template with Unit and Service sectio
   const unit = read('daemon');
   assert.match(unit, /^\[Unit\]$/m);
   assert.match(unit, /^\[Service\]$/m);
-  assert.match(unit, /^Restart=on-failure$/m);
+  assert.match(unit, /^Restart=always$/m);
   assert.match(unit, /^ExecStart=\/usr\/bin\/env node <workspace>\/runtime\/rtd\.mjs --work-root /m);
   assert.match(unit, /^WorkingDirectory=<workspace>$/m);
   assert.match(unit, /^User=<daemon-user>$/m);
