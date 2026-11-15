@@ -26,6 +26,7 @@ import { loadLocalChecksConfig } from './lib/local-checks.mjs';
 import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
+import { runMetrics } from './lib/metrics.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
@@ -967,6 +968,10 @@ function withTimeout(ms, onTimeout) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'metrics') {
+    console.log(await runMetrics({ argv: argv.slice(1) }));
+    return 0;
+  }
   if (argv[0] === 'status') {
     const { output, outputPath } = await runStatus({ argv: argv.slice(1) });
     if (outputPath) {
