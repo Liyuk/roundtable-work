@@ -29,6 +29,9 @@ import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { runMetrics } from './lib/metrics.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
+import { preload } from './lib/role-memory.mjs';
+import { reflect } from './lib/reflect.mjs';
+import { openMemoryStore } from './lib/memory-store.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
@@ -69,6 +72,25 @@ export function exitCodeFor(result) {
   if (result?.status === 'locked') return EXIT_LOCKED;
   if (result?.status === 'lock_lost') return EXIT_LOCK_LOST;
   return 0;
+}
+
+/** Appends the role's preloaded memory (capped by preload) under `## Memory`; the prompt is unchanged when there is none. */
+export function appendMemory(promptText, { store, role }) {
+  const memory = preload({ store, role });
+  return memory ? `${promptText}\n\n## Memory\n${memory}` : promptText;
+}
+
+/**
+ * One reflection per event id: a marker row `event:<id>` (layer 0, which preload, promote and prune ignore) is written after
+ * `reflect` and makes a replayed event a no-op, so the provider is called once and at most one layer-2 row exists.
+ * A provider error leaves no marker, so the event may be retried later.
+ */
+export async function reflectOnce({ store, provider, event, role }) {
+  const marker = `event:${event.id}`;
+  if (store.get(marker)) return { status: 'replayed' };
+  const result = await reflect({ event, provider, store, role });
+  store.save({ layer: 0, role, id: marker });
+  return result;
 }
 
 /**
@@ -158,7 +180,7 @@ export async function runQueue({
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -189,6 +211,14 @@ export async function runQueue({
   if (!lock.acquired) return { status: 'locked', holder: lock.holder, reason: lock.reason };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
   store.setFence({ highWater: () => lock.anchorHighWater() }); // and by the anchor high-water mark, not the state file
+
+  // Best effort: a reflection failure never fails the wake. No marker is written, so a later wake may retry the event.
+  const reflectEvent = async ({ kind, attempt, role = 'chief', issue, reason }) => {
+    if (!memory) return;
+    try {
+      await reflectOnce({ store: memory.store, provider: memory.provider, role, event: { id: `${issue}:${kind}:${attempt}`, type: kind, issue, reason } });
+    } catch { /* best effort: nothing else is recorded */ }
+  };
 
   // Set when a timed-out handler did not settle within graceMs: lock and issue lease stay renewed until it settles.
   let abandonedHandler = false;
@@ -891,19 +921,25 @@ export async function runQueue({
           }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
-          if (phase === 'finalizing') return { ...(await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done')), ...(step.merged === true && { merged: true }) };
+          if (phase === 'finalizing') {
+            const done = await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
+            await reflectEvent({ kind: 'done', attempt: state.attempts.wakes, issue: id, reason: cls });
+            return { ...done, ...(step.merged === true && { merged: true }) };
+          }
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
           // After a phase timeout the abandoned handler may still be running: never start the retry in this wake.
           const next = await store.retryDeveloper(id, cls, reason, { ...(phaseTimedOut ? { suspendPhase: phase } : {}), retryFinding: step.retryFinding });
           if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop', verdict.ruleRelated === true);
+          await reflectEvent({ kind: 'fix', attempt: next.attempts.developer, role, issue: id, reason });
           if (phaseTimedOut) return out('queued', { class: cls, reason, decision: 'wait', phase: PHASES[0] });
           phase = PHASES[0];
         } else if (cls === 'finalize_failure') {
           // Finalizing may already have had external side effects: never re-run it automatically.
           await store.markInterrupted(id, phase, cls);
           await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
+          await reflectEvent({ kind: 'gate_fail', attempt: state.attempts.wakes, issue: id, reason });
           return out('interrupted', { class: cls, reason, decision: 'ask', phase });
         } else if (cls === 'reviewer_unavailable') {
           // A reviewer outage is not work done by this wake: refund the wake and count only the reviewer budget.
@@ -1067,10 +1103,11 @@ async function main(argv) {
     console.error(error.message.replace(/^routing /, 'routing: '));
     return 2;
   }
+  const memoryStore = openMemoryStore({ dir: resolve(args['work-root'], 'state') });
   const prompts = {};
   for (const role of ['chief', 'developer', 'fixer', 'reviewer', 'researcher']) {
     const prompt = await readFile(new URL(`../.agents/skills/roundtable-work/prompts/roles/${role}.md`, import.meta.url), 'utf8');
-    prompts[role] = renderRolePrompt(prompt, facts);
+    prompts[role] = appendMemory(renderRolePrompt(prompt, facts), { store: memoryStore, role });
   }
   const routing = { facts, prompts };
   const models = { reviewer: facts.roles.reviewer.model, crossCheck: facts.roles.crosscheck.model };
@@ -1083,6 +1120,8 @@ async function main(argv) {
     console.error('handler module must export preDispatch (the pre-dispatch preflight)');
     return 2;
   }
+  // Reflection runs only when the handler module supplies a provider; otherwise no model is called.
+  const memory = handlerModule.reflectionProvider ? { store: memoryStore, provider: handlerModule.reflectionProvider } : undefined;
   const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
   const maxEscalationAttempts = escalationAdapter ? escalationAttemptBudget(process.env) : undefined;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
@@ -1109,7 +1148,7 @@ async function main(argv) {
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
