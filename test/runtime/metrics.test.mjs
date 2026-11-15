@@ -45,7 +45,17 @@ const inbox = [
   { kind: 'ci', issue: 101, receivedAt: T(15, 9), payload: { suite: 'ci', conclusion: 'success' } },
 ];
 
-const fixture = { since: SINCE, until: UNTIL, owner: 'maintainer', inbox, issues, usage, freezes };
+// Ask 'a' is supervisor-held; 'b' was routed to the owner, then resolved by the supervisor (counts once, as supervisor-held);
+// 'c' stayed with the owner; 'old' is before the window.
+const asks = [
+  { issue: 101, key: 'a', route: 'supervisor', at: T(15, 9) },
+  { issue: 101, key: 'b', route: 'owner', at: T(15, 10) },
+  { issue: 101, key: 'b', route: 'supervisor', at: T(15, 11) },
+  { issue: 102, key: 'c', route: 'owner', at: T(15, 12) },
+  { issue: 103, key: 'old', route: 'owner', at: T(14, 23) },
+];
+
+const fixture = { since: SINCE, until: UNTIL, owner: 'maintainer', inbox, issues, usage, freezes, asks };
 
 test('one fixture day pins every metric, per day and in total', () => {
   const report = computeMetrics(fixture);
@@ -59,6 +69,7 @@ test('one fixture day pins every metric, per day and in total', () => {
     frozen: { hostFreezeMs: 3000000, schedulerStallMs: 300000, entries: 3 },
     concurrency: 210000 / 86400000,
     tokensPerMergedPr: { mergedPrs: 2, usageKnownShare: 1, issuesWithoutUsage: 1, perPr: 60 },
+    asks: { supervisorHeld: 2, ownerInterruptions: 1 },
   };
   assert.deepEqual(report.total, expected);
   assert.deepEqual(Object.keys(report.days), [DAY]);
@@ -71,6 +82,7 @@ test('missing sources degrade to n/a with a reason, never 0', () => {
   assert.deepEqual(report.total.ownerPullBacks, { na: 'owner login not given (--owner)' });
   assert.deepEqual(report.total.frozen, { na: 'freeze ledger not present' });
   assert.deepEqual(report.total.tokensPerMergedPr, { na: 'issue states not present' });
+  assert.deepEqual(report.total.asks, { na: 'ask ledger not present' });
   const noUsage = computeMetrics({ ...fixture, usage: null });
   assert.deepEqual(noUsage.total.concurrency, { na: 'usage ledger not present' });
   assert.deepEqual(noUsage.total.fixRounds, { na: 'usage ledger not present' });
@@ -81,9 +93,11 @@ test('loader reads the work root; invalid --since is rejected', async () => {
   try {
     await mkdir(join(workRoot, 'state'));
     await writeFile(join(workRoot, 'state', 'freeze-ledger.jsonl'), `${JSON.stringify(freezes[2])}\nnot json\n`);
+    await writeFile(join(workRoot, 'state', 'ask-ledger.jsonl'), `${asks.map((a) => JSON.stringify(a)).join('\n')}\nnot json\n`);
     const json = JSON.parse(await runMetrics({ argv: ['--since', '2026-11-15T00:00:00Z', '--json', '--work-root', workRoot], now: () => UNTIL }));
     assert.deepEqual(json.total.frozen, { hostFreezeMs: 0, schedulerStallMs: 300000, entries: 1 });
     assert.deepEqual(json.total.ownerPullBacks, { na: 'owner login not given (--owner)' });
+    assert.deepEqual(json.total.asks, { supervisorHeld: 2, ownerInterruptions: 1 });
     await assert.rejects(runMetrics({ argv: ['--since', 'yesterday'], now: () => UNTIL }), /--since/);
   } finally {
     await rm(workRoot, { recursive: true, force: true });

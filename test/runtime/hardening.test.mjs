@@ -559,7 +559,8 @@ test('timeout: an abandoned handler keeps the queue lock and issue lease until i
 
   // After the handler settles, ownership can be released and a successor can resume.
   release();
-  await sleep(100);
+  const releaseDeadline = Date.now() + 5000;
+  while (!JSON.parse(await readFile(join(lockDir, (await readdir(lockDir)).filter((n) => /^epoch-/.test(n)).sort().pop()), 'utf8')).released && Date.now() < releaseDeadline) await sleep(20);
   skew = 5000;
   const third = await runQueue(opts);
   assert.equal(third.status, 'ok');

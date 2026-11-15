@@ -9,6 +9,7 @@ import { autonomyTier } from './autonomy.mjs';
 import { askHash, notifyAction } from './daemon-asks.mjs';
 import { isGoalChange } from './ask-policy.mjs';
 import { readLine } from './decision-cards.mjs';
+import { recordAsk } from './ask-ledger.mjs';
 
 export const ASK_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const RED_LINE = Object.freeze(['credentials', 'destructive', 'production']);
@@ -60,8 +61,9 @@ export async function sweepAskTimeouts({ root, policy, now = Date.now, askTimeou
       Object.assign(line, { status: 'running', slot: 'worker', pending: null });
       writeJson(linePath(root, issue), line);
     };
-    await policy.journal.perform({ action: { ...action, reasons }, tier, apply, notify: notifyAction(root, issue) });
+    const { state } = await policy.journal.perform({ action: { ...action, reasons }, tier, apply, notify: notifyAction(root, issue) });
     policy.ledger.append({ category: 'decision', ref: `#${issue}`, reason: 'ask timed out: recommended option executed', internalized: 'no', source: 'self' }, { key: id });
+    if (state !== 'rolled_back') recordAsk(root, { issue, key, route: 'supervisor', at: t });
   }
 }
 
