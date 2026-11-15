@@ -71,9 +71,14 @@ test('install --dry-run writes no files and creates no target directory', () => 
 
 test('install --dry-run through the real CLI exits 0 and creates no unit dir', () => withUnitDir(async (unitDir) => {
   const r = spawnSync(process.execPath, [join(root, 'bin/rtd'), 'install', '--dry-run', ...INSTALL_ARGS, '--unit-dir', unitDir], { encoding: 'utf8' });
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /ExecStart=/);
-  assertClean(r.stdout);
+  if (process.platform === 'linux') {
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /ExecStart=/);
+    assertClean(r.stdout);
+  } else {
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /not supported in this change/);
+  }
   await assert.rejects(access(unitDir), { code: 'ENOENT' });
 }));
 
