@@ -14,7 +14,7 @@ import { createIntakeProvider } from './lib/intake.mjs';
 import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.mjs';
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
-import { createWorktreeManager } from './lib/worktree.mjs';
+import { createWorktreeManager, syncWithBase } from './lib/worktree.mjs';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, validateDecision } from './lib/decisions.mjs';
 import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
@@ -29,6 +29,8 @@ import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './li
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
+/** Outcomes after which an issue is abandoned for good, so its worktree is removed (see `removeWorktree`). */
+const ABANDONED = new Set(['stop', 'out-of-scope', 'cancelled']);
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
 const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
@@ -133,7 +135,7 @@ export async function runQueue({
   maxWakesPerIssue = RUNTIME_DEFAULTS.maxWakesPerIssue, maxDeveloperAttempts = RUNTIME_DEFAULTS.maxDeveloperAttempts, maxReviewerUnavailable = RUNTIME_DEFAULTS.maxReviewerUnavailable,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
-  githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
+  githubClient, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
@@ -477,6 +479,11 @@ export async function runQueue({
     }
     if (githubClient) {
       const manager = await createWorktreeManager({ workRoot, repoRoot, baseBranch, now });
+      // Best effort: a dirty or absent worktree is kept and logged; removal never throws into the pass.
+      const removeWorktree = async (id) => {
+        const result = await manager.remove(id).catch((error) => ({ removed: false, reason: error.message }));
+        if (!result.removed) console.error(JSON.stringify({ event: 'worktree_cleanup', id, ...result }));
+      };
       const coordinator = createClaimCoordinator({
         client: githubClient, stateRoot: await store.confinement.resolve('locks'), store,
         loadState: (id) => store.load(id), isStale: async (state) => store.staleness(state).stale,
@@ -520,14 +527,21 @@ export async function runQueue({
             await resumeAfterOwnerReply({ issue: item, comments, store, client: githubClient, now });
             state = await store.load(item.id);
           }
-          if (isTerminal(state.status)) { skipped.push({ id: item.id, reason: 'terminal' }); return false; }
+          if (isTerminal(state.status)) {
+            if (ABANDONED.has(state.status)) await removeWorktree(item.id);
+            skipped.push({ id: item.id, reason: 'terminal' }); return false;
+          }
           const claim = await coordinator.tick([item]);
           if (!claim.claimed && !claim.resumed) { skipped.push(...claim.skipped); return false; }
           return true;
         }),
         run: async (item, worker) => {
           worker.signal.addEventListener('abort', markLost, { once: true });
-          try { outcomes.push(await wakeGuarded({ ...item, worktree: worker.worktree })); }
+          try {
+            const outcome = await wakeGuarded({ ...item, worktree: worker.worktree });
+            outcomes.push(outcome);
+            if (outcome.merged === true || ABANDONED.has(outcome.status)) await removeWorktree(item.id);
+          }
           finally { worker.signal.removeEventListener('abort', markLost); }
         },
       });
@@ -692,6 +706,10 @@ export async function runQueue({
             if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
             const executeMerge = async () => {
               if (await readMonitor()) throw new Error('Main is paused');
+              if (baseSync && item.worktree) {
+                const sync = await syncWithBase({ path: item.worktree, id, base: baseBranch });
+                if (sync.stop) throw new Error(`base sync ${sync.stop}: merging ${baseBranch} into the issue branch failed; nothing pushed`);
+              }
               const context = await autoMerge.context({ item, state, result, signal });
               if (!validContext(context)) throw new Error('Incomplete merge context');
               // Whether the provider's squashMerge already resolved. Everything before it stays fail-closed;
@@ -840,7 +858,7 @@ export async function runQueue({
           }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
-          if (phase === 'finalizing') return await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
+          if (phase === 'finalizing') return { ...(await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done')), ...(step.merged === true && { merged: true }) };
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
@@ -1014,7 +1032,7 @@ async function main(argv) {
   }
   const writer = createGitHubWriter({ repo: args.repo });
   const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) {
     result.triage = queue.triage;
     if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
