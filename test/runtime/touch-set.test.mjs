@@ -108,12 +108,14 @@ test('disjoint siblings under a shared ancestor directory are never skipped in o
   const root = await temp();
   try {
     const completedRuns = [];
-    let active = 0, peak = 0;
+    let active = 0, peak = 0, started = 0, open, timer;
+    const bothInFlight = new Promise((resolve, reject) => { open = resolve; timer = setTimeout(() => reject(new Error('siblings were not in flight together')), 5000); });
     const sibling = (id, file) => ({ id, title: `code ${id}`, body: section(`- runtime/lib/${file}`) });
     const result = await runWorkers({ issues: [sibling('1', 'a.mjs'), sibling('2', 'b.mjs')], workRoot: root, workers: 2, run: async (issue) => {
       completedRuns.push(issue.id);
       active++; peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (++started === 2) { clearTimeout(timer); open(); }
+      await bothInFlight;
       active--;
     } });
     assert.equal(peak, 2);
