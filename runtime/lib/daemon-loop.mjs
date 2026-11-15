@@ -9,6 +9,7 @@ import { GAP_FACTOR, boundedWait, createCapState, createFreezeLedger, effectiveC
 import { HEARTBEAT_PATH, SCHEMA_VERSION, parseHeartbeat, writeHeartbeat } from '../supervisor/heartbeat.mjs';
 import { processPending } from './event-claim.mjs';
 import { produceEvents } from './daemon-events.mjs';
+import { pollDue } from './github-poll.mjs';
 import { recover } from './recovery.mjs';
 import { openOutbox } from './outbox.mjs';
 
@@ -123,12 +124,17 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
 }
 
 /**
- * One inbox cycle: due timers fire, GitHub observations become events (when a reader is given), then each session's
- * pending events are dispatched once through `dispatchLine(batch)`. `now` is epoch ms.
+ * One inbox cycle: due timers fire, GitHub observations become events (when a reader is given), polled sources are read
+ * when `poll` ({ mode, poller, paths, lastPollAt, intervalMs }, owned by the caller) is due, then each session's pending
+ * events are dispatched once through `dispatchLine(batch)`. `now` is epoch ms.
  */
-export async function cycleSteps({ root, inbox, timers, reader, since, now = Date.now(), dispatchLine }) {
+export async function cycleSteps({ root, inbox, timers, reader, since, now = Date.now(), dispatchLine, poll }) {
   timers.fire(now);
   if (reader) await produceEvents({ inbox, reader, since });
+  if (poll && pollDue({ mode: poll.mode, lastPollAt: poll.lastPollAt, now, intervalMs: poll.intervalMs })) {
+    for (const path of poll.paths) poll.intervalMs = (await poll.poller.poll(path)).nextMs;
+    poll.lastPollAt = now;
+  }
   await processPending(root, async (batch) => {
     try {
       await dispatchLine(batch);
