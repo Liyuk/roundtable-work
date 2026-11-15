@@ -47,10 +47,10 @@ test('worker scheduler caps concurrency and serializes same series and dependenc
   try {
     let active = 0, peak = 0;
     const issues = [
-      { id: '1', title: '[RT] one', series: 'RT', dependencies: [] },
-      { id: '2', title: '[RT] two', series: 'RT', dependencies: [] },
-      { id: '3', title: '[Pages] three', series: 'Pages', dependencies: ['1'] },
-      { id: '4', title: '[I18N] four', series: 'I18N', dependencies: [] },
+      { id: '1', title: '[RT] one', series: 'RT', dependencies: [], body: '## Goal\nnone' },
+      { id: '2', title: '[RT] two', series: 'RT', dependencies: [], body: '## Goal\nnone' },
+      { id: '3', title: '[Pages] three', series: 'Pages', dependencies: ['1'], body: '## Touch set\n- fixture-3.txt' },
+      { id: '4', title: '[I18N] four', series: 'I18N', dependencies: [], body: '## Touch set\n- fixture-4.txt' },
     ];
     const running = [];
     const dependent = (a, b) => (a.dependencies ?? []).includes(b.id) || (b.dependencies ?? []).includes(a.id);
