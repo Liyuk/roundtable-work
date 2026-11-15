@@ -1,6 +1,7 @@
 import { readFile as readDiskFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
 
 const VERDICTS = Object.freeze({ pass: '审查结论：通过', reject: '审查结论：打回', block: '审查结论：阻塞' });
 const CLASSES = ['blocking', 'in-scope miss', 'out-of-scope follow-up'];
@@ -104,6 +105,7 @@ const nonEmpty = value => typeof value === 'string' && value.trim().length > 0;
 const sha = value => typeof value === 'string' && SHA.test(value);
 
 const REVIEW_NOTES_MARKER = '<!-- rt:review-notes -->';
+const FOLLOW_UP_SEVERITIES = ['critical', 'high'];
 const REVIEW_CONFIG_OFF = Object.freeze({ createFollowupIssues: false });
 
 /** Load the tracked follow-up switch; a missing or malformed file resolves to off. */
@@ -115,13 +117,33 @@ export async function readReviewConfig({ readFile = readDiskFile, repoRoot = joi
   return { ...REVIEW_CONFIG_OFF };
 }
 
-/** Put non-blocking findings in one PR comment; follow-up issues are opt-in and off by default. */
-export async function reportReviewFindings({ github, pr, findings, config }) {
+/** Stable identity of a finding across rounds: file, rule (or class), and the normalized message. */
+export const fingerprint = finding => createHash('sha256')
+  .update(JSON.stringify([finding.file ?? '', finding.rule ?? finding.classification ?? '', finding.summary.trim().replace(/\s+/g, ' ').toLowerCase()]))
+  .digest('hex').slice(0, 16);
+
+/** Mark findings against `previous` records ({ fingerprint, status }) from earlier rounds of the same issue. */
+export function triageFindings(findings, previous = []) {
+  const prior = new Map(previous.map(record => [record.fingerprint, record.status]));
+  return findings.map(finding => {
+    const id = fingerprint(finding);
+    const repeat = prior.has(id);
+    const status = repeat ? prior.get(id) : 'open';
+    return { ...finding, fingerprint: id, repeat, status, fix: finding.classification === 'blocking' && status === 'open' };
+  });
+}
+
+/** High and critical in-scope findings get follow-up issues (switch on, new only); everything else goes in one PR comment. */
+export async function reportReviewFindings({ github, pr, findings, config, previous = [] }) {
   const { createFollowupIssues } = config ?? await readReviewConfig();
-  const body = `${REVIEW_NOTES_MARKER}\n${findings.map(finding => `- ${finding.id} (${finding.severity}): ${finding.summary}`).join('\n')}`;
-  const comment = await github.createComment(pr, body);
-  const issues = createFollowupIssues === true
-    ? await Promise.all(findings.map(finding => github.createIssue({ title: `Follow-up ${finding.id}: ${finding.summary}`, labels: ['rt:followup', 'rt:go'], body: finding.summary })))
+  const triaged = triageFindings(findings, previous);
+  const filed = createFollowupIssues === true
+    ? triaged.filter(finding => !finding.repeat && finding.classification !== 'out-of-scope follow-up' && FOLLOW_UP_SEVERITIES.includes(finding.severity))
     : [];
-  return { comment, issues };
+  const issues = await Promise.all(filed.map(finding => github.createIssue({ title: `Follow-up ${finding.id}: ${finding.summary}`, labels: ['rt:followup', 'rt:go'], body: finding.summary })));
+  const notes = triaged.filter(finding => !filed.includes(finding));
+  const body = `${REVIEW_NOTES_MARKER}\n${notes.map(finding => `- ${finding.id} (${finding.severity})${finding.repeat ? ' repeat' : ''}: ${finding.summary}`).join('\n')}`;
+  const existing = (await github.listComments?.(pr) ?? []).find(comment => comment.body?.startsWith(REVIEW_NOTES_MARKER));
+  const comment = existing ? await github.updateComment(existing.id, body) : await github.createComment(pr, body);
+  return { comment, issues, records: triaged.map(({ id, severity, fingerprint: fp, status, repeat, fix }) => ({ id, severity, fingerprint: fp, status, repeat, fix })) };
 }
