@@ -152,7 +152,8 @@ test('--alert-issue posts an outbox alert once as a marked comment; without it t
 test('--require-tools with a missing tool exits 4 as tool-missing and enqueues one alert per tool per UTC day', async (t) => {
   const ws = await workspace(t);
   const lookup = (tool) => tool === 'git';
-  const run = (ms) => watchdog({ workspace: ws, pollMs: POLL, requireTools: ['gh', 'git'], lookup, clock: () => sample(WALL + ms, ms) });
+  const now = t.mock.method(Date, 'now', () => WALL);
+  const run = (ms) => { now.mock.mockImplementation(() => WALL + ms); return watchdog({ workspace: ws, pollMs: POLL, requireTools: ['gh', 'git'], lookup }); };
   const r = await run(0);
   assert.equal(r.exit, 4);
   assert.equal(r.reason, 'tool-missing');
@@ -210,4 +211,20 @@ test('restart-and-adopt: a lease left by an unclean stop is adopted after its TT
   assert.deepEqual(events, []);
   assert.equal(issue.comments.length, 1);
   assert.equal(worktrees(), before);
+});
+
+test('report-only runs never call the injected clock (no /proc reads), and keep the verdicts and exit codes', async (t) => {
+  const ws = await workspace(t);
+  const throwing = () => { throw new Error('clock must not be sampled without --restart'); };
+  const now = Date.now();
+  await beat(ws, now - 100);
+  const fresh = await watchdog({ workspace: ws, pollMs: POLL, clock: throwing });
+  assert.equal(fresh.reason, 'fresh');
+  assert.equal(fresh.exit, 0);
+  await beat(ws, now - 10_000);
+  const stale = await watchdog({ workspace: ws, pollMs: POLL, clock: throwing });
+  assert.equal(stale.reason, 'stale');
+  assert.equal(stale.exit, 3);
+  assert.equal(stale.restart, undefined);
+  assert.equal(existsSync(join(ws, JOURNAL)), false);
 });

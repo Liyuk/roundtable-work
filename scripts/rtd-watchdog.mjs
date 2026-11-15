@@ -52,8 +52,8 @@ const iso = (ms) => new Date(ms).toISOString();
  */
 export async function watchdog({ workspace, pollMs, restart = false, unit, alertIssue = null, requireTools = [], clock = bootClock, exec = runCommand, lookup = hasTool, writer }) {
   const root = resolve(workspace);
-  const sample = clock();
-  const now = sample.wall;
+  const sample = restart ? clock() : undefined;
+  const now = sample?.wall ?? Date.now();
   const outbox = openOutbox(root);
   const alerts = [];
   const alert = (id, body) => { if (outbox.enqueue({ id, kind: 'comment', issue: alertIssue, payload: { body } })) alerts.push(id); };
