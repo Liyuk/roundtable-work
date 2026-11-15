@@ -27,14 +27,14 @@ Each rule says whether the code enforces it or whether it is a convention that t
 
 Before an implementer is dispatched, Chief prepares the environment (`npm ci`, or the repository's documented equivalent) in the worktree and verifies that a temporary directory is writable. The implementer must not discover a missing dependency or a read-only temp directory itself.
 
-The preflight (`runtime/lib/preflight.mjs`, wired into the developing phase by the `preDispatch` option of `runtime/rtd.mjs`) checks, in this order, and stops at the first failure:
+The preflight (`runtime/lib/preflight.mjs`) checks, in this order, and stops at the first failure. The check is wired by the trusted `--handler` module, which exports `preDispatch`; `runtime/rtd.mjs` `main()` refuses to start (exit 2) without that export. The module supplies `exec` when it calls `runPreDispatch`, so the runtime itself never spawns the prepare command:
 
 1. Every convention file named on the card exists in the worktree and resolves inside it (`missing_convention_file:<name>`, `convention_outside_worktree:<name>`).
 2. The card's `baseline` is a `MAJOR.MINOR.PATCH` version equal to the expected baseline (`baseline_invalid`, `baseline_stale`).
 3. The card's key numbers equal the source's, with no unknown keys (`numbers_mismatch`).
 4. The prepare command succeeds and a temporary directory is writable (`environment_not_ready`, with a stderr tail of at most 2000 characters).
 
-A failed check fails closed: the wake ends as `stop` with class `predispatch_failed` and the reason above, and no implementer runs. Convention: the checks are only as complete as the card's lists.
+A failed check fails closed: the wake ends as `stop` with class `predispatch_failed` and the reason above, and no implementer runs. When the sandbox has no network, the prepare step fails closed with `environment_not_ready` before the implementer starts, so Chief prepares the dependencies beforehand. Convention: the checks are only as complete as the card's lists.
 
 ## Other invariants
 

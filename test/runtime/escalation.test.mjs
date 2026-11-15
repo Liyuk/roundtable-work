@@ -70,6 +70,7 @@ export const escalationAdapter = async ({ decision, model, attempt }) => {
 export default async ({ phase }) => phase === 'finalizing'
   ? { exitCode: 0, decision: ${JSON.stringify(question)} }
   : { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' };
+export async function preDispatch() { return { ok: true }; }
 `);
   const resultPath = join(root, 'adapter-result.json');
   const env = { ...process.env, RT_TEST_RESULT: resultPath,

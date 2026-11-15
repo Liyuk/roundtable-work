@@ -154,7 +154,7 @@ console.log(JSON.stringify(answers[key]));
     await chmod(join(bin, 'gh'), 0o755);
     const providers = join(root, 'providers.mjs');
     const handlerPath = join(root, 'handler.mjs');
-    await writeFile(handlerPath, 'export default async () => ({ exitCode: 0, output: "ok" });\n');
+    await writeFile(handlerPath, 'export default async () => ({ exitCode: 0, output: "ok" });\nexport async function preDispatch() { return { ok: true }; }\n');
     await writeFile(providers, `const stub = () => { throw new Error('not reached in shadow'); };
 export default {
   context: { get: stub }, gates: { gate0: stub, reviewer: stub, crossCheck: stub },

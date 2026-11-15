@@ -973,6 +973,12 @@ async function main(argv) {
   const handlerModule = await import(pathToFileURL(resolve(args.handler)).href);
   const handler = handlerModule.default;
   const escalationAdapter = handlerModule.escalationAdapter;
+  // The trusted handler builds the pre-dispatch preflight (it supplies `exec`); without it no implementer may start.
+  const preDispatch = handlerModule.preDispatch;
+  if (typeof preDispatch !== 'function') {
+    console.error('handler module must export preDispatch (the pre-dispatch preflight)');
+    return 2;
+  }
   const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
   const maxEscalationAttempts = escalationAdapter ? escalationAttemptBudget(process.env) : undefined;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
@@ -989,7 +995,7 @@ async function main(argv) {
   }
   const writer = createGitHubWriter({ repo: args.repo });
   const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) {
     result.triage = queue.triage;
     if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });

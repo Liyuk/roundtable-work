@@ -215,7 +215,8 @@ test('CLI delivers active role configurations and rendered chief prompt to the h
     await writeFile(join(root, 'routing.json'), JSON.stringify(config));
     await writeFile(join(root, 'queue.json'), JSON.stringify(['1']));
     await writeFile(join(root, 'handler.mjs'), `import { writeFileSync } from 'node:fs';
-export default async ({ routing }) => { writeFileSync(${JSON.stringify(join(root, 'received.json'))}, JSON.stringify(routing)); return { exitCode: 0, output: 'ok' }; };`);
+export default async ({ routing }) => { writeFileSync(${JSON.stringify(join(root, 'received.json'))}, JSON.stringify(routing)); return { exitCode: 0, output: 'ok' }; };
+export async function preDispatch() { return { ok: true }; }`);
     const result = spawnSync(process.execPath, ['runtime/rtd.mjs', '--work-root', root, '--queue', 'queue.json', '--handler', join(root, 'handler.mjs'), '--routing', join(root, 'routing.json')], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     const received = JSON.parse(await readFile(join(root, 'received.json'), 'utf8'));
