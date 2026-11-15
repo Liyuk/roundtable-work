@@ -1,6 +1,6 @@
 # Architecture: a Haiku-stable 7x24 loop
 
-Status: canonical target architecture, 2026-11-15. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue #374 [RT-B] (see [Work items](#work-items)).
+Status: canonical target architecture, 2026-11-15. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue #374 [RT-B] (see [Work items](#work-items)). The layer that lets this loop run without the external assistant is designed in [Self-supervision](self-supervision.md) (#414 [RT-S]).
 
 ## Why this redesign
 
@@ -218,7 +218,7 @@ Only the two missing stages are new work (child B10): a plan artifact written to
 
 ### 5. Completion tiers
 
-See [Decision rules](#decision-rules-tiers-and-approval-modes). Mechanically: `merge.mjs` stays the sole squash entry point and keeps every existing check (gate evidence bound to head and tree, live safety-file set, CI green, replay guard `merge:<head>`). The tier function runs before it and decides whether to call it now (auto-silent, auto-notify) or only after an approval (approve-first). Dependency-ordered merging with base re-sync and re-check is #312 (`merge-order.mjs`); the tier applies to each PR that it merges.
+See [Decision rules](#decision-rules-tiers-and-approval-modes). Mechanically: `merge.mjs` stays the sole squash entry point and keeps every existing check (gate evidence bound to head and tree, live safety-file set, CI green, replay guard `merge:<head>`). The tier function runs before it and decides whether to call it now (auto-silent, auto-notify) or only after an approval (approve-first). Dependency-ordered merging with base re-sync and re-check is #312 (`merge-order.mjs`; stacked-branch convention in [stacked-branches.md](stacked-branches.md)); the tier applies to each PR that it merges.
 
 ### 6. Outbox
 
