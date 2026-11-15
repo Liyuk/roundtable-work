@@ -8,6 +8,9 @@
   "engines": {
     "node": ">=24 <25"
   },
+  "bin": {
+    "rtd": "bin/rtd"
+  },
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "node scripts/run-tests.mjs",

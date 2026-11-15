@@ -94,3 +94,14 @@ The Grok Bot routine checks liveness from the heartbeat only: whether `writtenAt
 `runCycle({ ..., auditor })` accepts an optional auditor with `name` (non-empty string) and `audit(input)` (function). `input` is a frozen copy of the GitHub read model `{ issues, pulls, checks, comments }`. The auditor returns an array of note strings; each note is recorded as an `observe-only` decision on the cycle's trace, with `findingSignature` `auditor:<name>`. The auditor is read-only evidence: it cannot call the actuator and cannot change any decision.
 
 The auditor's model is chosen by the routing configuration (the `role → model` block that `rt-agent` writes for each run), not by the auditor code. Do not hard-code a model name in an auditor.
+
+## Observer mode
+
+Stage S5 of the staged plan in [self-supervision.md](self-supervision.md) (section (g)) is observer mode. It is reached when the S4 measures hold. In S5 the external assistant only reads the heartbeat, the intervention ledger and GitHub, and records any intervention it would have made. Its actuator and write access are removed.
+
+Code: [stage.mjs](../runtime/lib/stage.mjs) (`stage`, `exitConditions`, `observerAllows`), [rt-stage.mjs](../scripts/rt-stage.mjs) (CLI), [observer.json](../runtime/defaults/observer.json) (the data file).
+
+- **Allowed operations** (`allowed` in `observer.json`): `read-heartbeat`, `read-ledger`, `read-github`, `record-intervention`.
+- **Denied**: every action in `ALLOWED_ACTIONS` of [actuator.mjs](../runtime/supervisor/actuator.mjs) (`restart-daemon`, `pause-queue`, `void-stale-pause`, `reprompt`, `rollback`, `add-label`, `convert-to-draft`). `observerAllows(action)` returns `false` for these and for any unknown name, so the check fails closed.
+- **Final exit**: `node scripts/rt-stage.mjs --workspace DIR --exit` exits 0 only when all five conditions hold over the last `exit.windowHours`. It prints one line per condition (`condition=<name> ok|fail value=<n>`) and then `exit: pass|fail`.
+- **Owner steps** (never automated; see section (g) of [self-supervision.md](self-supervision.md)): reboot the host; change proxy, SSH, firewall or network configuration; install system packages or binaries; create OS users, tokens or credentials; delete data (state, worktrees, branches, history); stop or reconfigure other services on the host; install or enable units; run the `--live` cutover and rollback. These are recorded as `owner-only` and do not count toward the exit.
