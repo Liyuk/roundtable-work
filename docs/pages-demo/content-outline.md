@@ -1,6 +1,6 @@
 # Roundtable Work Pages demo: content outline
 
-Status: slice 1 of 4, covering the content specification, the visual direction and an audit of the data. This file is a specification for a later static site. It contains no site code, workflow or behavior change. Everything is written in English as new authoring; it restates facts from the repository's existing design documents and does not translate them.
+Status: the content specification for the static demo in `site/`, covering the visual direction and the data. The site is generated from `scenario.json`; deployment status is in `deployment.md`. Everything is written in English as new authoring; it restates facts from the repository's existing design documents and does not translate them.
 
 Companion files in this folder:
 
@@ -130,7 +130,7 @@ This is the text the site explains, in plain language. Each statement is covered
 | `done` | Every acceptance item has evidence. |
 | `stop` | The budget is spent, there is no progress, the risk is too high or authorization is gone. |
 
-**Budgets stop loops.** The policy template's defaults are at most 2 attempts per assignment, at most 2 review rejections before a human decides, and stop after 2 turns without progress. A deployment can change them.
+**Budgets stop loops.** The policy template's defaults are at most 2 attempts per assignment, a limit of 2 review rejection rounds after which only blocking findings stop the work, and stop after 2 turns without progress. A deployment can change them.
 
 ## 6. Failure and recovery states
 
@@ -139,7 +139,7 @@ The demo shows these branches from `scenario.json` (`failureRecovery`). The word
 | ID | Trigger | What the Chief does | Honest outcome |
 | --- | --- | --- | --- |
 | f01 | The host cannot start a separate reviewer session | Does not approve its own work; labels any same-session check a self-check; asks the human | Review stays pending until a human decides |
-| f02 | Reviewer rejections pass the configured limit | Stops automatic rework and hands the case to the human | A person decides |
+| f02 | Reviewer rejections pass the configured limit | Stops automatic rework on blocking findings and hands them to the human; non-blocking findings go to the pull request | A person decides on blocking findings |
 | f03 | A test gate fails | Does not accept the work or send it to review; returns the failing output to the author within budget | May pass later, or ends in f04 |
 | f04 | The attempt budget is used up | Records `stop`, reports what was tried and the decision needed | Work halts |
 | f05 | Two turns bring nothing new | Records `stop` instead of repeating | Work halts and is reported |
@@ -185,7 +185,7 @@ Text for the site, matching `scenario.json` `limits`:
 | The reviewer's card starts with the verdict line; an independent session or a different model is not proof of correctness | Implemented (instructions) | `.agents/skills/roundtable-work/prompts/roles/reviewer.md` |
 | Review must be by a different session than the author; a review by the same session is called a self-check | Implemented (instructions) | `.agents/skills/roundtable-work/prompts/roles/chief.md` |
 | Executors do not commit by default; Chief commits after review passes | Implemented (instructions) | `.agents/skills/roundtable-work/SKILL.md` |
-| Default budgets: 2 attempts, 2 review rejections, stop after 2 turns without progress | Implemented (policy template defaults) | `.agents/skills/roundtable-work/templates/policy.md` |
+| Default budgets: 2 attempts, 2 review rejection rounds (then only blocking findings stop), stop after 2 turns without progress | Implemented (policy template defaults) | `.agents/skills/roundtable-work/templates/policy.md` |
 | Merge, publish and deploy need the user's approval first | Implemented (policy template default) | `.agents/skills/roundtable-work/templates/policy.md` |
 | Installer and read-only doctor scripts; doctor reports background wake-up as unverified | Implemented (scripts and a test) | `scripts/doctor.mjs`, `scripts/install.mjs`, `test/doctor.test.mjs` |
 | CI runs the install and test commands on pushes and pull requests | Implemented (CI) | `.github/workflows/check.yml` |
@@ -196,7 +196,8 @@ Text for the site, matching `scenario.json` `limits`:
 | Restart recovery with outbox, idempotency keys and lease fencing | Planned, not claimed; design only | `docs/05-execution-and-safety.md` |
 | Executor adapter with probe, start, observe, cancel and recover | Planned, not claimed; design only | `docs/05-execution-and-safety.md` |
 | Test and scope gates enforced automatically by a runtime. The gates are Chief verification steps described in instructions and performed by an agent, not automatically enforced | Not implemented; not claimed | `.agents/skills/roundtable-work/prompts/roles/chief.md` |
-| This demo site and its Pages deployment | Planned (later slices) | `docs/pages-demo/scenario.json` |
+| Static demo site generated from `scenario.json` and checked by build and validation scripts | Implemented (scripts and CI) | `scripts/build-site.mjs`, `scripts/validate-site.mjs`, `.github/workflows/pages.yml` |
+| Publishing the demo on GitHub Pages | Planned: the workflow is on `main`, but Pages is not enabled and no deployment is confirmed | `.github/workflows/pages.yml`, `docs/pages-demo/deployment.md` |
 
 Rows marked planned, or "Not implemented; not claimed", are listed so readers can see the boundary. The site must not describe them in the present tense.
 

@@ -1,8 +1,8 @@
 # Pages demo: deployment and contributor guide
 
-Slice 3 of 4 of the Pages demo. This page describes how the static demo in `site/` is validated and published to GitHub Pages, how to preview it locally, what a maintainer must set up once, and how to roll back.
+This page describes how the static demo in `site/` is validated and published to GitHub Pages, how to preview it locally, what a maintainer must set up once, and how to roll back.
 
-Status: the workflow is added by this change. Until a maintainer enables Pages (see [one-time repository setup](#one-time-repository-setup-by-a-human)) and a deployment has run from `main`, nothing is published, and the page's "implemented vs planned" table keeps calling the Pages deployment planned. Nothing here says the site is live.
+Status: the workflow is on `main`, but enabling Pages is a maintainer step that is still pending. Until a maintainer sets the Pages source to GitHub Actions (see [one-time repository setup](#one-time-repository-setup-by-a-human)) and a deployment has run from `main`, nothing is published, and the page's "implemented vs planned" table keeps calling the Pages deployment planned. The site is not live.
 
 ## What is published, and what is not
 
