@@ -80,7 +80,7 @@ export default {
 };
 `);
   const handler = join(root, 'handler.mjs');
-  await writeFile(handler, `export default async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? ${JSON.stringify(PASS)} : 'ok' });\n`);
+  await writeFile(handler, `export default async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? ${JSON.stringify(PASS)} : 'ok' });\nexport async function preDispatch() { return { ok: true }; }\n`);
   return { providers, handler };
 }
 
