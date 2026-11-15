@@ -5,14 +5,16 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile as fsReadFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { startFrontChief, statusOf } from '../runtime/lib/front-chief.mjs';
 import { childEnv, createAdapterLauncher } from '../runtime/lib/agent-adapter.mjs';
 import { loadHarnessConfig, selectHarness } from '../runtime/lib/harness.mjs';
 import { createWriteProxy, runHostCommand, startWriteProxy } from '../runtime/lib/gh-write-proxy.mjs';
+import { loadRouting, routingFacts } from '../runtime/lib/routing.mjs';
+import { assembleRolePrompt } from '../runtime/lib/role-prompt.mjs';
+import { recordUsageRow } from '../runtime/lib/usage-ledger.mjs';
 
-const DEFAULT_ROLE_PROMPT = fileURLToPath(new URL('../.agents/skills/roundtable-work/prompts/roles/chief.md', import.meta.url));
-const USAGE = 'usage: front-chief.mjs status|start --workspace <dir> [--role-prompt <file>]\n';
+const USAGE = 'usage: front-chief.mjs status|start --workspace <dir> [--role-prompt <file>] [--routing <file>]\n';
 
 const flag = (argv, name) => { const i = argv.indexOf(name); return i === -1 ? undefined : argv[i + 1]; };
 
@@ -43,11 +45,17 @@ export async function main(argv, deps = {}) {
     const socketPath = join(socketDir, 'gh.sock');
     const proxy = await startWriteProxy({ socketPath, proxy: createWriteProxy({ repo: env.RT_GH_REPO, execute: (cmd) => (deps.execute ?? runHostCommand)({ ...cmd, cwd: workspace }) }) });
     try {
+      // Usage goes to the workspace state root under the issue named by RT_ISSUE; the model comes from --routing when given.
+      const root = join(workspace, '.roundtable');
+      const recordUsage = (row) => recordUsageRow(root, row);
       const launch = deps.launch ?? (env.RT_AGENT_BIN
         ? defaultLaunch(env.RT_AGENT_BIN, { ...childEnv(env), RT_GH_PROXY_SOCKET: socketPath })
-        : createAdapterLauncher({ adapter: chief, command: chief.name, env, spawnFn: spawn, proxySocket: socketPath }));
-      const rolePrompt = await readFile(flag(rest, '--role-prompt') ?? DEFAULT_ROLE_PROMPT, 'utf8');
-      const result = await startFrontChief({ workspace, launch, rolePrompt, readFile });
+        : createAdapterLauncher({ adapter: chief, command: chief.name, env, spawnFn: spawn, proxySocket: socketPath, recordUsage }));
+      const routing = flag(rest, '--routing');
+      const model = routing ? routingFacts(await loadRouting(routing), Date.now()).roles.chief.model : undefined;
+      const roleFile = flag(rest, '--role-prompt');
+      const rolePrompt = roleFile ? await readFile(roleFile, 'utf8') : await assembleRolePrompt('chief', { readFile });
+      const result = await startFrontChief({ workspace, launch, rolePrompt, readFile, issue: env.RT_ISSUE, model });
       if (!result.started) { stderr.write('already running: another front Chief session holds the lock\n'); return 3; }
       stdout.write(`${JSON.stringify(result)}\n`);
       return 0;

@@ -2,6 +2,7 @@ import { assertSafeId } from './paths.mjs';
 import { safetyFiles } from './safety.mjs';
 import { gate2Triggers } from './gate2-triggers.mjs';
 import { triageFindings } from './review-ledger.mjs';
+import { localCheckEntry, localCheckPasses, ciAllowsMerge } from './local-checks.mjs';
 
 // A single-session (`independent: false`) review is never a Gate 1 pass, whatever its verdict says.
 const PASS = (result) => result?.independent !== false && (result === true || result?.passed === true || result?.status === 'pass');
@@ -13,6 +14,9 @@ export const MAX_CI_RERUNS = 2;
 const CI_RERUN = 'ci_rerun';
 /** How many attempts a recorded-approval read gets before the gate holds for a later pass. */
 const MAX_APPROVAL_READS = 3;
+
+/** Pure: true when the pull request body closes `issueNumber` with a GitHub closing keyword (`Closes #N`). */
+export const closesLink = (body, issueNumber) => new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\\s+#${Number(issueNumber)}(?!\\d)`, 'i').test(String(body ?? ''));
 
 /** A small durable gate record store. The host can inject a transactional state backend instead. */
 export function createGateStateStore({ load, save }) {
@@ -39,9 +43,14 @@ export function createGateStateStore({ load, save }) {
  *   answer is also a hold while an optional `ci.rerunCancelled(pr)` capability exists and the persisted budget
  *   (`MAX_CI_RERUNS` per issue, counted from `ci_rerun` ledger entries via `store`) is not used up; otherwise it is
  *   red and fails closed as before.
+ * Absent required CI (`status: 'absent'`) passes only when `localChecks.enabled` is true and the ledger holds a passing
+ * `local-check:<head>` record; otherwise, with an injected `gates.localCheck({ issue, head, tree, command })` provider,
+ * exit code 0 records it and a non-zero exit or missing provider blocks (`hold: false`), and a throwing provider holds.
+ * A pull request whose body does not close the issue (`closesLink`) fails the `pr-link` gate with `hold: false`
+ * before any review, so the merge never proceeds for an unlinked loop PR.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
-export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation, precondition }) {
+export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation, precondition, localChecks = { enabled: false }, requireClosesLink = true }) {
   const id = assertSafeId(issue);
   if (![head, tree].every((v) => typeof v === 'string' && v.length)) throw new TypeError('head and tree are required');
   required(gates, 'gates'); required(ci, 'ci'); required(merge, 'merge'); required(state, 'state'); required(github, 'github');
@@ -71,6 +80,9 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   const reviewModel = models.reviewer ?? modelRouter?.('review');
   const crossCheckModel = models.crossCheck ?? modelRouter?.('cross-check');
 
+  let body;
+  try { ({ body } = await github.getPullRequest(pr)); } catch (error) { return failed('pr-link', error.message, true); }
+  if (requireClosesLink && !closesLink(body, id)) return failed('pr-link', `Pull request body must close the issue with "Closes #${id}"`);
   if (!passed.has('gate0')) {
     let result;
     try { result = await gates.gate0({ issue: id, head, tree, changedFiles }); } catch (error) { return failed('gate0', error.message, true); }
@@ -145,9 +157,22 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   }
   let checks;
   try { checks = await ci.requiredGreen(pr); } catch (error) { return failed('ci', error.message, true); }
+  // Absent CI (nothing auto-runs) may pass through the opt-in local check: run the injected provider once per head.
+  let ledger = [];
+  if (localChecks.enabled && checks?.status === 'absent') {
+    ledger = (await store.load(id)).ledger;
+    if (!localCheckPasses(ledger, head) && typeof gates.localCheck === 'function') {
+      let result;
+      try { result = await gates.localCheck({ issue: id, head, tree, command: localChecks.command }); } catch (error) { return failed('ci', error.message, true); }
+      if (result?.exitCode !== 0) return failed('ci', 'Local check failed');
+      const entry = localCheckEntry({ head, tree, command: localChecks.command });
+      await store.append(id, entry);
+      ledger = [...ledger, entry];
+    }
+  }
   // Required CI is only reported as green/not green plus an optional status. Pending is resumable; a not-green
   // answer without an explicit pending status is red, which must escalate rather than silently wait.
-  if (checks !== true && checks?.green !== true) {
+  if (!ciAllowsMerge({ checks, enabled: localChecks.enabled, ledger, head })) {
     // The re-run budget is the count of ledger entries for this issue, so it survives a crash and a head change.
     if (checks?.status === 'cancelled' && typeof ci.rerunCancelled === 'function') {
       const ciReruns = (await store.load(id)).ledger.filter((entry) => entry.type === CI_RERUN).length;

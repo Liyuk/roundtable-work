@@ -10,33 +10,68 @@ import { readQueue, isTerminal } from './lib/queue.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { createStateStore, ledgerEntry, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
-import { createIntakeProvider } from './lib/intake.mjs';
+import { createIntakeProvider, linkedPullRequests } from './lib/intake.mjs';
 import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.mjs';
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
 import { createWorktreeManager, syncWithBase } from './lib/worktree.mjs';
+import { stackStatus } from './lib/merge-order.mjs';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, validateDecision } from './lib/decisions.mjs';
 import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
+import { readMergeConfig } from './lib/merge-mode.mjs';
+import { loadLocalChecksConfig } from './lib/local-checks.mjs';
 import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
+import { runMetrics } from './lib/metrics.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
+import { preload } from './lib/role-memory.mjs';
+import { reflect } from './lib/reflect.mjs';
+import { openMemoryStore } from './lib/memory-store.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { CANDIDATES_FILE } from './lib/harness.mjs';
 import { createCandidateRouter } from './lib/fallback.mjs';
 import { openTimers } from './lib/event-timers.mjs';
 import { loadCandidateRecords, openContinuation, runRound, saveCandidateRecords } from './lib/executor-record.mjs';
+import { runLoop, loopWorkspace, cycleSteps, fileLedgerStore, LEDGER_PATH, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { createResourceGovernor } from './lib/prune.mjs';
+import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
+import { sweepAskTimeouts } from './lib/ask-timeout.mjs';
+import { openInbox } from './lib/event-inbox.mjs';
+import { openActionJournal } from './lib/action-journal.mjs';
+import { loadAutonomy } from './lib/autonomy.mjs';
+import { applyActionReply } from './lib/action-replies.mjs';
+import { recordOwnerEvent } from './lib/intervention-producers.mjs';
+import { openInterventions } from './lib/interventions.mjs';
+import { ensureSelfReviewTimer, gatherInputs, runSelfJob } from './lib/self-review-filer.mjs';
+import { loadGoals } from './lib/goals.mjs';
+import { createWakeSignal } from './lib/event-wake.mjs';
+import { openOutbox, dispatch } from './lib/outbox.mjs';
+import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
+import { selfMetrics } from './lib/self-metrics.mjs';
+import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
+import { runChiefCli } from './lib/chief-session.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Outcomes after which an issue is abandoned for good, so its worktree is removed (see `removeWorktree`). */
 const ABANDONED = new Set(['stop', 'out-of-scope', 'cancelled']);
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
 const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
+/** Outbox retry policy: a failed item waits backoff * 2^(failures-1) ms, and is dead-lettered after this many failures. */
+const OUTBOX_BACKOFF_MS = 60_000;
+const OUTBOX_DEAD_AFTER = 5;
+
+// Self-supervision signals for the digest and the anomaly rules, read from the intervention ledger and the freeze ledger.
+function supervisionSignals({ workspace, goals, outbox, now }) {
+  const entries = openInterventions(workspace).entries().entries;
+  const freezes = fileLedgerStore(join(workspace, LEDGER_PATH)).load();
+  return { entries, metrics: selfMetrics({ entries, freezes, now, windowDays: goals.metrics.windowDays }), thresholds: goals.metrics, deadLetters: deadLetterCount(outbox) };
+}
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
 const DECISION_REASK = 'Your DECISION was missing or invalid. Reply with only the decision file for this turn, starting with the DECISION=<do|continue|ask|out-of-scope|decompose|done> line, then its required lines. Do no other work.';
 const parsesAsDecision = (raw) => { try { typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw); return true; } catch { return false; } };
@@ -53,6 +88,31 @@ export function exitCodeFor(result) {
   return 0;
 }
 
+/** The self-review tracker client: reads from `reader`; `search` and the writes go through the shadow fence when `shadow`. */
+export function createSelfReviewClient({ reader, writer, shadow, attempted }) {
+  const out = shadow ? createShadowGitHub(writer, attempted) : writer;
+  return { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), listLinked: async () => typeof reader.listLinkedPullRequests === 'function' ? { ...await linkedPullRequests(reader), open: await reader.listOpenPullRequestTitles(await reader.getRepository()) } : {}, getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: out.createIssue, createLabel: out.createLabel, addLabel: out.addLabel, removeLabel: out.removeLabel };
+}
+
+/** Appends the role's preloaded memory (capped by preload) under `## Memory`; the prompt is unchanged when there is none. */
+export function appendMemory(promptText, { store, role }) {
+  const memory = preload({ store, role });
+  return memory ? `${promptText}\n\n## Memory\n${memory}` : promptText;
+}
+
+/**
+ * One reflection per event id: a marker row `event:<id>` (layer 0, which preload, promote and prune ignore) is written after
+ * `reflect` and makes a replayed event a no-op, so the provider is called once and at most one layer-2 row exists.
+ * A provider error leaves no marker, so the event may be retried later.
+ */
+export async function reflectOnce({ store, provider, event, role }) {
+  const marker = `event:${event.id}`;
+  if (store.get(marker)) return { status: 'replayed' };
+  const result = await reflect({ event, provider, store, role });
+  store.save({ layer: 0, role, id: marker });
+  return result;
+}
+
 /**
  * One pass over the queue: each runnable issue gets at most one wake.
  *
@@ -67,7 +127,7 @@ export function exitCodeFor(result) {
  * `recordArtifacts`, which persists them immediately so a crash cannot lose the record).
  * For auto-merge, `autoMerge.context({ item, state, result, signal })` supplies the PR number, head, tree,
  * boolean highRisk and changedFiles. `autoMerge.gates` and `autoMerge.github` provide injected gate and
- * GitHub operations; `autoMerge.github.getPullRequest` must return { state, draft, head, mergeable, files },
+ * GitHub operations; `autoMerge.github.getPullRequest` must return { state, draft, head, mergeable, files, body },
  * where files is the pull request's changed paths (the merge entry point re-derives the safety-file set
  * from it and fails closed when it is missing), and `state: 'merged'`/`merged: true` plus an optional
  * `mergeCommit` SHA lets the monitor resolve a merge whose outcome was unknown. Gate records are persisted in the issue state; the merge
@@ -139,14 +199,16 @@ export async function runQueue({
   maxWakesPerIssue = RUNTIME_DEFAULTS.maxWakesPerIssue, maxDeveloperAttempts = RUNTIME_DEFAULTS.maxDeveloperAttempts, maxReviewerUnavailable = RUNTIME_DEFAULTS.maxReviewerUnavailable,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
-  githubClient, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
+  githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
   candidates, probe, probeIntervalMs,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
   if ((autoMerge?.production || githubClient) && !observationClients) throw new TypeError('production observation clients are required');
   if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
+  const mergeMode = await readMergeConfig();
+  const localChecks = await loadLocalChecksConfig();
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -172,6 +234,14 @@ export async function runQueue({
   if (!lock.acquired) return { status: 'locked', holder: lock.holder, reason: lock.reason };
   store.setEpoch(lock.epoch); // fence every state write by the lock epoch (R4)
   store.setFence({ highWater: () => lock.anchorHighWater() }); // and by the anchor high-water mark, not the state file
+
+  // Best effort: a reflection failure never fails the wake. No marker is written, so a later wake may retry the event.
+  const reflectEvent = async ({ kind, attempt, role = 'chief', issue, reason }) => {
+    if (!memory) return;
+    try {
+      await reflectOnce({ store: memory.store, provider: memory.provider, role, event: { id: `${issue}:${kind}:${attempt}`, type: kind, issue, reason } });
+    } catch { /* best effort: nothing else is recorded */ }
+  };
 
   // Set when a timed-out handler did not settle within graceMs: lock and issue lease stay renewed until it settles.
   let abandonedHandler = false;
@@ -426,9 +496,11 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store });
-        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks });
+        // The revert PR body is host-written; red-main recovery must not be blocked by the loop-PR `Closes #N` link check.
+        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing, requireClosesLink: false });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
+        if (gated.result?.held) throw new Error(`${gated.result.mode} mode: revert merge not executed`);
         return gated.result;
       } },
       });
@@ -505,7 +577,10 @@ export async function runQueue({
           if (!state.claimPending) return;
           const comments = typeof githubClient.listComments === 'function' ? await githubClient.listComments(issue.number ?? issue.id) : issue.comments ?? [];
           if (!comments.some((comment) => String(comment.body ?? comment).includes(CLAIM_MARKER))) {
-            await githubClient.createComment(issue.number ?? issue.id, `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`);
+            const body = `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`;
+            // Looping daemons deliver the claim comment through the outbox at the end of the cycle.
+            if (outbox) outbox.enqueue({ id: `claim:${issue.number ?? issue.id}`, kind: 'comment', issue: issue.number ?? issue.id, payload: { body } });
+            else await githubClient.createComment(issue.number ?? issue.id, body);
           }
           await store.update(issue.id, (current) => { current.claimPending = false; });
         },
@@ -724,11 +799,15 @@ export async function runQueue({
             if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
             const executeMerge = async () => {
               if (await readMonitor()) throw new Error('Main is paused');
+              let context = await autoMerge.context({ item, state, result, signal });
+              // A stacked pull request waits until every upstream merged, on every merge path; then its base is retargeted before the catch-up.
+              const stack = await stackStatus(autoMerge.github, context.pr);
+              if (stack.stacked && !stack.ready) return { ...result, mergeHold: { gate: 'stack', reason: `pull request #${context.pr} waits for its upstream pull requests to merge` } };
               if (baseSync && item.worktree) {
-                const sync = await syncWithBase({ path: item.worktree, id, base: baseBranch });
-                if (sync.stop) throw new Error(`base sync ${sync.stop}: merging ${baseBranch} into the issue branch failed; nothing pushed`);
+                const sync = await syncWithBase({ path: item.worktree, id, base: baseBranch, ...(stack.stacked ? { github: autoMerge.github, pr: context.pr } : {}) });
+                if (sync.stop) return { ...result, retryableGateFailure: true, retryFinding: { reason: `base sync ${sync.stop}`, fix: `merge origin/${baseBranch} into the issue branch, resolve the conflict, and push` }, exitCode: 1, output: `base sync ${sync.stop}: merging ${baseBranch} into the issue branch failed; nothing pushed` };
+                context = await autoMerge.context({ item, state, result, signal }); // the catch-up moved the head
               }
-              const context = await autoMerge.context({ item, state, result, signal });
               if (!validContext(context)) throw new Error('Incomplete merge context');
               // Whether the provider's squashMerge already resolved. Everything before it stays fail-closed;
               // everything after it is bookkeeping, and must never turn a real merge into a finalize failure.
@@ -754,7 +833,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store });
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode, localChecks });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
@@ -763,7 +842,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;
@@ -778,6 +857,7 @@ export async function runQueue({
                 // a stale head or a changed safety-file set) stays fail-closed: interrupted, decision ask.
                 throw new Error(`${gated.gate}: ${gated.reason}`);
               }
+              if (!mergeHappened && gated.result?.held) return { ...result, mergeHold: { gate: 'merge-mode', reason: `${gated.result.mode} mode: merge not executed` } };
               if (!mergeHappened) throw new Error('Merge entry point reported a merge without a provider squash result');
               // Post-merge bookkeeping. The squash already happened, so a failure here must not fail this wake:
               // the issue is delivered and the failure is kept as a non-fatal detail. Main protection is taken
@@ -878,19 +958,25 @@ export async function runQueue({
           }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
-          if (phase === 'finalizing') return { ...(await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done')), ...(step.merged === true && { merged: true }) };
+          if (phase === 'finalizing') {
+            const done = await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
+            await reflectEvent({ kind: 'done', attempt: state.attempts.wakes, issue: id, reason: cls });
+            return { ...done, ...(step.merged === true && { merged: true }) };
+          }
           phase = PHASES[PHASES.indexOf(phase) + 1];
         } else if (verdict.consumesDeveloperRetry) {
           // One durable write: counter, checkpoint reset and event, so a crash cannot split them.
           // After a phase timeout the abandoned handler may still be running: never start the retry in this wake.
           const next = await store.retryDeveloper(id, cls, reason, { ...(phaseTimedOut ? { suspendPhase: phase } : {}), retryFinding: step.retryFinding });
           if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop', verdict.ruleRelated === true);
+          await reflectEvent({ kind: 'fix', attempt: next.attempts.developer, role, issue: id, reason });
           if (phaseTimedOut) return out('queued', { class: cls, reason, decision: 'wait', phase: PHASES[0] });
           phase = PHASES[0];
         } else if (cls === 'finalize_failure') {
           // Finalizing may already have had external side effects: never re-run it automatically.
           await store.markInterrupted(id, phase, cls);
           await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
+          await reflectEvent({ kind: 'gate_fail', attempt: state.attempts.wakes, issue: id, reason });
           return out('interrupted', { class: cls, reason, decision: 'ask', phase });
         } else if (cls === 'reviewer_unavailable') {
           // A reviewer outage is not work done by this wake: refund the wake and count only the reviewer budget.
@@ -914,6 +1000,20 @@ export async function runQueue({
 }
 
 const TIMED_OUT = Symbol('timed out');
+
+/**
+ * Refusal reason when a `--exclusive-with` pid file names another loop: the file holds no positive integer pid, or the
+ * pid is alive (`kill(pid, 0)` succeeds or fails with EPERM). Null when this run may start. A missing file means no holder.
+ */
+export async function exclusiveRefusal(pidfile) {
+  let text;
+  try { text = await readFile(pidfile, 'utf8'); } catch (error) { return error.code === 'ENOENT' ? null : 'cannot read the pid file'; }
+  const digits = text.trim();
+  const pid = Number(digits);
+  if (!/^\d+$/.test(digits) || !Number.isSafeInteger(pid) || pid < 1) return 'the pid file does not hold a positive integer pid';
+  try { process.kill(pid, 0); } catch (error) { if (error.code !== 'EPERM') return null; }
+  return `pid ${pid} is alive`;
+}
 
 /**
  * Operator recovery path: clear a stale main hold left by the auto-merge monitor (see `monitorMain`).
@@ -966,6 +1066,11 @@ function withTimeout(ms, onTimeout) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'chief') return runChiefCli(argv.slice(1));
+  if (argv[0] === 'metrics') {
+    console.log(await runMetrics({ argv: argv.slice(1) }));
+    return 0;
+  }
   if (argv[0] === 'status') {
     const { output, outputPath } = await runStatus({ argv: argv.slice(1) });
     if (outputPath) {
@@ -977,7 +1082,7 @@ async function main(argv) {
   }
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' }, routing: { type: 'string' }, 'live-decisions': { type: 'string' }, live: { type: 'boolean' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' }, routing: { type: 'string' }, 'live-decisions': { type: 'string' }, live: { type: 'boolean' }, 'exclusive-with': { type: 'string' }, loop: { type: 'boolean' }, 'poll-ms': { type: 'string' }, 'cycle-deadline-ms': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
@@ -994,19 +1099,34 @@ async function main(argv) {
     return exitCodeFor(result);
   }
   if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github) || (args['live-decisions'] && !args.github) || (args.live && !args.github)) {
-    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--live-decisions FILE] [--live] (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--live-decisions FILE] [--live] [--exclusive-with PIDFILE] [--loop [--poll-ms N] [--cycle-deadline-ms N]] (MODULE is trusted operator code, not confined to the work root)');
     console.error('       rtd.mjs --work-root DIR --providers MODULE --clear-main-pause');
     return 2;
   }
+  if (args['exclusive-with']) {
+    const refusal = await exclusiveRefusal(args['exclusive-with']);
+    if (refusal) {
+      console.error(`--exclusive-with ${args['exclusive-with']}: ${refusal}; refusing to start`);
+      return 2;
+    }
+  }
+  // The loop's freeze ledger and heartbeat live under the workspace root, the parent of `.roundtable/`.
+  const workspace = args.loop ? loopWorkspace(args['work-root']) : undefined;
+  if (args.loop && !workspace) {
+    console.error('--loop requires --work-root to be a directory named .roundtable');
+    return 2;
+  }
   const timeouts = {};
-  for (const [flag, option] of [['phase-timeout-ms', 'phaseTimeoutMs'], ['queue-timeout-ms', 'queueTimeoutMs'], ['grace-ms', 'graceMs']]) {
+  const loop = {};
+  for (const [flag, option] of [['phase-timeout-ms', 'phaseTimeoutMs'], ['queue-timeout-ms', 'queueTimeoutMs'], ['grace-ms', 'graceMs'], ['poll-ms', 'pollMs'], ['cycle-deadline-ms', 'cycleDeadlineMs']]) {
     if (args[flag] === undefined) continue;
     const n = Number(args[flag]);
     if (!/^\d+$/.test(args[flag]) || !Number.isSafeInteger(n) || (option !== 'graceMs' && n === 0)) {
       console.error(`--${flag} must be a ${option === 'graceMs' ? 'non-negative' : 'positive'} integer (milliseconds)`);
       return 2;
     }
-    timeouts[option] = n;
+    if (option === 'pollMs' || option === 'cycleDeadlineMs') loop[option] = n;
+    else timeouts[option] = n;
   }
   if (!args.routing) {
     console.error('routing: --routing FILE is required');
@@ -1020,10 +1140,11 @@ async function main(argv) {
     console.error(error.message.replace(/^routing /, 'routing: '));
     return 2;
   }
+  const memoryStore = openMemoryStore({ dir: resolve(args['work-root'], 'state') });
   const prompts = {};
   for (const role of ['chief', 'developer', 'fixer', 'reviewer', 'researcher']) {
     const prompt = await readFile(new URL(`../.agents/skills/roundtable-work/prompts/roles/${role}.md`, import.meta.url), 'utf8');
-    prompts[role] = renderRolePrompt(prompt, facts);
+    prompts[role] = appendMemory(renderRolePrompt(prompt, facts), { store: memoryStore, role });
   }
   const routing = { facts, prompts };
   const models = { reviewer: facts.roles.reviewer.model, crossCheck: facts.roles.crosscheck.model };
@@ -1036,6 +1157,8 @@ async function main(argv) {
     console.error('handler module must export preDispatch (the pre-dispatch preflight)');
     return 2;
   }
+  // Reflection runs only when the handler module supplies a provider; otherwise no model is called.
+  const memory = handlerModule.reflectionProvider ? { store: memoryStore, provider: handlerModule.reflectionProvider } : undefined;
   const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
   const candidatesFile = join(resolve(args['repo-root'] ?? '.'), CANDIDATES_FILE);
   const candidates = existsSync(candidatesFile) ? JSON.parse(await readFile(candidatesFile, 'utf8')).roles : undefined;
@@ -1053,12 +1176,74 @@ async function main(argv) {
     autoMerge.git = createShadowProvider(autoMerge.git, new Set());
   }
   const writer = createGitHubWriter({ repo: args.repo });
-  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
-  if (args.github) {
-    result.triage = queue.triage;
-    if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
+  const outbox = args.loop ? openOutbox(workspace) : undefined;
+  const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
+  // Daily self-review (RT-S8b) runs in GitHub loop mode only; the hygiene denylist is pinned by the operator through the environment.
+  const goals = args.loop ? await loadGoals() : null;
+  const selfReview = args.loop && reader && {
+    goals,
+    hygiene: { denylistPath: process.env.RT_HYGIENE_DENYLIST, expectedSha256: process.env.RT_HYGIENE_DENYLIST_SHA256, repoRoot: resolve(args['repo-root'] ?? '.') },
+    client: createSelfReviewClient({ reader, writer, shadow }),
+  };
+  const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
+  // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
+  const pass = async (workers) => {
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    if (args.github) {
+      result.triage = queue.triage;
+      if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
+    }
+    return result;
+  };
+  const baseWorkers = args.workers === undefined ? 2 : Number(args.workers);
+  if (args.loop) {
+    await mkdir(args['work-root'], { recursive: true });
+    const stateStore = await createStateStore({ workRoot: args['work-root'] });
+    // An inbox write from this process ends the inter-cycle wait early.
+    const wake = createWakeSignal();
+    const governor = createResourceGovernor({ root: workspace });
+    const code = await runLoop({ pass: async ({ workers, admit }) => {
+      // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
+      const owner = ownerOf(args.repo);
+      const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
+      const journal = openActionJournal(workspace, { git: autoMerge?.git, github: shadow ? createShadowGitHub(writer) : writer });
+      const ledger = openInterventions(workspace);
+      const policy = { autonomy: (await loadAutonomy()).autonomy, journal, ledger };
+      const dispatchLine = makeDispatchLine({ root: workspace, owner, policy });
+      const timers = openTimers(workspace);
+      if (selfReview) ensureSelfReviewTimer(timers, selfReview.goals, Date.now());
+      if (selfReview) ensureDigestTimer(timers, goals, Date.now());
+      await cycleSteps({ root: workspace, inbox, timers, reader,
+        dispatchLine: async (batch) => {
+          for (const event of batch.events) if (event.kind === 'owner_comment') {
+            recordOwnerEvent({ ledger, event, state: await stateStore.load(String(batch.issue)), owner });
+            await applyActionReply({ root: workspace, journal, inbox, owner, event });
+          }
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job === 'digest') {
+            const signals = supervisionSignals({ workspace, goals, outbox, now: Date.now() });
+            const since = Date.parse(signals.metrics.window.since);
+            const merged = ((await reader.listRecentMerges()) ?? []).filter((pr) => Date.parse(pr.mergedAt) >= since);
+            const actions = journal.list().filter((a) => a.at >= since);
+            const text = buildDigest({ window: signals.metrics.window, metrics: signals.metrics, entries: signals.entries, merged, actions, stage: 'not computed (RT-S12)', thresholds: signals.thresholds, deadLetters: signals.deadLetters });
+            await enqueueDigest({ outbox, now: Date.now(), issue: goals.reporting.digestIssue, text, hygiene: selfReview.hygiene });
+          }
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job && event.payload.job !== 'digest') {
+            await runSelfJob({ root: workspace, now: Date.now(), event, goals: selfReview.goals, inputs: gatherInputs(workspace), client: selfReview.client, hygiene: selfReview.hygiene });
+          }
+          await dispatchLine(batch);
+        } });
+      await sweepAskTimeouts({ root: workspace, policy });
+      // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
+      if (admit) console.log(JSON.stringify(await pass(workers)));
+      // End of each cycle: raise anomaly alerts, then flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
+      if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
+      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });
+    // A pass that never settled may still hold the process open: end it after stdout is flushed.
+    if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }
+    return code;
   }
+  const result = await pass(baseWorkers);
   const code = exitCodeFor(result);
   if (result.abandonedHandler) {
     // A handler that never settled may still be running and would keep this process alive past the lock's

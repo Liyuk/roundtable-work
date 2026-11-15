@@ -1,0 +1,17 @@
+# TEMPLATE ONLY. A systemd --user unit: not enabled, not installed, and not referenced by any script.
+# Replace every <placeholder> with a value for your host before installing. Keep secrets (credentials) in the
+# env file only, never in this unit. See docs/supervisor.md.
+[Unit]
+Description=Roundtable Work daemon (rtd)
+After=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=<workspace>
+EnvironmentFile=-<env-file>
+ExecStart=/usr/bin/env node <workspace>/runtime/rtd.mjs --work-root <workspace>/.roundtable --github --handler <handler-module> --providers <providers-module> --routing <routing-file> --loop
+Restart=always
+RestartSec=30
+KillMode=control-group

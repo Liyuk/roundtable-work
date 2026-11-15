@@ -28,6 +28,16 @@ Events, state updates, and side-effect intents should be persisted atomically; s
 
 Parallelism is limited jointly by the actual number of processes, CPU, memory, disk, inodes, workspace conflicts, and task dependencies; occupying a ticket is not the same as an executing process. Review and rework take priority, and concrete thresholds are configured by the deployment environment. A worktree can be cleaned up only after confirming it has finished and has no uncommitted work; the permissions to clean up, close, delete, and merge are each made explicit.
 
+## Merge Permission Mode
+
+Every squash merge goes through the single merge entry point (`runtime/lib/merge.mjs`, `createMergeEntryPoint`). Its mode is set per repository in `runtime/merge.config.json` (`{ "mergeMode": "agent" }`) and read once at startup by `runtime/lib/merge-mode.mjs`:
+
+- `agent`: the entry point squash-merges after all gates, live checks, safety approval and required CI pass.
+- `owner`: all checks run, but the merge is held. Nothing is squashed and no merge record is written.
+- `dry-run`: all checks run, but nothing is squashed. The intended merge is recorded once as a `would-merge` ledger entry (`dry-run:<head>`); a repeated call for the same head returns the existing record.
+
+A missing, unreadable, malformed, or unknown `mergeMode` resolves to `dry-run` (fail closed). In `owner` and `dry-run` modes the merge is never called, including for revert merges; a finalizing issue waits with a `merge-mode` hold instead of failing.
+
 ## Cancelled-Only Required CI
 
 A required CI answer is cancelled-only when the CI provider returns `{ green: false, status: 'cancelled' }`: the provider decides that no required job concluded `failure` or `timed_out`, and the runtime never infers that from partial data. When the provider also exposes the optional `ci.rerunCancelled(pr)` capability, `runGates` requests one re-run and holds the issue as `waiting_external` instead of failing into the fixer chain. The budget is two re-runs per issue + head (`MAX_CI_RERUNS`), persisted as `ciReruns` on the gate record before the side effect is requested; a new head or tree resets it. Once the budget is used up, or when the provider exposes no re-run capability, a cancelled answer keeps today's behaviour: a genuine failure that fails closed. A real `failure` or `timed_out` status is never retried this way. Changing required check names or CI runner labels is out of scope unless the issue explicitly asks for it.

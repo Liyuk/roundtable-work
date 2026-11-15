@@ -94,3 +94,48 @@ The Grok Bot routine checks liveness from the heartbeat only: whether `writtenAt
 `runCycle({ ..., auditor })` accepts an optional auditor with `name` (non-empty string) and `audit(input)` (function). `input` is a frozen copy of the GitHub read model `{ issues, pulls, checks, comments }`. The auditor returns an array of note strings; each note is recorded as an `observe-only` decision on the cycle's trace, with `findingSignature` `auditor:<name>`. The auditor is read-only evidence: it cannot call the actuator and cannot change any decision.
 
 The auditor's model is chosen by the routing configuration (the `role → model` block that `rt-agent` writes for each run), not by the auditor code. Do not hard-code a model name in an auditor.
+
+## Observer mode
+
+Stage S5 of the staged plan in [self-supervision.md](self-supervision.md) (section (g)) is observer mode. It is reached when the S4 measures hold. In S5 the external assistant only reads the heartbeat, the intervention ledger and GitHub, and records any intervention it would have made. Its actuator and write access are removed.
+
+Code: [stage.mjs](../runtime/lib/stage.mjs) (`stage`, `exitConditions`, `observerAllows`), [rt-stage.mjs](../scripts/rt-stage.mjs) (CLI), [observer.json](../runtime/defaults/observer.json) (the data file).
+
+- **Allowed operations** (`allowed` in `observer.json`): `read-heartbeat`, `read-ledger`, `read-github`, `record-intervention`.
+- **Denied**: every action in `ALLOWED_ACTIONS` of [actuator.mjs](../runtime/supervisor/actuator.mjs) (`restart-daemon`, `pause-queue`, `void-stale-pause`, `reprompt`, `rollback`, `add-label`, `convert-to-draft`). `observerAllows(action)` returns `false` for these and for any unknown name, so the check fails closed.
+- **Final exit**: `node scripts/rt-stage.mjs --workspace DIR --exit` exits 0 only when all five conditions hold over the last `exit.windowHours`. It prints one line per condition (`condition=<name> ok|fail value=<n>`) and then `exit: pass|fail`.
+- **Owner steps** (never automated; see section (g) of [self-supervision.md](self-supervision.md)): reboot the host; change proxy, SSH, firewall or network configuration; install system packages or binaries; create OS users, tokens or credentials; delete data (state, worktrees, branches, history); stop or reconfigure other services on the host; install or enable units; run the `--live` cutover and rollback. These are recorded as `owner-only` and do not count toward the exit.
+
+## Signal loop
+
+Code: [signals.mjs](../runtime/supervisor/signals.mjs). It is pure (no fs, network or clock reads; `now` is passed in), uses no LLM, and is **observe-only**: it is not wired into the supervisor entrypoint and does not act on any task.
+
+Input is the task-row list from the ledger snapshot: `{ id, status, owner, checkpoint, askedAt, heartbeatAt, startError }`. Active statuses are `running`, `asking` and `pending-review`.
+
+Six detectors, each exported and run by `detectSignals(tasks, now, config)`, in this order (`SIGNAL_KINDS`):
+
+- `pending-review`: the row is `pending-review`.
+- `stopped-midway`: the row is `stopped` and has a checkpoint.
+- `ask-timeout`: the row is `asking` and has waited `askTimeoutMs` (default 2 hours).
+- `stalled`: the row is `running` and its heartbeat is at least `stallMs` old (default 30 minutes).
+- `start-failed`: the row has a `startError`.
+- `orphaned`: the row is active and has no owner.
+
+Each finding is `{ kind, signature, taskId, evidence }` with `signature = kind:taskId`. The signature keys on the condition, not on time.
+
+`createSignalLoop({ windowMs, holdMs })` returns `cycle({ findings, now, ownerActiveAt })`, which returns `{ message, held }`:
+
+- **Dedupe**: a signature already delivered and still active is never sent again. When a condition clears, it is forgotten, so a reappearance is sent again.
+- **Merge**: all pending signatures in one cycle go into one message, one line per signature (`kind taskId`), sorted by signature.
+- **Rate limit**: the same set of pending signatures is delivered at most once per `windowMs` (default 30 minutes). Inside the window the signatures stay pending and are reported as `held`.
+- **Hold**: while the owner was active within `holdMs` (default 10 minutes), nothing is sent and the signatures stay pending. `ownerActiveAt(comments, owner)` gives the owner's latest comment time from the snapshot (`{ author, at }`, or `null`).
+
+## Role-injected instructions and separation
+
+The supervisor is a separate process from the front Chief session. They share no code path and no state.
+
+- **Entrypoint**: [supervise.mjs](../runtime/supervise.mjs) is the only supervisor entrypoint. It runs one observe cycle and does not import the chief session or front Chief code (`runtime/lib/chief-session.mjs`, `runtime/lib/front-chief.mjs`). A test asserts this.
+- **Chief state is untouched**: a run leaves `front-chief-session.json`, `front-chief.lock.d` and `task-ledger.jsonl` byte-identical. The only file read besides the fixture is the heartbeat, and the only file written is the supervisor ledger.
+- **Role injection**: each role's instructions are assembled at launch time by `assembleRolePrompt(role, { readFile })` in [role-prompt.mjs](../runtime/lib/role-prompt.mjs). `chief` maps to the Chief role file (`.agents/skills/roundtable-work/prompts/roles/chief.md`). `supervisor` maps to [supervisor.md](../runtime/prompts/supervisor.md), which states observe-only, no actuation, no chief-session access, and writes limited to the supervisor ledger. An unknown role throws `TypeError`.
+- **No cross-injection**: the chief prompt does not contain supervisor instructions, and the supervisor prompt is never sent to the Chief session. `rt-chief` uses `assembleRolePrompt('chief')` when no `--role-prompt` flag is given; an explicit `--role-prompt` file still overrides it.
+- **Tests**: [role-prompt.test.mjs](../test/runtime/supervisor/role-prompt.test.mjs) (assembly per role, unknown role) and [entry.test.mjs](../test/runtime/supervisor/entry.test.mjs) (no chief import, chief state byte-identical after `main`).

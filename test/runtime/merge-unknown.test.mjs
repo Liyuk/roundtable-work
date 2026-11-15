@@ -1,7 +1,7 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -16,7 +16,7 @@ const tmp = () => mkdtemp(join(process.cwd(), 'rt119-'));
 // Lock records live in the private anchor, never in the work root: keep the host's real anchor untouched.
 const ANCHOR = mkdtempSync(join(tmpdir(), 'rt119-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* leaving /tmp behind is harmless */ } });
+after(() => rm(ANCHOR, { recursive: true, force: true }));
 const exists = (path) => access(path).then(() => true, () => false);
 const PASSOUT = '审查结论：通过';
 const OBSERVED_SHA = 'a'.repeat(40);
@@ -26,7 +26,7 @@ const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 // Default production providers: PR 90 is the merge candidate, PR 91 the revert pull request.
 function providers(overrides = {}) {
   const github = {
-    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', files: ['x'] }; },
+    async setBase() {}, async getPullRequest(pr) { return { body: pr === 90 ? 'Closes #53 Closes #54' : 'Closes #92', state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', files: ['x'] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr) { return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {},
@@ -110,7 +110,7 @@ test('a closed pull request without a merged field retains the hold and admits n
   const root = await tmp();
   let pulls = 0;
   let ran = false;
-  const autoMerge = providers({ github: { async getPullRequest() { pulls++; return { state: 'closed', draft: false, mergeable: false, head: OBSERVED_SHA, files: ['x'] }; } } });
+  const autoMerge = providers({ github: { async setBase() {}, async getPullRequest() { pulls++; return { body: 'Closes #53 Closes #54', state: 'closed', draft: false, mergeable: false, head: OBSERVED_SHA, files: ['x'] }; } } });
   try {
     const store = await seedMarker(root, marker());
     const result = await runQueue({ workRoot: root, queue: ['54'], handler: async () => { ran = true; return { exitCode: 0, output: 'ok' }; }, autoMerge, now: () => 1_000_000 });
@@ -125,7 +125,7 @@ test('a closed pull request without a merged field retains the hold and admits n
 test('a pre-seeded crash marker for a closed, unmerged pull request clears the hold and admits work', async () => {
   const root = await tmp();
   let pulls = 0;
-  const autoMerge = providers({ github: { async getPullRequest() { pulls++; return { state: 'closed', merged: false, draft: false, mergeable: false, head: OBSERVED_SHA, files: ['x'] }; } } });
+  const autoMerge = providers({ github: { async setBase() {}, async getPullRequest() { pulls++; return { body: 'Closes #53 Closes #54', state: 'closed', merged: false, draft: false, mergeable: false, head: OBSERVED_SHA, files: ['x'] }; } } });
   try {
     const store = await seedMarker(root, marker());
     const result = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge });
@@ -139,7 +139,7 @@ test('a pre-seeded crash marker for a closed, unmerged pull request clears the h
 test('a pre-seeded crash marker for an open pull request clears the hold and admits work', async () => {
   const root = await tmp();
   const seen = [];
-  const autoMerge = providers({ github: { async getPullRequest(pr) { seen.push(pr); return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', files: ['x'] }; } } });
+  const autoMerge = providers({ github: { async setBase() {}, async getPullRequest(pr) { seen.push(pr); return { body: pr === 90 ? 'Closes #53 Closes #54' : 'Closes #92', state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', files: ['x'] }; } } });
   try {
     const store = await seedMarker(root, marker());
     const result = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge });
@@ -156,7 +156,7 @@ test('an unrecognized or malformed pull request state retains the hold and admit
     let ran = false;
     let squashes = 0;
     const autoMerge = providers({ github: {
-      async getPullRequest() { return live; },
+      async setBase() {}, async getPullRequest() { return live; },
       async squashMerge() { squashes++; return { mergeCommit: 'abcdef0123456789' }; },
     } });
     try {
@@ -173,7 +173,7 @@ test('an unrecognized or malformed pull request state retains the hold and admit
 
 test('merged true resolves a marker even when the state is not recognized', async () => {
   const root = await tmp();
-  const autoMerge = providers({ github: { async getPullRequest() { return { state: 'unknown', merged: true, mergeCommit: 'abcdef0123456789' }; } } });
+  const autoMerge = providers({ github: { async setBase() {}, async getPullRequest() { return { body: 'Closes #53 Closes #54', state: 'unknown', merged: true, mergeCommit: 'abcdef0123456789' }; } } });
   try {
     const store = await seedMarker(root, marker());
     await runQueue({ workRoot: root, queue: [], handler, autoMerge });
@@ -187,9 +187,9 @@ test('a merged marker with a merge commit moves to monitoring and still reverts 
   let main = { head: 'abcdef0123456789', status: 'red' };
   const autoMerge = providers({
     github: {
-      async getPullRequest(pr) {
+      async setBase() {}, async getPullRequest(pr) {
         const merged = pr === 90;
-        return { state: merged ? 'merged' : 'open', draft: false, mergeable: true, head: merged ? OBSERVED_SHA : 'reverthead', files: ['x'], ...(merged ? { mergeCommit: 'abcdef0123456789' } : {}) };
+        return { body: pr === 90 ? 'Closes #53 Closes #54' : 'Closes #92', state: merged ? 'merged' : 'open', draft: false, mergeable: true, head: merged ? OBSERVED_SHA : 'reverthead', files: ['x'], ...(merged ? { mergeCommit: 'abcdef0123456789' } : {}) };
       },
       async mainStatus() { return main; },
       async openRevertPullRequest() { calls.push('revert-pr'); return { number: 91, head: 'reverthead' }; },
@@ -221,10 +221,10 @@ test('a merged marker without a merge commit and a green main clears the hold', 
   let merged = true;
   const autoMerge = providers({
     github: {
-      async getPullRequest(pr) {
+      async setBase() {}, async getPullRequest(pr) {
         return merged
-          ? { state: 'merged', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] }
-          : { state: 'open', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] };
+          ? { body: 'Closes #53 Closes #54', state: 'merged', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] }
+          : { body: 'Closes #53 Closes #54', state: 'open', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] };
       },
       async mainStatus() { return { head: 'ffffffffffffffff', status: 'green' }; },
       async createIssue() { issues++; return { number: 92 }; },
@@ -251,7 +251,7 @@ test('a merged marker without a merge commit and a red main escalates exactly on
   const reader = await createStateStore({ workRoot: root });
   const autoMerge = providers({
     github: {
-      async getPullRequest() { return { state: 'merged', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] }; },
+      async setBase() {}, async getPullRequest() { return { body: 'Closes #53 Closes #54', state: 'merged', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] }; },
       async mainStatus() { return { head: 'eeeeeeeeeeeeeeee', status: 'red' }; },
       async createIssue(arg) {
         const escalation = (await reader.load('rt-main-monitor')).mainMonitor?.escalation;
@@ -290,7 +290,7 @@ test('an unreadable pull request keeps the hold, then escalates once after the t
   let attempts = 0;
   const autoMerge = providers({
     github: {
-      async getPullRequest() { attempts++; throw new Error(`provider is down: /srv/roundtable/config.json https://github.example.test/status`); },
+      async setBase() {}, async getPullRequest() { attempts++; throw new Error(`provider is down: /srv/roundtable/config.json https://github.example.test/status`); },
       async createIssue(arg) { issues.push(arg); return { number: 92 }; },
     },
   });
@@ -325,7 +325,7 @@ test('a legacy marker without a pull request number is escalated, never ignored'
   let issues = 0;
   const autoMerge = providers({
     github: {
-      async getPullRequest() { pulls++; return { state: 'open', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] }; },
+      async setBase() {}, async getPullRequest() { pulls++; return { body: 'Closes #53 Closes #54', state: 'open', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] }; },
       async createIssue() { issues++; return { number: 92 }; },
     },
   });
@@ -392,8 +392,7 @@ test('--clear-main-pause exits 75 when another pass holds the lock and clears no
     assert.equal(JSON.parse(child.stdout).status, 'locked');
     assert.equal((await store.load('rt-main-monitor')).mainMonitor.pr, 90);
   } finally {
-    await holder.release();
-    await rm(root, { recursive: true, force: true });
+    try { await holder.release(); } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
 

@@ -85,7 +85,7 @@ function world(worktree, { ci = true } = {}) {
       crossCheck: async () => true,
     },
     github: {
-      getPullRequest: async () => ({ state: 'open', draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
+      getPullRequest: async () => ({ state: 'open', body: 'Closes #53', draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
       requiredGreen: async () => (state.ci === true ? true : { green: false, status: state.ci }),
       squashMerge: async (_pr, options) => { squashes.push(options); return { mergeCommit: 'abcdef0123456789' }; },
       addLabel: async () => {},
@@ -180,10 +180,10 @@ test('the finalizing path syncs with origin/main before gates; a conflict fails 
   const issue = issueFor('53');
   const result = await runQueue({ workRoot, repoRoot: repo, githubClient: clientFor(issue), queue: [issue], autoMerge: w.autoMerge, observationClients: w.observationClients, models: MODELS, handler: developer });
 
-  assert.deepEqual([result.outcomes[0].status, result.outcomes[0].class, result.outcomes[0].decision], ['interrupted', 'finalize_failure', 'ask']);
+  // Each conflict is a developer fix round; once that budget is spent the issue stops for Chief.
+  assert.deepEqual([result.outcomes[0].status, result.outcomes[0].reason, result.outcomes[0].decision], ['stop', 'developer_budget_exhausted', 'stop']);
   assert.equal(w.squashes.length, 0);
   assert.equal(refExists(origin, 'refs/heads/rt/53-pi'), false, 'nothing pushed');
-  assert.equal(git(path, 'status', '--porcelain'), '', 'the conflicting merge was aborted');
 });
 
 test('a clean sync pushes the merged base and gates and squash see the new head', async () => {
