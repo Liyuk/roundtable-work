@@ -34,6 +34,8 @@ import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
+import { openActionJournal } from './lib/action-journal.mjs';
+import { applyActionReply } from './lib/action-replies.mjs';
 import { openTimers } from './lib/event-timers.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
@@ -921,6 +923,20 @@ export async function runQueue({
 const TIMED_OUT = Symbol('timed out');
 
 /**
+ * Refusal reason when a `--exclusive-with` pid file names another loop: the file holds no positive integer pid, or the
+ * pid is alive (`kill(pid, 0)` succeeds or fails with EPERM). Null when this run may start. A missing file means no holder.
+ */
+export async function exclusiveRefusal(pidfile) {
+  let text;
+  try { text = await readFile(pidfile, 'utf8'); } catch (error) { return error.code === 'ENOENT' ? null : 'cannot read the pid file'; }
+  const digits = text.trim();
+  const pid = Number(digits);
+  if (!/^\d+$/.test(digits) || !Number.isSafeInteger(pid) || pid < 1) return 'the pid file does not hold a positive integer pid';
+  try { process.kill(pid, 0); } catch (error) { if (error.code !== 'EPERM') return null; }
+  return `pid ${pid} is alive`;
+}
+
+/**
  * Operator recovery path: clear a stale main hold left by the auto-merge monitor (see `monitorMain`).
  *
  * Takes the same single-flight lock as a pass (`EXIT_LOCKED` / `{ status:'locked' }` when another pass holds it),
@@ -986,7 +1002,7 @@ async function main(argv) {
   }
   let args;
   try {
-    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' }, routing: { type: 'string' }, 'live-decisions': { type: 'string' }, live: { type: 'boolean' }, loop: { type: 'boolean' }, 'poll-ms': { type: 'string' }, 'cycle-deadline-ms': { type: 'string' } } }).values;
+    args = parseArgs({ args: argv, options: { 'work-root': { type: 'string' }, queue: { type: 'string' }, github: { type: 'boolean' }, repo: { type: 'string' }, handler: { type: 'string' }, providers: { type: 'string' }, 'repo-root': { type: 'string' }, workers: { type: 'string' }, 'phase-timeout-ms': { type: 'string' }, 'queue-timeout-ms': { type: 'string' }, 'grace-ms': { type: 'string' }, 'clear-main-pause': { type: 'boolean' }, routing: { type: 'string' }, 'live-decisions': { type: 'string' }, live: { type: 'boolean' }, 'exclusive-with': { type: 'string' }, loop: { type: 'boolean' }, 'poll-ms': { type: 'string' }, 'cycle-deadline-ms': { type: 'string' } } }).values;
   } catch (err) {
     console.error(err.message);
     return 2;
@@ -1003,9 +1019,16 @@ async function main(argv) {
     return exitCodeFor(result);
   }
   if (!args['work-root'] || !args.handler || Boolean(args.queue) === Boolean(args.github) || (args.repo && !args.github) || (args['live-decisions'] && !args.github) || (args.live && !args.github)) {
-    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--live-decisions FILE] [--live] [--loop [--poll-ms N] [--cycle-deadline-ms N]] (MODULE is trusted operator code, not confined to the work root)');
+    console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--live-decisions FILE] [--live] [--exclusive-with PIDFILE] [--loop [--poll-ms N] [--cycle-deadline-ms N]] (MODULE is trusted operator code, not confined to the work root)');
     console.error('       rtd.mjs --work-root DIR --providers MODULE --clear-main-pause');
     return 2;
+  }
+  if (args['exclusive-with']) {
+    const refusal = await exclusiveRefusal(args['exclusive-with']);
+    if (refusal) {
+      console.error(`--exclusive-with ${args['exclusive-with']}: ${refusal}; refusing to start`);
+      return 2;
+    }
   }
   // The loop's freeze ledger and heartbeat live under the workspace root, the parent of `.roundtable/`.
   const workspace = args.loop ? loopWorkspace(args['work-root']) : undefined;
@@ -1085,8 +1108,16 @@ async function main(argv) {
     // An inbox write from this process ends the inter-cycle wait early.
     const wake = createWakeSignal();
     const code = await runLoop({ pass: async ({ workers }) => {
-      await cycleSteps({ root: workspace, inbox: openInbox(workspace, { onWrite: () => wake.notify() }), timers: openTimers(workspace), reader,
-        dispatchLine: makeDispatchLine({ root: workspace, owner: ownerOf(args.repo) }) });
+      // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
+      const owner = ownerOf(args.repo);
+      const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
+      const journal = openActionJournal(workspace, { git: autoMerge?.git, github: shadow ? createShadowGitHub(writer) : writer });
+      const dispatchLine = makeDispatchLine({ root: workspace, owner });
+      await cycleSteps({ root: workspace, inbox, timers: openTimers(workspace), reader,
+        dispatchLine: async (batch) => {
+          for (const event of batch.events) if (event.kind === 'owner_comment') await applyActionReply({ root: workspace, journal, inbox, owner, event });
+          await dispatchLine(batch);
+        } });
       console.log(JSON.stringify(await pass(workers)));
       // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
       await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
