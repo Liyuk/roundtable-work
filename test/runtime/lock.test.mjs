@@ -6,7 +6,7 @@ import { realpathSync } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
 import * as realFs from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { acquireLock, anchorRootOf, hostId, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
 
@@ -901,3 +901,135 @@ test('concurrent first acquisitions in a fresh anchor all succeed', async () => 
     await Promise.all(results.map((lock) => lock.release()));
   }
 });
+
+// ---- Pruning of stale per-repo directories under locks/ (each test gets its own anchor: the scan is bounded to
+// 16 candidates per call, so a shared anchor full of earlier tests' dirs would make the outcome order-dependent)
+const withAnchor = (fn) => withDir(async (dir) => {
+  const anchorRoot = await tmp();
+  try { await fn(dir, anchorRoot); } finally { await rm(anchorRoot, { recursive: true, force: true }); }
+});
+const repoDirOf = (dir, anchorRoot) => dirname(lockDirectoryFor({ lockPath: lockPathOf(dir), repoRoot: dir, anchorRoot }));
+const markerOf = (dir, anchorRoot) => join(dirname(repoDirOf(dir, anchorRoot)), `.repo-${basename(repoDirOf(dir, anchorRoot))}.json`);
+const acq = (dir, anchorRoot, extra = {}) => acquireLock({ lockPath: lockPathOf(dir), repoRoot: dir, anchorRoot, owner: 'p', ...extra });
+
+/** Acquire and release a lock for `dir` (optionally planting entries), then remove `dir`: a stale per-repo dir. */
+async function staleRepo(dir, anchorRoot, plant = async () => {}) {
+  const h = await acq(dir, anchorRoot);
+  assert.equal(await h.release(), true);
+  await plant();
+  const repo = repoDirOf(dir, anchorRoot);
+  await rm(dir, { recursive: true, force: true });
+  return repo;
+}
+
+test('prune: a per-repo dir whose repo root is gone and holds no live epoch is removed by a later acquire', withAnchor(async (_dir, anchorRoot) => {
+  const stale = await tmp();
+  const repo = await staleRepo(stale, anchorRoot);
+  assert.equal(await exists(repo), true);
+  const other = await tmp();
+  try {
+    const h = await acq(other, anchorRoot);
+    assert.equal(h.acquired, true);
+    assert.equal(await exists(repo), false, 'the stale repo directory is gone');
+    assert.equal(await exists(markerOf(stale, anchorRoot)), false, 'its identity marker goes with it');
+    assert.equal(await h.release(), true);
+  } finally { await rm(other, { recursive: true, force: true }); }
+}));
+
+test('prune: a repo dir with a live epoch or an existing repo root is never removed', withAnchor(async (_dir, anchorRoot) => {
+  const live = await tmp();
+  const held = await acq(live, anchorRoot, { ttlMs: 60_000 });
+  assert.equal(held.acquired, true);
+  const liveRepo = repoDirOf(live, anchorRoot);
+  await rm(live, { recursive: true, force: true });
+  const kept = await tmp();
+  const done = await acq(kept, anchorRoot);
+  assert.equal(await done.release(), true);
+  const keptRepo = repoDirOf(kept, anchorRoot);
+  const other = await tmp();
+  try {
+    const h = await acq(other, anchorRoot);
+    assert.equal(h.acquired, true);
+    assert.equal(await exists(liveRepo), true, 'a live epoch keeps its repo directory');
+    assert.equal(await exists(keptRepo), true, 'an existing repo root keeps its repo directory');
+    assert.equal(await h.release(), true);
+  } finally {
+    await rm(other, { recursive: true, force: true });
+    await rm(kept, { recursive: true, force: true });
+    await held.release();
+  }
+}));
+
+test('prune: symlinks inside a stale repo dir are never followed and keep the directory', withAnchor(async (_dir, anchorRoot) => {
+  const outside = await tmp();
+  const other = await tmp();
+  try {
+    await writeFile(join(outside, 'keep'), 'outside');
+    const stale = await tmp();
+    const repo = await staleRepo(stale, anchorRoot, () => symlink(outside, join(repoDirOf(stale, anchorRoot), 'escape')));
+    const h = await acq(other, anchorRoot);
+    assert.equal(h.acquired, true);
+    assert.equal(await exists(repo), true, 'a symlink entry keeps the stale directory');
+    assert.equal(await readFile(join(outside, 'keep'), 'utf8'), 'outside', 'nothing outside locks/ was touched');
+    assert.equal((await lstat(join(repo, 'escape'))).isSymbolicLink(), true, 'the symlink is left alone');
+    assert.equal(await h.release(), true);
+  } finally {
+    await rm(other, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+}));
+
+test('prune: a symlink named like a temp file in a stale lock dir keeps the directory and is not followed', withAnchor(async (_dir, anchorRoot) => {
+  const outside = await tmp();
+  const other = await tmp();
+  try {
+    await writeFile(join(outside, 'keep'), 'outside');
+    const stale = await tmp();
+    const repo = await staleRepo(stale, anchorRoot, () => symlink(outside, join(lockDirectoryFor({ lockPath: lockPathOf(stale), repoRoot: stale, anchorRoot }), '.tmp-escape')));
+    const h = await acq(other, anchorRoot);
+    assert.equal(h.acquired, true);
+    assert.equal(await exists(repo), true);
+    assert.equal(await readFile(join(outside, 'keep'), 'utf8'), 'outside');
+    assert.equal(await h.release(), true);
+  } finally {
+    await rm(other, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+}));
+
+test('prune: the identity marker records the repo root path', withAnchor(async (dir, anchorRoot) => {
+  const h = await acq(dir, anchorRoot);
+  assert.equal(h.acquired, true);
+  assert.equal(JSON.parse(await readFile(markerOf(dir, anchorRoot), 'utf8')).root, realpathSync(dir));
+  assert.equal(await h.release(), true);
+}));
+
+test('prune: a legacy marker without root is backfilled on the next open, and an unbacked dir is never pruned', withAnchor(async (dir, anchorRoot) => {
+  const legacyMarker = async (root) => {
+    const m = JSON.parse(await readFile(markerOf(root, anchorRoot), 'utf8'));
+    await writeFile(markerOf(root, anchorRoot), JSON.stringify({ dev: m.dev, ino: m.ino }));
+  };
+  const unbacked = await tmp();
+  assert.equal((await acq(unbacked, anchorRoot).then((h) => h.release())), true);
+  await legacyMarker(unbacked);
+  const unbackedRepo = repoDirOf(unbacked, anchorRoot);
+  await rm(unbacked, { recursive: true, force: true });
+  const h = await acq(dir, anchorRoot);
+  assert.equal(h.acquired, true);
+  assert.equal(await exists(unbackedRepo), true, 'no recorded root: never pruned');
+  assert.equal(await h.release(), true);
+
+  const backed = await tmp();
+  assert.equal((await acq(backed, anchorRoot).then((x) => x.release())), true);
+  await legacyMarker(backed);
+  const h2 = await acq(backed, anchorRoot);
+  assert.equal(h2.acquired, true);
+  assert.equal(JSON.parse(await readFile(markerOf(backed, anchorRoot), 'utf8')).root, realpathSync(backed), 'backfilled while the root exists');
+  assert.equal(await h2.release(), true);
+  const backedRepo = repoDirOf(backed, anchorRoot);
+  await rm(backed, { recursive: true, force: true });
+  const h3 = await acq(dir, anchorRoot);
+  assert.equal(h3.acquired, true);
+  assert.equal(await exists(backedRepo), false, 'the backfilled dir is pruned once its root is gone');
+  assert.equal(await h3.release(), true);
+}));
