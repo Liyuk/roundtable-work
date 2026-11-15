@@ -71,7 +71,7 @@ export function openActionJournal(root, { git, github, now = Date.now } = {}) {
       before = { ...before, file: { path: before.file, sha256: await sha256(snap) } };
     }
     const revert = buildRevert({ kind: action.kind, issue: action.issue }, before);
-    write({ type: 'action', id, kind: action.kind, issue: action.issue, tier, reasons: action.reasons, plan: action.plan, before, revert, at: now() });
+    write({ type: 'action', id, kind: action.kind, issue: action.issue, tier, reasons: action.reasons, plan: action.plan, before, revert, sessionId: action.sessionId, amends: action.amends, at: now() });
 
     if (tier === 'approve-first') {
       state(id, 'awaiting_approval');
@@ -82,12 +82,33 @@ export function openActionJournal(root, { git, github, now = Date.now } = {}) {
     const facts = { ...(await apply()) };
     if (before.file) facts.postSha256 = await sha256(inside(before.file.path));
     if (tier === 'auto-silent') {
-      state(id, 'settled');
+      settle(id);
       return { id, state: 'settled' };
     }
     state(id, 'executed_pending_confirmation', facts);
     notify(notice(id, 'action-pending-confirmation', 'executed_pending_confirmation'));
     return { id, state: 'executed_pending_confirmation' };
+  }
+
+  // A settled action that amends an earlier one makes that one `amended`, if it was waiting for the amendment.
+  function settle(id) {
+    state(id, 'settled');
+    const amends = actions.get(id).amends;
+    if (amends && states.get(amends) === 'amend_requested') state(amends, 'amended');
+  }
+
+  function confirm(id) {
+    if (states.get(id) !== 'executed_pending_confirmation') throw new Error(`cannot confirm from ${states.get(id)}`);
+    settle(id);
+  }
+
+  function requestAmend(id) {
+    if (states.get(id) !== 'executed_pending_confirmation') throw new Error(`cannot amend from ${states.get(id)}`);
+    state(id, 'amend_requested');
+  }
+
+  function pendingAmend(issue) {
+    return [...actions.values()].find((rec) => rec.issue === issue && states.get(rec.id) === 'amend_requested')?.id;
   }
 
   async function runStep(id, step, facts) {
@@ -147,5 +168,6 @@ export function openActionJournal(root, { git, github, now = Date.now } = {}) {
     return expired;
   }
 
-  return { perform, rollback, expire, state: (id) => states.get(id) };
+  const list = () => [...actions.values()].map((rec) => ({ ...rec, state: states.get(rec.id) }));
+  return { perform, rollback, expire, confirm, requestAmend, pendingAmend, list, state: (id) => states.get(id) };
 }
