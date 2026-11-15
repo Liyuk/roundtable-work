@@ -100,7 +100,7 @@ test('--files with a directory part or a home path is refused with a non-zero ex
     // Home prefixes are joined at runtime so this file holds no literal home path (the hygiene scan reads test files too).
     const home = ['/ho', 'me/x/a.mjs'].join('');
     const users = ['/Us', 'ers/x/a.mjs'].join('');
-    for (const files of ['dir/a.mjs', 'dir\\a.mjs', '~/a.mjs', home, users, '/root/a.mjs']) {
+    for (const files of ['dir/a.mjs', 'dir\\a.mjs', '~/a.mjs', home, users, ['/ro', 'ot/a.mjs'].join('')]) {
       const result = spawnSync(process.execPath, [CLI, 'record', '--workspace', root, '--tag', 'pt5', '--files', files, '--summary', 'refused'], { encoding: 'utf8' });
       assert.notEqual(result.status, 0, files);
     }
