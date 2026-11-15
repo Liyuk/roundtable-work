@@ -4,8 +4,17 @@ import { ledgerEntry } from './state.mjs';
 const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
 const isStringArray = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 
+/** Thrown when the tier function requires an owner or decider approval before squashing. */
+export class ApprovalRequired extends Error {
+  constructor(reasons) {
+    super(`Approval required: ${reasons.join(', ')}`);
+    this.name = 'ApprovalRequired';
+    this.code = 'APPROVAL_REQUIRED';
+  }
+}
+
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
-export function createMergeEntryPoint({ github, gateState, store }) {
+export function createMergeEntryPoint({ github, gateState, store, tierOf }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
   for (const name of ['getPullRequest', 'requiredGreen', 'squashMerge']) {
     if (typeof github[name] !== 'function') throw new TypeError(`github.${name} is required`);
@@ -43,8 +52,10 @@ export function createMergeEntryPoint({ github, gateState, store }) {
     }
     const checks = await github.requiredGreen(pr);
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
+    const tier = tierOf ? await tierOf(evidence, live) : null;
+    if (tier?.tier === 'approve-first') throw new ApprovalRequired(tier.reasons);
     const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
     if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });
-    return merged;
+    return tier ? { tier: tier.tier, reasons: tier.reasons, result: merged } : merged;
   };
 }

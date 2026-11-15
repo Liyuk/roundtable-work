@@ -1,6 +1,7 @@
 import { resumeDecomposition } from './decisions.mjs';
 import { CorruptStateError } from './state.mjs';
 import { overlappingIssues } from './overlap.mjs';
+import { seriesKey } from './series-key.mjs';
 
 const excluded = new Set(['rt:owner', 'rt:deferred', 'rt:running', 'rt:ask', 'rt:blocked', 'rt:hold', 'rt:ready-to-merge']);
 const labelsOf = issue => (issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
@@ -103,7 +104,7 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
     candidates.push({ issue, bug: labels.includes('type:bug') ? 0 : 1, rank: rank < 0 ? 3 : rank, self: loopCreated ? 0 : 1 });
   }
   candidates.sort((a, b) => a.bug - b.bug || a.rank - b.rank || a.self - b.self || String(a.issue.createdAt).localeCompare(String(b.issue.createdAt)) || a.issue.number - b.issue.number);
-  return { issues: candidates.map(({ issue }) => ({ id: String(issue.number), priority: 0, state: 'queued', title: issue.title, series: /^\[([^\]]+)\]/.exec(issue.title ?? '')?.[1] ?? null, number: issue.number, url: issue.url, ...(includeRunning ? { labels: issue.labels, body: issue.body, author: issue.author } : {}) })), triage, admission: admissionResults };
+  return { issues: candidates.map(({ issue }) => ({ id: String(issue.number), priority: 0, state: 'queued', title: issue.title, series: seriesKey(issue.title), number: issue.number, url: issue.url, ...(includeRunning ? { labels: issue.labels, body: issue.body, author: issue.author } : {}) })), triage, admission: admissionResults };
 }
 
 /** A fresh tracker snapshot is read for each queue pass. Triage is available on the provider. */
