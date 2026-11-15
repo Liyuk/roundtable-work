@@ -21,19 +21,28 @@ import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
+import { readMergeConfig } from './lib/merge-mode.mjs';
 import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
-import { runLoop, loopWorkspace, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { openInbox } from './lib/event-inbox.mjs';
+import { openTimers } from './lib/event-timers.mjs';
+import { createWakeSignal } from './lib/event-wake.mjs';
+import { openOutbox, dispatch } from './lib/outbox.mjs';
+import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Outcomes after which an issue is abandoned for good, so its worktree is removed (see `removeWorktree`). */
 const ABANDONED = new Set(['stop', 'out-of-scope', 'cancelled']);
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
 const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
+/** Outbox retry policy: a failed item waits backoff * 2^(failures-1) ms, and is dead-lettered after this many failures. */
+const OUTBOX_BACKOFF_MS = 60_000;
+const OUTBOX_DEAD_AFTER = 5;
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
 const DECISION_REASK = 'Your DECISION was missing or invalid. Reply with only the decision file for this turn, starting with the DECISION=<do|continue|ask|out-of-scope|decompose|done> line, then its required lines. Do no other work.';
 const parsesAsDecision = (raw) => { try { typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw); return true; } catch { return false; } };
@@ -136,13 +145,14 @@ export async function runQueue({
   maxWakesPerIssue = RUNTIME_DEFAULTS.maxWakesPerIssue, maxDeveloperAttempts = RUNTIME_DEFAULTS.maxDeveloperAttempts, maxReviewerUnavailable = RUNTIME_DEFAULTS.maxReviewerUnavailable,
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
-  githubClient, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
+  githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
   if ((autoMerge?.production || githubClient) && !observationClients) throw new TypeError('production observation clients are required');
   if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
+  const mergeMode = await readMergeConfig();
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -420,9 +430,10 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store });
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode });
         const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
+        if (gated.result?.held) throw new Error(`${gated.result.mode} mode: revert merge not executed`);
         return gated.result;
       } },
       });
@@ -499,7 +510,10 @@ export async function runQueue({
           if (!state.claimPending) return;
           const comments = typeof githubClient.listComments === 'function' ? await githubClient.listComments(issue.number ?? issue.id) : issue.comments ?? [];
           if (!comments.some((comment) => String(comment.body ?? comment).includes(CLAIM_MARKER))) {
-            await githubClient.createComment(issue.number ?? issue.id, `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`);
+            const body = `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot 1).`;
+            // Looping daemons deliver the claim comment through the outbox at the end of the cycle.
+            if (outbox) outbox.enqueue({ id: `claim:${issue.number ?? issue.id}`, kind: 'comment', issue: issue.number ?? issue.id, payload: { body } });
+            else await githubClient.createComment(issue.number ?? issue.id, body);
           }
           await store.update(issue.id, (current) => { current.claimPending = false; });
         },
@@ -737,7 +751,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store });
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
@@ -761,6 +775,7 @@ export async function runQueue({
                 // a stale head or a changed safety-file set) stays fail-closed: interrupted, decision ask.
                 throw new Error(`${gated.gate}: ${gated.reason}`);
               }
+              if (!mergeHappened && gated.result?.held) return { ...result, mergeHold: { gate: 'merge-mode', reason: `${gated.result.mode} mode: merge not executed` } };
               if (!mergeHappened) throw new Error('Merge entry point reported a merge without a provider squash result');
               // Post-merge bookkeeping. The squash already happened, so a failure here must not fail this wake:
               // the issue is delivered and the failure is kept as a non-fatal detail. Main protection is taken
@@ -1040,10 +1055,12 @@ async function main(argv) {
     autoMerge.git = createShadowProvider(autoMerge.git, new Set());
   }
   const writer = createGitHubWriter({ repo: args.repo });
-  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
+  const outbox = args.loop ? openOutbox(workspace) : undefined;
+  const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
+  const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
@@ -1052,7 +1069,15 @@ async function main(argv) {
   };
   const baseWorkers = args.workers === undefined ? 2 : Number(args.workers);
   if (args.loop) {
-    const code = await runLoop({ pass: async ({ workers }) => { console.log(JSON.stringify(await pass(workers))); }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers });
+    // An inbox write from this process ends the inter-cycle wait early.
+    const wake = createWakeSignal();
+    const code = await runLoop({ pass: async ({ workers }) => {
+      await cycleSteps({ root: workspace, inbox: openInbox(workspace, { onWrite: () => wake.notify() }), timers: openTimers(workspace), reader,
+        dispatchLine: (batch) => console.error(JSON.stringify({ event: 'dispatch_line', issue: batch.issue, kinds: batch.events.map((e) => e.kind) })) });
+      console.log(JSON.stringify(await pass(workers)));
+      // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
+      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }
     return code;

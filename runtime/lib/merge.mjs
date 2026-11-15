@@ -1,5 +1,6 @@
 import { safetyFiles } from './safety.mjs';
 import { ledgerEntry } from './state.mjs';
+import { MERGE_MODES } from './merge-mode.mjs';
 
 const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
 const isStringArray = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
@@ -14,8 +15,9 @@ export class ApprovalRequired extends Error {
 }
 
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
-export function createMergeEntryPoint({ github, gateState, store, tierOf }) {
+export function createMergeEntryPoint({ github, gateState, store, tierOf, mode = 'dry-run' }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
+  const resolvedMode = MERGE_MODES.includes(mode) ? mode : 'dry-run';
   for (const name of ['getPullRequest', 'requiredGreen', 'squashMerge']) {
     if (typeof github[name] !== 'function') throw new TypeError(`github.${name} is required`);
   }
@@ -33,7 +35,9 @@ export function createMergeEntryPoint({ github, gateState, store, tierOf }) {
     }
     // The merge record lives in the ledger: a replayed squash for the same head returns the recorded merge instead of merging again.
     const mergeId = `merge:${evidence.head}`;
+    const dryRunId = `dry-run:${evidence.head}`;
     if (store && ledgerEntry(await store.load(evidence.issue), mergeId)) return { replayed: true };
+    if (resolvedMode === 'dry-run' && store && ledgerEntry(await store.load(evidence.issue), dryRunId)) return { held: 'dry-run', mode: 'dry-run', replayed: true };
     const live = await github.getPullRequest(pr);
     if (!live || live.state !== 'open' || live.draft === true || live.head !== evidence.head || live.mergeable !== true) {
       throw new Error('Pull request is not open, ready, current, and mergeable');
@@ -54,6 +58,12 @@ export function createMergeEntryPoint({ github, gateState, store, tierOf }) {
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
     const tier = tierOf ? await tierOf(evidence, live) : null;
     if (tier?.tier === 'approve-first') throw new ApprovalRequired(tier.reasons);
+    // owner and dry-run hold the merge: no provider squash, and no merge record.
+    if (resolvedMode === 'owner') return { held: 'owner', mode: 'owner' };
+    if (resolvedMode === 'dry-run') {
+      if (store) await store.append(evidence.issue, { id: dryRunId, type: 'would-merge', detail: { pr } });
+      return { held: 'dry-run', mode: 'dry-run' };
+    }
     const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
     if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });
     return tier ? { tier: tier.tier, reasons: tier.reasons, result: merged } : merged;
