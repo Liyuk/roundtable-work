@@ -11,6 +11,12 @@ import { fileURLToPath } from 'node:url';
 import { runQueue, exitCodeFor, EXIT_LOCKED, EXIT_LOCK_LOST } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { acquireLock, hostId, lockDirectoryFor } from '../../runtime/lib/lock.mjs';
+import { RECOVERY, recover } from '../../runtime/lib/recovery.mjs';
+import { cycleSteps } from '../../runtime/lib/daemon-loop.mjs';
+import { openInbox } from '../../runtime/lib/event-inbox.mjs';
+import { openTimers } from '../../runtime/lib/event-timers.mjs';
+import { openOutbox } from '../../runtime/lib/outbox.mjs';
+import { detectStalls } from '../../runtime/lib/stall.mjs';
 
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-recovery-'));
@@ -637,5 +643,113 @@ test('lock lost while an issue runs: its next state write is refused and the nex
     assert.deepEqual(seen, ['1:developing', '1:testing', '1:reviewing', '1:finalizing'], 'no further phase or issue runs');
     assert.deepEqual(Object.keys(await snapshotState(root)), ['~31.epoch-1.json'], 'no state file was created for issue 2');
     assert.equal((await (await createStateStore({ workRoot: root })).load('1')).artifacts.output, undefined, 'the stale artifact write was refused');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// --- Recovery table (#388): failure class -> action, budget and timer ---
+
+const RECOVERY_CLASSES = ['host-freeze', 'scheduler-stall', 'quota', 'provider-timeout', 'invalid-output', 'gh-write-failed', 'ci-red', 'ci-cancelled', 'main-red-after-merge', 'merge-unknown', 'claim-stuck', 'revert-failed'];
+const RECOVERY_NOW = Date.parse('2026-01-01T00:00:00Z');
+const RECOVERY_T0 = RECOVERY_NOW;
+
+test('RECOVERY has exactly the table classes, all frozen, each named in docs/architecture.md', async () => {
+  assert.deepEqual(Object.keys(RECOVERY).sort(), [...RECOVERY_CLASSES].sort());
+  assert.ok(Object.isFrozen(RECOVERY));
+  for (const rule of Object.values(RECOVERY)) assert.ok(Object.isFrozen(rule));
+  const doc = await readFile(new URL('../../docs/architecture.md', import.meta.url), 'utf8');
+  for (const cls of RECOVERY_CLASSES) assert.ok(doc.includes(`\`${cls}\``), `${cls} is in the recovery table`);
+});
+
+test('recover: quota and provider-timeout wait on a timer, spend no budget; retryAfterMs overrides the default delay', () => {
+  for (const cls of ['quota', 'provider-timeout']) {
+    const r = recover(cls, { now: RECOVERY_NOW });
+    assert.equal(r.action, 'wait');
+    assert.equal(r.spendsBudget, false);
+    assert.ok(r.timer.at > RECOVERY_NOW, `${cls} timer is in the future`);
+    assert.equal(recover({ class: cls, retryAfterMs: 1234 }, { now: RECOVERY_NOW }).timer.at, RECOVERY_NOW + 1234);
+  }
+});
+
+test('recover: invalid-output re-asks once for free, then falls back', () => {
+  assert.deepEqual(recover({ class: 'invalid-output' }, { now: RECOVERY_NOW }), { action: 'reask', spendsBudget: false });
+  assert.deepEqual(recover({ class: 'invalid-output', reasked: true }, { now: RECOVERY_NOW }), { action: 'fallback', spendsBudget: false });
+});
+
+test('recover: only ci-red spends budget among the table classes', () => {
+  for (const cls of RECOVERY_CLASSES) {
+    const spends = recover(cls, { now: RECOVERY_NOW }).spendsBudget;
+    assert.equal(spends, cls === 'ci-red', cls);
+  }
+});
+
+test('recover: unknown and prototype names hold and alert', () => {
+  for (const cls of ['toString', '__proto__', 'constructor', 'no-such-class', 'unknown']) {
+    assert.deepEqual(recover(cls, { now: RECOVERY_NOW }), { action: 'hold-and-alert', spendsBudget: false }, cls);
+    assert.deepEqual(recover({ class: cls }, { now: RECOVERY_NOW }), { action: 'hold-and-alert', spendsBudget: false }, cls);
+  }
+});
+
+const throwingCycle = async (root, error) => {
+  openInbox(root).accept({ source_event_id: 'ev-1', kind: 'intake', issue: 7, payload: {}, receivedAt: RECOVERY_T0 });
+  await cycleSteps({ root, inbox: openInbox(root), timers: openTimers(root), now: RECOVERY_T0, dispatchLine: () => { throw error; } });
+};
+
+for (const cls of [...RECOVERY_CLASSES, 'unknown']) {
+  test(`daemon cycle survives a line failing with ${cls}: the recovery is applied, nothing is rethrown`, async () => {
+    const root = await tmp();
+    try {
+      const error = Object.assign(new Error('line failed'), { failureClass: cls === 'unknown' ? undefined : cls, retryAfterMs: 5000 });
+      await throwingCycle(root, error);
+      const timers = openTimers(root).list();
+      const items = openOutbox(root).items();
+      if (cls === 'quota' || cls === 'provider-timeout') {
+        assert.deepEqual(timers.map((t) => t.id), [`recover:${cls}:ev-1`]);
+        assert.equal(timers[0].at, RECOVERY_T0 + 5000);
+        assert.deepEqual(items, []);
+      } else {
+        assert.deepEqual(timers, []);
+        assert.equal(items.length, 1);
+        assert.deepEqual([items[0].id, items[0].kind, items[0].issue, items[0].payload.subtype, items[0].payload.class],
+          [`notice:stall-alert:${cls}:ev-1`, 'notification', 7, 'stall-alert', cls]);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test('a freeze of 2 h excluded from progress does not trip progress-stalled; without the exclusion it does', () => {
+  const MIN = 60_000;
+  const events = [{ type: 'progress', at: 0 }];
+  const now = 150 * MIN;
+  const freeze = [{ start: 10 * MIN, end: 130 * MIN }];
+  assert.deepEqual(detectStalls({ events, now, config: { progressMinutes: 60, excluded: freeze } }), []);
+  assert.deepEqual(detectStalls({ events, now, config: { progressMinutes: 60 } }).map((s) => s.signal), ['progress-stalled']);
+});
+
+test('#388 a recovery timer written for a failed line survives the same timer instance firing again', async () => {
+  const root = await tmp();
+  try {
+    openInbox(root).accept({ source_event_id: 'ev-388', kind: 'intake', issue: 7, payload: {}, receivedAt: RECOVERY_T0 });
+    const timers = openTimers(root);
+    const error = Object.assign(new Error('quota'), { failureClass: 'quota', retryAfterMs: 5000 });
+    await cycleSteps({ root, inbox: openInbox(root), timers, now: RECOVERY_T0, dispatchLine: () => { throw error; } });
+    timers.fire(RECOVERY_T0 + 1);
+    assert.deepEqual(timers.list().map((t) => t.id), ['recover:quota:ev-388']);
+    assert.deepEqual(openTimers(root).list().map((t) => t.id), ['recover:quota:ev-388']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('#388 a wait recovery re-delivers the original failed event when its timer fires, not only a heartbeat', async () => {
+  const root = await tmp();
+  try {
+    openInbox(root).accept({ source_event_id: 'ev-1', kind: 'intake', issue: 7, payload: { note: 'original' }, receivedAt: RECOVERY_T0 });
+    const timers = openTimers(root);
+    const error = Object.assign(new Error('quota'), { failureClass: 'quota', retryAfterMs: 5000 });
+    await cycleSteps({ root, inbox: openInbox(root), timers, now: RECOVERY_T0, dispatchLine: () => { throw error; } });
+    timers.fire(RECOVERY_T0 + 5000);
+    const delivered = [];
+    await cycleSteps({ root, inbox: openInbox(root), timers, now: RECOVERY_T0 + 5000, dispatchLine: (batch) => { delivered.push(batch); } });
+    const events = delivered.flatMap((b) => b.events);
+    assert.equal(events.length, 1);
+    assert.deepEqual([events[0].kind, events[0].issue, events[0].payload], ['intake', 7, { note: 'original' }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
