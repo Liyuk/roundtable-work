@@ -1,0 +1,9 @@
+# TEMPLATE ONLY. A systemd --user unit: not enabled, not installed, and not referenced by any script.
+# Replace every <placeholder> with a value for your host before installing. See docs/supervisor.md.
+[Unit]
+Description=Roundtable Work watchdog (restarts a stale rtd.service)
+
+[Service]
+Type=oneshot
+WorkingDirectory=<workspace>
+ExecStart=/usr/bin/env node <workspace>/scripts/rtd-watchdog.mjs --workspace <workspace> --poll-ms 300000 --restart --unit rtd.service --require-tools gh,git --alert-issue <alert-issue>
