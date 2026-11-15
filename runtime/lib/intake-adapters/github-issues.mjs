@@ -1,11 +1,12 @@
 import { createGitHubReader } from '../../../scripts/github-read.mjs';
+import { sourceEventId } from '../github-poll.mjs';
 
 const toReport = (issue) => ({
   url: issue.url,
   author: issue.author.login,
   text: issue.title + '\n' + issue.body,
   time: issue.updatedAt,
-  source_event_id: `github-issue:${issue.number}:${issue.updatedAt}`,
+  source_event_id: sourceEventId('issue', issue),
 });
 
 // Read-only GitHub issues adapter: reads only through the shared GitHub reader; no write method is exposed.
