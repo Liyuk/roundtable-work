@@ -11,7 +11,7 @@ const hours = (value) => (typeof value === 'number' ? value.toFixed(1) : 'n/a');
 const inWindow = (window, entry) => Date.parse(entry.at) >= Date.parse(window.since) && Date.parse(entry.at) < Date.parse(window.until);
 
 /** Pure: the anomaly rules that fire. `thresholds` is goals.metrics; `deadLetters` counts dead outbox items. */
-export function anomalies({ entries, metrics, thresholds, deadLetters }) {
+export function anomalies({ entries, metrics, thresholds = {}, deadLetters = 0 }) {
   const fired = [];
   if (entries.some((e) => e.source === 'self' && e.reason === 'restart-exhausted' && inWindow(metrics.window, e))) fired.push('restart-exhausted');
   if (metrics.interventions > 0) fired.push('intervention');

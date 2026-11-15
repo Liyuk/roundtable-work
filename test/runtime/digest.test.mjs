@@ -69,6 +69,14 @@ test('a digest renders at most 30 lines from the fixed template and passes the h
   });
 });
 
+test('buildDigest works with only the issue signature, without thresholds or dead letters', () => {
+  const window = { since: '2026-11-08T00:00:00Z', until: '2026-11-15T00:00:00Z' };
+  const metrics = { window, mtbi: { value: 5, bound: null }, streak: 1, interventions: 0, firstPassRate: null, pullIns: { owner: { total: 0 } } };
+  const text = buildDigest({ window, metrics, entries: [], merged: [{ number: 1, mergedAt: '2026-11-14T09:00:00Z' }], actions: [], stage: 'S0' });
+  assert.match(text, /^- PR #1 merged at 2026-11-14T09:00:00Z$/m);
+  assert.match(text, /^Anomalies: none$/m);
+});
+
 test('the digest caps its output at 30 lines', () => {
   const metrics = quiet();
   const merged = Array.from({ length: 40 }, (_, i) => ({ number: i + 1, mergedAt: '2026-11-14T09:00:00Z' }));
