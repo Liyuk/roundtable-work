@@ -219,12 +219,14 @@ test('CLI: a work root not named .roundtable is a usage error, even when its sta
   } finally { await rm(ws.root, { recursive: true, force: true }); }
 });
 
-test('CLI on the repository inventory: the not-ported rows fail the inventory check', async () => {
+test('CLI on the repository inventory: the rows that name no resolution fail the inventory check', async () => {
   const ws = await workspace();
   try {
     const result = cli(['--work-root', ws.workRoot, '--inventory', join(ROOT, 'docs/host-patch-inventory.md')]);
     assert.equal(result.code, 1);
-    assert.match(result.stdout, /^FAIL inventory: .*\bauthor\b/m);
+    // Rows in the #391 form now resolve; the rows still naming an issue (series, waitguard, subretry, tmpclean) keep failing.
+    assert.match(result.stdout, /^FAIL inventory: .*\bseries\b/m);
+    assert.doesNotMatch(result.stdout, /\bauthor\b/);
   } finally { await rm(ws.root, { recursive: true, force: true }); }
 });
 

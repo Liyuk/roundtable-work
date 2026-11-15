@@ -127,6 +127,19 @@ export async function fileSelfReview({ root, now, goals, inputs, client, complet
   return results;
 }
 
+/** Files one follow-up issue for a fingerprint (RT-S10): the marker dedupe, admission and hygiene path, no daily or open cap. */
+export async function fileFollowUp({ client, hygiene, fingerprint, title, body, touchSet, lines }) {
+  const full = `${body}\n\n${marker(fingerprint)}`;
+  if (await findFiled(client, fingerprint)) return { outcome: 'skipped', reason: 'fingerprint' };
+  if (!admission({ title, body: full }).admitted) return { outcome: 'refused', reason: 'admission' };
+  if ((await scanHygiene({ entries: [{ value: title }, { value: full }], ...hygiene })).length) return { outcome: 'refused', reason: 'hygiene' };
+  const low = safetyFiles(touchSet).length === 0 && lines <= LOW_LINES;
+  await client.createLabel('source:self');
+  const { number } = await client.createIssue(title, full);
+  for (const label of ['source:self', 'type:feature', 'priority:p2', low ? 'rt:go' : 'rt:hold']) await client.addLabel(number, label);
+  return { outcome: 'filed', number };
+}
+
 /** Adds rt:go to a held issue unless it was closed or carries rt:owner by the time the timer fires. */
 export async function promoteHold({ client, number }) {
   const issue = await client.getIssue(number);

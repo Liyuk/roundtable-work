@@ -10,7 +10,8 @@ const TAG_CLASSES = ['codex', 'escalate', 'limit', 'limitmain', 'budget', 'nofun
   'author', 'ac', 'gate', 'lenient', 'review / reviewer', 'skills', 'followup', 'blockedrtm', 'series', 'utf8', 'waitguard',
   'tmpclean', 'cirerun', 'ciwait', 'mergelock', 'nopr-close', 'recordretry', 'safetyfmt', 'subretry', 'syncbudget', 'trim',
   'dated snapshots 20261112/20261113'];
-const REASON = /^(?:not ported: |superseded by )\S/;
+const REASON = /^(?:superseded by |not needed after cutover: )\S/;
+const NOT_PORTED = /^not ported: \S/;
 const REFERENCE = /^`([^`]+)` \+ `([^`]+)` :: (.+)$/;
 
 /** Rows of the inventory table: the cells of every row after the header and separator lines. */
@@ -28,6 +29,7 @@ async function problems(markdown) {
   const found = [];
   for (const { tag, cellCount, mapping } of parseRows(markdown)) {
     if (cellCount !== 3) { found.push(`${tag}: malformed row`); continue; }
+    if (NOT_PORTED.test(mapping)) { if (!/#\d+/.test(mapping)) found.push(`${tag}: not ported without an issue number`); continue; }
     if (REASON.test(mapping)) continue;
     const reference = REFERENCE.exec(mapping);
     if (!reference) { found.push(`${tag}: no test reference or reason`); continue; }
@@ -68,7 +70,19 @@ test('a reference to a missing file or a missing test name is reported', async (
 test('a valid test reference and a not-ported or superseded reason both pass', async () => {
   assert.deepEqual(await problems(table(
     '| a | behavior | `runtime/lib/state.mjs` + `test/runtime/state.test.mjs` :: fresh state has zeroed counters; updates persist across store instances |',
-    '| b | behavior | not ported: no runtime counterpart |',
+    '| b | behavior | not needed after cutover: no runtime counterpart |',
+    '| d | behavior | not ported: pending #12 |',
     '| c | behavior | superseded by #288 rule 10 |',
   )), []);
+});
+
+test('a not ported row must name an issue number; a not needed after cutover row with a reason passes', async () => {
+  assert.deepEqual(await problems(table('| a | behavior | not ported: no runtime counterpart |')), ['a: not ported without an issue number']);
+  assert.deepEqual(await problems(table('| a | behavior | not needed after cutover: no runtime counterpart |')), []);
+});
+
+test('the number of open not ported rows is printed as a diagnostic', async (t) => {
+  const open = parseRows(await readFile(join(root, docPath), 'utf8')).filter((row) => row.mapping.startsWith('not ported:'));
+  t.diagnostic(`open host-patch inventory rows (not ported): ${open.length}`);
+  assert.equal(open.every((row) => /#\d+/.test(row.mapping)), true);
 });
