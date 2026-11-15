@@ -2,9 +2,12 @@
 
 const dependsOn = (body = '') => [...body.matchAll(/(?:Depends on|Blocked by) #(\d+)/g)].map(([, n]) => Number(n));
 
-/** First PR (input order) whose `Depends on #N` / `Blocked by #N` PRs are all in `merged`; null when none is eligible. */
+/** Upstream PR numbers named by `Stacked on #N` in a PR body. */
+export const stackedOn = (body = '') => [...body.matchAll(/Stacked on #(\d+)/g)].map(([, n]) => Number(n));
+
+/** First PR (input order) whose upstream PRs (`Depends on`, `Blocked by`, `Stacked on`) are all in `merged`; null when none is eligible. */
 export function nextMergeable(prs, merged) {
-  return prs.find((pr) => dependsOn(pr.body).every((n) => merged.has(n))) ?? null;
+  return prs.find((pr) => [...dependsOn(pr.body), ...stackedOn(pr.body)].every((n) => merged.has(n))) ?? null;
 }
 
 /**
@@ -28,4 +31,10 @@ export async function mergeOne({ issue, pr, base, git, checks, merge, cleanup })
   if (!(await merge({ pr, head: checked }))) return { stop: 'head-moved' };
   await cleanup(issue);
   return { merged: true };
+}
+
+/** After the upstream merged: retarget the downstream PR to `base` through the injected `github.setBase`, then `mergeOne`. */
+export async function retargetAndMerge({ github, pr, base, ...rest }) {
+  await github.setBase(pr, base);
+  return mergeOne({ pr, base, ...rest });
 }

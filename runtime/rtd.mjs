@@ -708,7 +708,7 @@ export async function runQueue({
               if (await readMonitor()) throw new Error('Main is paused');
               if (baseSync && item.worktree) {
                 const sync = await syncWithBase({ path: item.worktree, id, base: baseBranch });
-                if (sync.stop) throw new Error(`base sync ${sync.stop}: merging ${baseBranch} into the issue branch failed; nothing pushed`);
+                if (sync.stop) return { ...result, retryableGateFailure: true, retryFinding: { reason: `base sync ${sync.stop}`, fix: `merge origin/${baseBranch} into the issue branch, resolve the conflict, and push` }, exitCode: 1, output: `base sync ${sync.stop}: merging ${baseBranch} into the issue branch failed; nothing pushed` };
               }
               const context = await autoMerge.context({ item, state, result, signal });
               if (!validContext(context)) throw new Error('Incomplete merge context');
