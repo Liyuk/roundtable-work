@@ -104,17 +104,21 @@ test('merge refuses when the body record lacks a required check', async () => {
   assert.deepEqual(squashes, []);
 });
 
-test('merge warns once and still squashes when the live body is not supplied', async () => {
+test('merge refuses before squashMerge when the live body is not supplied', async () => {
   const { squashes, entry } = mergeFixture();
-  const warnings = [];
-  const originalWarn = console.warn;
-  console.warn = (message) => warnings.push(message);
-  try {
-    assert.equal(await entry(340, evidence), 'merged');
-  } finally {
-    console.warn = originalWarn;
-  }
+  await assert.rejects(entry(340, evidence), /PR record check failed: pull request body not supplied/);
+  assert.deepEqual(squashes, []);
+});
+
+test('a production-shaped pull request result with a matching body record squashes', async () => {
+  const body = upsertPrRecord('Body', buildPrRecord({ issue: '340', head: HEAD, tree: TREE, passed: ALL }));
+  const squashes = [];
+  const github = {
+    async getPullRequest() { return { state: 'open', draft: false, head: HEAD, mergeable: true, files: [], body }; },
+    async requiredGreen() { return true; },
+    async squashMerge(number) { squashes.push(number); return 'merged'; },
+  };
+  const entry = createMergeEntryPoint({ gateState: { async get() { return { issue: '340', head: HEAD, tree: TREE, passed: ALL, safetyFiles: [], safetyApproved: false }; } }, github });
+  assert.equal(await entry(340, evidence), 'merged');
   assert.deepEqual(squashes, [340]);
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /PR record check skipped/);
 });

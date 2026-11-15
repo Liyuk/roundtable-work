@@ -48,12 +48,9 @@ export function createMergeEntryPoint({ github, gateState, store }) {
     }
     const checks = await github.requiredGreen(pr);
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
-    // A live body that carries the record must carry this exact one; when no body text is supplied the check is skipped, visibly.
-    if (typeof live.body === 'string') {
-      if (!isDeepStrictEqual(extractPrRecord(live.body), record)) throw new Error('PR record is missing or stale in the pull request body');
-    } else {
-      console.warn(`PR record check skipped: pull request body not supplied (pr ${pr})`);
-    }
+    // The live body must carry this exact record; a missing body fails closed.
+    if (typeof live.body !== 'string') throw new Error('PR record check failed: pull request body not supplied');
+    if (!isDeepStrictEqual(extractPrRecord(live.body), record)) throw new Error('PR record is missing or stale in the pull request body');
     const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
     if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });
     return merged;

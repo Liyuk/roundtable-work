@@ -10,6 +10,7 @@ import { runQueue, clearMainPause, EXIT_LOCKED, EXIT_LOCK_LOST } from '../../run
 import { createProductionAdapter } from '../../runtime/lib/production.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { acquireLock } from '../../runtime/lib/lock.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 const tmp = () => mkdtemp(join(process.cwd(), 'rt119-'));
@@ -20,13 +21,15 @@ process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }
 const exists = (path) => access(path).then(() => true, () => false);
 const PASSOUT = '审查结论：通过';
 const OBSERVED_SHA = 'a'.repeat(40);
+const prBody = (issue) => upsertPrRecord('', buildPrRecord({ issue, head: OBSERVED_SHA, tree: 'tree', passed: ['gate0', 'gate1', 'ci'] }));
+const REVERT_BODY = upsertPrRecord('', buildPrRecord({ issue: '92', head: 'reverthead', tree: 'reverttree', passed: ['gate0', 'gate1', 'ci'] }));
 const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASSOUT : 'ok' });
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 
 // Default production providers: PR 90 is the merge candidate, PR 91 the revert pull request.
 function providers(overrides = {}) {
   const github = {
-    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', files: ['x'] }; },
+    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', body: pr === 90 ? prBody(overrides.issue ?? '53') : REVERT_BODY, files: ['x'] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr) { return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {},
@@ -77,15 +80,12 @@ test('a transient squash failure is resolved from the still-open pull request on
   const root = await tmp();
   const calls = [];
   let failOnce = true;
-  const autoMerge = providers({
-    github: {
-      async squashMerge(pr) {
-        calls.push(['squash', pr]);
-        if (failOnce) { failOnce = false; throw new Error('transient squash failure'); }
-        return { mergeCommit: 'abcdef0123456789' };
-      },
-    },
-  });
+  const squashMerge = async (pr) => {
+    calls.push(['squash', pr]);
+    if (failOnce) { failOnce = false; throw new Error('transient squash failure'); }
+    return { mergeCommit: 'abcdef0123456789' };
+  };
+  const autoMerge = providers({ github: { squashMerge } });
   try {
     const crashed = await runQueue({ workRoot: root, queue: ['53'], handler, autoMerge });
     assert.equal(crashed.outcomes[0].status, 'interrupted');
@@ -98,7 +98,7 @@ test('a transient squash failure is resolved from the still-open pull request on
     assert.equal(record.tree, 'tree');
     assert.equal(typeof record.since, 'number');
 
-    const resumed = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge });
+    const resumed = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge: providers({ issue: '54', github: { squashMerge } }) });
     assert.deepEqual(resumed.skipped, [], 'the open pull request clears the hold instead of pausing the pass');
     assert.equal(resumed.outcomes[0].status, 'done');
     assert.deepEqual(calls.map((c) => c[1]), [90, 90], 'the next pass retries the resolved merge');
@@ -139,7 +139,7 @@ test('a pre-seeded crash marker for a closed, unmerged pull request clears the h
 test('a pre-seeded crash marker for an open pull request clears the hold and admits work', async () => {
   const root = await tmp();
   const seen = [];
-  const autoMerge = providers({ github: { async getPullRequest(pr) { seen.push(pr); return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', files: ['x'] }; } } });
+  const autoMerge = providers({ issue: '54', github: { async getPullRequest(pr) { seen.push(pr); return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? OBSERVED_SHA : 'reverthead', body: pr === 90 ? prBody('54') : REVERT_BODY, files: ['x'] }; } } });
   try {
     const store = await seedMarker(root, marker());
     const result = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge });
@@ -189,7 +189,7 @@ test('a merged marker with a merge commit moves to monitoring and still reverts 
     github: {
       async getPullRequest(pr) {
         const merged = pr === 90;
-        return { state: merged ? 'merged' : 'open', draft: false, mergeable: true, head: merged ? OBSERVED_SHA : 'reverthead', files: ['x'], ...(merged ? { mergeCommit: 'abcdef0123456789' } : {}) };
+        return { state: merged ? 'merged' : 'open', draft: false, mergeable: true, head: merged ? OBSERVED_SHA : 'reverthead', body: REVERT_BODY, files: ['x'], ...(merged ? { mergeCommit: 'abcdef0123456789' } : {}) };
       },
       async mainStatus() { return main; },
       async openRevertPullRequest() { calls.push('revert-pr'); return { number: 91, head: 'reverthead' }; },
@@ -224,7 +224,7 @@ test('a merged marker without a merge commit and a green main clears the hold', 
       async getPullRequest(pr) {
         return merged
           ? { state: 'merged', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] }
-          : { state: 'open', draft: false, mergeable: true, head: OBSERVED_SHA, files: ['x'] };
+          : { state: 'open', draft: false, mergeable: true, head: OBSERVED_SHA, body: prBody('54'), files: ['x'] };
       },
       async mainStatus() { return { head: 'ffffffffffffffff', status: 'green' }; },
       async createIssue() { issues++; return { number: 92 }; },
@@ -372,7 +372,7 @@ export default {
     assert.equal((await store.load('rt-main-monitor')).mainMonitor, null);
     assert.equal(await exists(pauseFile), false, 'the injected pause backend is cleared too');
     // The runtime agrees the hold is gone.
-    const result = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge: providers() });
+    const result = await runQueue({ workRoot: root, queue: ['54'], handler, autoMerge: providers({ issue: '54' }) });
     assert.deepEqual(result.skipped, []);
     assert.equal(result.outcomes[0].status, 'done');
   } finally { await rm(root, { recursive: true, force: true }); }

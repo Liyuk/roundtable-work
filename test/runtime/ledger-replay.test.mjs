@@ -9,6 +9,9 @@ import { createMergeEntryPoint } from '../../runtime/lib/merge.mjs';
 import { projectLabels } from '../../runtime/lib/label-projection.mjs';
 import { runGates, MAX_CI_RERUNS } from '../../runtime/lib/gates.mjs';
 import { openOutbox, dispatch } from '../../runtime/lib/outbox.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
+
+const BODY = upsertPrRecord('', buildPrRecord({ issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'] }));
 
 const withTemp = async (fn) => {
   const root = await mkdtemp(join(tmpdir(), 'rt-ledger-'));
@@ -56,7 +59,7 @@ test('a replayed merge for the same head does not squash again', async () => {
       store,
       gateState: { async get() { return gateRecord; } },
       github: {
-        async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
+        async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files: [] }; },
         async requiredGreen() { return true; },
         async squashMerge(pr) { squashes.push(pr); return 'merged'; },
       },
@@ -132,7 +135,7 @@ test('claim, merge, CI re-run, and label projection all read and write the one s
     // Merge reads the ledger through the same store and records the merge there.
     const gateRecord = { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'], safetyFiles: [], safetyApproved: false };
     const entry = createMergeEntryPoint({ store, gateState: { async get() { return gateRecord; } }, github: {
-      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
+      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files: [] }; },
       async requiredGreen() { return true; },
       async squashMerge() { return 'merged'; },
     } });

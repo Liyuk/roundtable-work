@@ -3,8 +3,8 @@
  *
  * context.get receives the worker completion arguments, or { recovery: { pr, issue, mergeCommit } }
  * for a revert, and returns { pr, head, tree, highRisk, changedFiles }. Gate providers follow the
- * runGates contract. github.getPullRequest must return { state, draft, head, mergeable, files } and,
- * for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where
+ * runGates contract. github.getPullRequest must return { state, draft, head, mergeable, files, body }, where body is
+ * the pull request body text (merge refuses without it) and, for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where
  * files is the pull request's changed paths: the merge entry point derives the safety-file set from it
  * and fails closed when it is absent; the monitor uses `state: 'merged'`/`merged: true` with an optional
  * `mergeCommit` SHA to resolve a merge whose outcome was unknown, and a closed pull request must report
