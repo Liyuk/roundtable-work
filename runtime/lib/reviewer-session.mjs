@@ -23,12 +23,14 @@ export function buildReviewerPrompt({ head, gate0Summary }) {
 /**
  * Independent Gate 1 review: runs the reviewer as a separate OS process (RT_REVIEWER_COMMAND, default `pi -p`).
  * The command is split on whitespace and spawned without a shell; the prompt is passed as the last argument.
+ * If the process cannot start and `review` is supplied, falls back to a single-session review (`independent: false`).
  */
-export function runSeparateReviewer({ head, gate0Summary, model, env = process.env }) {
+export function runSeparateReviewer({ head, gate0Summary, model, env = process.env, review }) {
   const [file, ...args] = (env.RT_REVIEWER_COMMAND ?? 'pi -p').trim().split(/\s+/);
   const prompt = buildReviewerPrompt({ head, gate0Summary });
   return new Promise((resolve, reject) => {
     const child = execFile(file, [...args, ...(model ? ['--model', model] : []), prompt], { env: childEnv(env) }, (error, stdout) => {
+      if (error?.code === 'ENOENT' && review) return resolve(reviewInSession({ head, gate0Summary, review }));
       if (error?.code === 'ENOENT') return reject(Object.assign(error, { code: 'REVIEWER_UNAVAILABLE' }));
       resolve({ status: statusOf(stdout), head, independent: true, pid: child.pid, exitCode: child.exitCode, rationale: stdout.split('\n').slice(1).join('\n').trim() });
     });
