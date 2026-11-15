@@ -1,5 +1,6 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
+import { decomposeTriggers, issueSignals } from './decompose-triggers.mjs';
 
 const ASK_CATEGORIES = Object.freeze(['scope', 'credentials', 'destructive', 'direction']);
 const DECISION_TYPES = Object.freeze(['do', 'continue', 'ask', 'out-of-scope', 'decompose', 'done']);
@@ -221,3 +222,18 @@ const plain = value => value !== null && typeof value === 'object' && !Array.isA
 const nonEmpty = value => typeof value === 'string' && value.trim().length > 0;
 
 export { ASK_CATEGORIES, DECISION_TYPES };
+
+/** Default triage decision: decompose when a trigger fires and the issue is above the depth cap. */
+export function triageDecision({ body = '', maxDepth = 2, ...overrides } = {}) {
+  const { depth, ...signals } = { ...issueSignals(body), ...overrides };
+  const triggers = decomposeTriggers(signals, overrides);
+  if (!triggers.length || depth >= maxDepth) return null;
+  return { decision: 'decompose', triggers };
+}
+
+/** After a gate failure: a repeated failure on a decomposable issue decomposes; otherwise a fix round. */
+export function reworkAction({ failures, ...input }) {
+  const triage = triageDecision(input);
+  if (failures >= 2 && triage) return { action: 'decompose', triggers: triage.triggers };
+  return { action: 'fix-round' };
+}
