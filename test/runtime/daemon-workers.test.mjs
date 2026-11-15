@@ -219,6 +219,6 @@ test('daemon reads decompose drafts from the worker worktree, not the repository
       if (phase === 'developing') await writeFile(join(item.worktree, 'child.json'), JSON.stringify({ title: 'Worktree child', body: 'Work' }));
       return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', ...(phase === 'finalizing' ? { decision: { decision: 'decompose', drafts: ['child.json'] } } : {}) };
     } });
-    assert.deepEqual(created, ['Worktree child']);
+    assert.deepEqual(created, ['[50-1] Worktree child']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

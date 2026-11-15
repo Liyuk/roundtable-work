@@ -94,5 +94,16 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
       return matching.map(({ number, headRefName, state }) => ({ number, headRefName, state }));
     },
     closePullRequest: (number, body) => run(['pr', 'close', id(number), ...repository, '--comment', body]),
+    searchIssues: async (query) => {
+      if (typeof query !== 'string' || !query) throw new TypeError('Invalid search query');
+      let result;
+      try { result = JSON.parse(await run(['issue', 'list', ...repository, '--search', query, '--state', 'all', '--limit', '100', '--json', 'number,title,body'])); } catch { throw new TypeError('Invalid issue search output'); }
+      if (!Array.isArray(result) || result.some(issue => !Number.isSafeInteger(issue?.number))) throw new TypeError('Invalid issue search output');
+      return result.map(({ number, title, body }) => ({ number, title, body }));
+    },
+    updateIssueBody: async (number, body) => {
+      if (typeof body !== 'string' || !body) throw new TypeError('Invalid issue body');
+      return run(['issue', 'edit', id(number), ...repository, '--body', body]);
+    },
   };
 }
