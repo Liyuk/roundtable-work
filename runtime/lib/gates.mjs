@@ -1,6 +1,7 @@
 import { assertSafeId } from './paths.mjs';
 import { safetyFiles } from './safety.mjs';
 import { gate2Triggers } from './gate2-triggers.mjs';
+import { triageFindings } from './review-ledger.mjs';
 
 // A single-session (`independent: false`) review is never a Gate 1 pass, whatever its verdict says.
 const PASS = (result) => result?.independent !== false && (result === true || result?.passed === true || result?.status === 'pass');
@@ -164,6 +165,9 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   const merged = await merge.squash(pr, evidence);
   return { status: 'merged', issue: id, head, tree, result: merged };
 }
+
+/** A fix round starts only for blocking findings that are new or still open from an earlier round. */
+export const startsFixRound = (findings, previous = []) => triageFindings(findings, previous).some(finding => finding.fix);
 
 /** Recover an auto-merge that made main red. Every git/GitHub action is an injected side effect. */
 export async function recoverRedMain({ mergeCommit, mainHead, mainRed, git, github, pause, merge }) {
