@@ -6,6 +6,7 @@
 // Events are sorted by `at`, ties keep input order. Each signal yields at most one stall.
 // Breaker signals (error-signature-repeat, rounds-no-commit) trip a per-line breaker until answered.
 import { tokensSince } from './usage-ledger.mjs';
+import { isQuotaLimit } from './fallback.mjs';
 
 export const STALL_SIGNALS = Object.freeze([
   'progress-stalled', 'gate-failed-repeat', 'budget-spent-blocked', 'ci-cancelled-only',
@@ -50,7 +51,7 @@ export function detectStalls({ events = [], now, config = {}, ledger, issue, bre
       return last && run >= c.gateFailures ? { key: last.gate, evidence: { gate: last.gate, failures: run } } : null;
     },
     'budget-spent-blocked': () => {
-      const hit = ofType('budget').filter((e) => e.spent === true && e.status === 'rt:blocked').at(-1);
+      const hit = ofType('budget').filter((e) => e.spent === true && e.status === 'rt:blocked' && !isQuotaLimit(e)).at(-1);
       return hit ? { key: 'rt:blocked', evidence: { at: hit.at } } : null;
     },
     'ci-cancelled-only': () => {

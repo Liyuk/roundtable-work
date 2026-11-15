@@ -121,3 +121,10 @@ test('malformed persisted counters are rejected without echoing file content', a
     assert.equal(String(error.stack ?? '').includes(SECRET), false);
   });
 });
+
+test('an exhausted review budget with an open PR goes to the gate flow instead of asking for a new round', () => {
+  const c = record(freshCounters('288'), 'review', LIMITS.maxReviewRoundsPerIssue);
+  assert.equal(checkBudget(c, LIMITS, { now: 0 }).decision, 'ask');
+  const gated = checkBudget(c, LIMITS, { now: 0, hasPullRequest: true });
+  assert.deepEqual([gated.decision, gated.reason], ['gate', 'reviewRounds']);
+});

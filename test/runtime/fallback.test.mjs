@@ -86,3 +86,12 @@ test('usage-limit wait still checks main CI once when the limit has already pass
   await waitForUsageLimit({ until: 0, now: () => 10, sleep: async () => {}, intervalMs: 1000, checkMainCi: async () => { checks += 1; } });
   assert.equal(checks, 1);
 });
+
+test('budget exhaustion is a quota limit, not a blocked budget spend that stalls the line', async () => {
+  const { isQuotaLimit } = await import('../../runtime/lib/fallback.mjs');
+  const { detectStalls } = await import('../../runtime/lib/stall.mjs');
+  const exhausted = { type: 'budget', at: 2, spent: true, status: 'rt:blocked', reason: 'budget_exhausted' };
+  assert.equal(isQuotaLimit(exhausted), true);
+  assert.equal(isQuotaLimit({ reason: 'reviewRounds' }), false);
+  assert.deepEqual(detectStalls({ events: [{ type: 'progress', at: 1 }, exhausted], now: 3 }).map((s) => s.signal), []);
+});

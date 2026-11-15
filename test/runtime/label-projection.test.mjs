@@ -79,3 +79,8 @@ test('low-risk issues with gate0 and gate1 passed are ready-to-merge without gat
   assert.deepEqual(deriveLabelState({ issue: { state: 'open', labels: [] }, state: state({ gateRecord: gates, status: 'working' }), highRisk: true }), ['rt:running']);
   assert.deepEqual(deriveLabelState({ issue: { state: 'open', labels: [] }, state: state({ gateRecord: { passed: ['gate0', 'gate1', 'gate2'] }, status: 'done' }), highRisk: true }), ['rt:ready-to-merge']);
 });
+
+test('a blocked label outranks a stale ready-to-merge label and the issue is not claimed as ready', () => {
+  const state = { status: 'done', gateRecord: { passed: ['gate0', 'gate1'] } };
+  assert.deepEqual(deriveLabelState({ issue: { state: 'open', labels: ['rt:blocked', 'rt:ready-to-merge'] }, state }), ['rt:blocked']);
+});

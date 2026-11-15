@@ -1,5 +1,8 @@
 const isBalanceError = (error) => error?.status === 402 || error?.statusCode === 402;
 
+/** Budget exhaustion is a quota limit on the same wait-and-probe path as a balance error (#64), not no-progress or a block. */
+export const isQuotaLimit = (event) => event?.reason === 'budget_exhausted';
+
 /**
  * Route calls by role. A balance error (HTTP 402) on a role's primary model switches every role
  * sharing that harness to the configured fallback model until `now() + ttlMs`, and re-runs the
