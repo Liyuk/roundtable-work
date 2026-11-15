@@ -34,7 +34,7 @@ async function fixture() {
 // Fake gh: answers the reads with one admissible, unclaimed issue; accepts writes; records every invocation.
 async function fakeGh({ bin, ghLog }) {
   const issue = { id: '21', number: 21, state: 'OPEN', author: { login: 'owner' }, title: '[A] live', body: ADMISSIBLE, createdAt: '2020-01-01', labels: [{ name: 'type:feature' }], comments: [] };
-  const answers = { 'repo view': { owner: { login: 'owner' } }, 'issue list': [issue], 'issue view': { comments: [], state: 'OPEN', labels: [] }, 'pr list': [], 'issue edit': '', 'issue comment': '' };
+  const answers = { 'repo view': { owner: { login: 'owner' } }, 'issue list': [issue], 'issue view': { comments: [], state: 'OPEN', labels: [] }, 'pr list': [], 'pr view': { body: BODY }, 'pr edit': '', 'issue edit': '', 'issue comment': '' };
   await writeFile(join(bin, 'gh'), `#!${process.execPath}
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);

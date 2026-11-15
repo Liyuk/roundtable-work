@@ -4,9 +4,10 @@
  * context.get receives the worker completion arguments, or { recovery: { pr, issue, mergeCommit } }
  * for a revert, and returns { pr, head, tree, highRisk, changedFiles }. Gate providers follow the
  * runGates contract. github.getPullRequest must return { state, draft, head, mergeable, files, body }, where body is
- * the pull request body text (merge refuses without it) and, for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where
+ * the pull request body text (merge refuses without it), and, for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where
  * files is the pull request's changed paths: the merge entry point derives the safety-file set from it
- * and fails closed when it is absent; the monitor uses `state: 'merged'`/`merged: true` with an optional
+ * and fails closed when it is absent. PR body read and write come from the GitHub client passed to runQueue
+ * (getPullRequestBody / updatePullRequestBody); merge refuses when they are absent. They are not in the provider list above; the monitor uses `state: 'merged'`/`merged: true` with an optional
  * `mergeCommit` SHA to resolve a merge whose outcome was unknown, and a closed pull request must report
  * `merged: false` to be treated as unmerged. github.squashMerge resolves only after a successful squash and returns
  * { mergeCommit: <SHA> }; github.mainStatus returns { head, status: 'green'|'red'|'pending' }.

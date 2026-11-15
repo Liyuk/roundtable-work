@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 /** Live GitHub operations that only read state; every other method of the client is fenced. */
 const GITHUB_READS = new Set(['getPullRequest', 'requiredGreen', 'mainStatus', 'recordedEscalationApproval',
-  'getOwner', 'getRepository', 'listRecentMerges', 'listLinkedPullRequests', 'listIssues', 'getIssue', 'listComments', 'listOpenPullRequests']);
+  'getOwner', 'getRepository', 'listRecentMerges', 'listLinkedPullRequests', 'listIssues', 'getIssue', 'listComments', 'listOpenPullRequests', 'getPullRequestBody']);
 
 /**
  * Wrap a provider so that only `reads` are forwarded; each other method of the live client is a no-op that records
@@ -13,6 +13,7 @@ const GITHUB_READS = new Set(['getPullRequest', 'requiredGreen', 'mainStatus', '
 export function createShadowProvider(client, reads, attempted = []) {
   return new Proxy(client, {
     get(target, prop) {
+      if (prop === 'shadow') return true;
       if (typeof prop === 'string' && prop in target && !reads.has(prop)) {
         return async () => { attempted.push(prop); };
       }

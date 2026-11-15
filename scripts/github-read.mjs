@@ -105,5 +105,14 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
       if (typeof body !== 'string' || !body) throw new TypeError('Invalid issue body');
       return run(['issue', 'edit', id(number), ...repository, '--body', body]);
     },
+    getPullRequestBody: async (number) => {
+      const body = JSON.parse(await run(['pr', 'view', id(number), ...repository, '--json', 'body'])).body;
+      if (typeof body !== 'string') throw new TypeError('Pull request body is invalid');
+      return body;
+    },
+    updatePullRequestBody: async (number, body) => {
+      if (typeof body !== 'string' || !body) throw new TypeError('Invalid pull request body');
+      return run(['pr', 'edit', id(number), ...repository, '--body', body]);
+    },
   };
 }

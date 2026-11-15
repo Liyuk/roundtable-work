@@ -29,6 +29,20 @@ import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './li
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
+/**
+ * PR body client for the merge entry point. Live: the write goes to the provider and the re-read is a provider read.
+ * Shadow (the wrapper is marked `shadow`): the write stays a recorded no-op, and the re-read sees the body the merge
+ * wrote, so shadow decides on what live would have persisted. Every read is still a real read, as in live.
+ */
+function pullRequestBodyClient(client) {
+  if (!client?.updatePullRequestBody) return undefined;
+  if (!client.shadow) return { read: (pr) => client.getPullRequestBody(pr), write: (pr, body) => client.updatePullRequestBody(pr, body) };
+  const written = new Map();
+  return {
+    read: async (pr) => { const body = await client.getPullRequestBody(pr); return written.get(pr) ?? body; },
+    write: async (pr, body) => { written.set(pr, body); await client.updatePullRequestBody(pr, body); },
+  };
+}
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
 const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
@@ -417,7 +431,7 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store });
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, pullRequestBody: pullRequestBodyClient(githubClient) });
         const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
         return gated.result;
@@ -718,7 +732,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store });
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, pullRequestBody: pullRequestBodyClient(githubClient) });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);

@@ -1,13 +1,13 @@
 import { safetyFiles } from './safety.mjs';
 import { ledgerEntry } from './state.mjs';
-import { buildPrRecord, validatePrRecord, extractPrRecord } from './pr-record.mjs';
+import { buildPrRecord, validatePrRecord, extractPrRecord, upsertPrRecord } from './pr-record.mjs';
 import { isDeepStrictEqual } from 'node:util';
 
 const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
 const isStringArray = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
-export function createMergeEntryPoint({ github, gateState, store }) {
+export function createMergeEntryPoint({ github, gateState, store, pullRequestBody }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
   for (const name of ['getPullRequest', 'requiredGreen', 'squashMerge']) {
     if (typeof github[name] !== 'function') throw new TypeError(`github.${name} is required`);
@@ -48,9 +48,22 @@ export function createMergeEntryPoint({ github, gateState, store }) {
     }
     const checks = await github.requiredGreen(pr);
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
-    // The live body must carry this exact record; a missing body fails closed.
-    if (typeof live.body !== 'string') throw new Error('PR record check failed: pull request body not supplied');
-    if (!isDeepStrictEqual(extractPrRecord(live.body), record)) throw new Error('PR record is missing or stale in the pull request body');
+    // The body must carry this exact record before squash; a missing body fails closed.
+    const current = pullRequestBody ? await pullRequestBody.read(pr) : live.body;
+    if (typeof current !== 'string') throw new Error('PR record check failed: pull request body not supplied');
+    if (pullRequestBody) {
+      try {
+        await pullRequestBody.write(pr, upsertPrRecord(current, record));
+      } catch (error) {
+        throw new Error(`PR record update failed: ${error.message}`);
+      }
+      const reread = await pullRequestBody.read(pr);
+      if (typeof reread !== 'string' || !isDeepStrictEqual(extractPrRecord(reread), record)) {
+        throw new Error('PR record is missing or stale after the pull request body update');
+      }
+    } else if (!isDeepStrictEqual(extractPrRecord(current), record)) {
+      throw new Error('PR record is missing or stale in the pull request body');
+    }
     const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
     if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });
     return merged;

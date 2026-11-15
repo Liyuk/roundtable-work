@@ -122,3 +122,74 @@ test('a production-shaped pull request result with a matching body record squash
   assert.equal(await entry(340, evidence), 'merged');
   assert.deepEqual(squashes, [340]);
 });
+
+function bodyWriteFixture({ body = 'Body', persist = true, fail } = {}) {
+  const calls = [];
+  const state = { body };
+  const github = {
+    async getPullRequest() { return pr; },
+    async requiredGreen() { return true; },
+    async squashMerge(number) { calls.push(`squash:${number}`); return 'merged'; },
+  };
+  const pullRequestBody = {
+    async read() { return state.body; },
+    async write(number, text) {
+      calls.push(`write:${number}`);
+      if (fail) throw fail;
+      if (persist) state.body = text;
+    },
+  };
+  const persisted = { issue: '340', head: HEAD, tree: TREE, passed: ALL, safetyFiles: [], safetyApproved: false };
+  const entry = createMergeEntryPoint({ gateState: { async get() { return persisted; } }, github, pullRequestBody });
+  return { calls, state, entry };
+}
+
+const currentRecord = () => buildPrRecord({ issue: '340', head: HEAD, tree: TREE, passed: ALL });
+
+test('merge writes the record block into the body before squashing and merges', async () => {
+  const { calls, state, entry } = bodyWriteFixture({ body: 'Summary' });
+  assert.equal(await entry(340, evidence), 'merged');
+  assert.deepEqual(calls, ['write:340', 'squash:340']);
+  assert.equal(state.body.match(/```rt-record/g).length, 1);
+  assert.deepEqual(extractPrRecord(state.body), currentRecord());
+});
+
+test('merge replaces an old record block with the current head instead of duplicating it', async () => {
+  const stale = structuredClone(currentRecord());
+  stale.verdicts[0].sha = 'old5678';
+  const { state, entry } = bodyWriteFixture({ body: upsertPrRecord('Summary', stale) });
+  assert.equal(await entry(340, evidence), 'merged');
+  assert.equal(state.body.match(/```rt-record/g).length, 1);
+  assert.deepEqual(extractPrRecord(state.body), currentRecord());
+});
+
+test('merge refuses when the body still carries a stale record after the update', async () => {
+  const stale = structuredClone(currentRecord());
+  stale.verdicts[0].sha = 'old5678';
+  const { calls, entry } = bodyWriteFixture({ body: upsertPrRecord('Body', stale), persist: false });
+  await assert.rejects(entry(340, evidence), /PR record is missing or stale after the pull request body update/);
+  assert.deepEqual(calls, ['write:340']);
+});
+
+test('merge refuses with a clear error when the body update fails and never squashes', async () => {
+  const { calls, entry } = bodyWriteFixture({ fail: new Error('provider down') });
+  await assert.rejects(entry(340, evidence), /PR record update failed: provider down/);
+  assert.deepEqual(calls, ['write:340']);
+});
+
+test('live: a body write the provider silently drops is refused by the provider re-read and never squashes', async () => {
+  const calls = [];
+  const github = {
+    async getPullRequest() { return pr; },
+    async requiredGreen() { return true; },
+    async squashMerge(number) { calls.push(`squash:${number}`); return 'merged'; },
+  };
+  const pullRequestBody = {
+    async read() { calls.push('read'); return 'Body'; },
+    async write(number) { calls.push(`write:${number}`); },
+  };
+  const persisted = { issue: '340', head: HEAD, tree: TREE, passed: ALL, safetyFiles: [], safetyApproved: false };
+  const entry = createMergeEntryPoint({ gateState: { async get() { return persisted; } }, github, pullRequestBody });
+  await assert.rejects(entry(340, evidence), /PR record is missing or stale after the pull request body update/);
+  assert.deepEqual(calls, ['read', 'write:340', 'read']);
+});
