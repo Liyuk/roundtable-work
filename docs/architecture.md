@@ -1,6 +1,6 @@
 # Architecture: a Haiku-stable 7x24 loop
 
-Status: canonical target architecture, 2026-11-15. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue [RT-B] (see [Work items](#work-items)).
+Status: canonical target architecture, 2026-11-15. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue #374 [RT-B] (see [Work items](#work-items)).
 
 ## Why this redesign
 
@@ -247,7 +247,7 @@ The action journal is new (children B7b, B7c). It is an append-only file `.round
 
 **Series rule (must hold).** The series key is the full first bracket tag minus a trailing letter suffix: `[RT-B7a]` and `[RT-B7b]` share series `RT-B7`; `[RT-B1]` and `[RT-B2]` are independent; `[RT-F-1c]` is `RT-F-1`. Only mutually dependent siblings share a number with letter suffixes. The host scheduler applies this rule (patched after the `RT` collapse). The runtime does not yet: `seriesOf` in `workers.mjs` and the `series` field in `intake.mjs` keep the trailing letter, so `[RT-B7a]` and `[RT-B7b]` would not serialize. Child B11 ports the rule with one shared helper.
 
-**Dynamic scheduling.** The cap passed to `runWorkers` comes from `effectiveCap` (#333): one step down per new freeze once the 6 h window holds 3 freezes, one step up per freeze-free window, floor 1. The daemon must also pass `excludedIntervals(ledger)` to stall detection so a line is not charged for time the host was frozen.
+**Dynamic scheduling.** The cap passed to `runWorkers` comes from `effectiveCap` (#333): one step down per new freeze once the 6 h window holds 3 freezes, one step up per freeze-free window, floor 1. The daemon must also pass `excludedIntervals(ledger)` to stall detection so a line is not charged for time the host was frozen (B12).
 
 **Monitoring and justification.** The heartbeat (written each cycle), the supervisor (`runtime/supervise.mjs`, observe mode; `restart-daemon` is an allowed actuator action), stall signals (`stall.mjs`), diagnosis (`diagnose.mjs`), the usage ledger (every harness, #336), loop health metrics (#337), and the machine-readable record on each PR (#340). Every decision the daemon takes is written with its inputs and rule (the tier reasons, the recovery rule, the decision source), so "why did it do that" is answerable from files.
 
@@ -425,24 +425,24 @@ The cutover is not done. Today the host scripts are the only live loop.
 
 ## Work items
 
-Parent: [RT-B] Haiku-stable 7x24 architecture. Children (numbers on GitHub are listed in the parent issue):
+Parent: #374 [RT-B] Haiku-stable 7x24 architecture. Children:
 
 | Child | Scope | Depends on |
 | --- | --- | --- |
-| B1 | Daemon cycle loop: `--loop`, bounded wait, freeze ledger, adaptive cap, heartbeat, cycle deadline, watchdog script | — |
-| B2 | Inbox shape: status records, `dropped`, session coalescing, wake signal, claim release on throw | — |
-| B3 | Inbox and timers in the daemon cycle: producers, `fire`, `processPending` dispatch | B1, B2 |
-| B4 | Outbox in the daemon cycle: GitHub provider, backoff, dead-letter, cause-derived ids | B1 |
-| B5 | Role memory preload and reflect in the daemon | B1 |
-| B6 | Decision cards in the daemon: `routeCard` for asks, `resumeFromApproval` from inbox events | B3 |
-| B7a | Autonomy allow-list and `autonomyTier`; tier applied before `merge.mjs` | — |
-| B7b | Action journal and revert recipes (execute by default, rollback contract) | B7a, B4 |
-| B7c | Owner replies: `/rt confirm`, `amend`, `rollback` through the inbox | B7b, B3 |
-| B8 | Webhook HTTP listener using the #367 verifier | #367 |
-| B9 | Outbox IM adapters with allow-list and templates | — |
-| B10 | Pipeline: technical plan artifact and optional e2e stage | — |
-| B11 | Runtime series key: drop the trailing letter suffix | — |
-| B12 | Recovery table by failure class, used by the daemon | B3 |
-| B13 | Cutover readiness check, host decision exporter, `--exclusive-with`, unit template | B1, B3, B4 |
+| B1 (#377) | Daemon cycle loop: `--loop`, bounded wait, freeze ledger, adaptive cap, heartbeat, cycle deadline, watchdog script | — |
+| B2 (#378) | Inbox shape: status records, `dropped`, session coalescing, wake signal, claim release on throw | — |
+| B3 (#384) | Inbox and timers in the daemon cycle: producers, `fire`, `processPending` dispatch | #377, #378 |
+| B4 (#385) | Outbox in the daemon cycle: GitHub provider, backoff, dead-letter, cause-derived ids | #377 |
+| B5 (#386) | Role memory preload and reflect in the daemon | #377 |
+| B6 (#387) | Decision cards in the daemon: `routeCard` for asks, `resumeFromApproval` from inbox events | #384 |
+| B7a (#380) | Autonomy allow-list and `autonomyTier`; tier applied before `merge.mjs` | — |
+| B7b (#389) | Action journal and revert recipes (execute by default, rollback contract) | #380, #385 |
+| B7c (#390) | Owner replies: `/rt confirm`, `amend`, `rollback` through the inbox | #389, #384 |
+| B8 (#383) | Webhook HTTP listener using the #367 verifier | #367 |
+| B9 (#381) | Outbox IM adapters with allow-list and templates | — |
+| B10 (#382) | Pipeline: technical plan artifact and optional e2e stage | — |
+| B11 (#379) | Runtime series key: drop the trailing letter suffix | — |
+| B12 (#388) | Recovery table by failure class, used by the daemon; stall checks exclude freeze intervals | #384 |
+| B13 (#391) | Cutover readiness check, host decision exporter, `--exclusive-with`, operator guide steps | #377, #384, #385 |
 
 Not opened again: #207 and #366-#369 (intake plugins and signed webhook parsing), #308 and #309 (fallback and probes), #312 (ordered merges), #320 (test leaks), #336, #337, #340, #342 (the remaining #330 children), #59 (per-repository merge mode, which the tier function reads when it lands). The Pages site redesign around this document is a follow-up pull request, not a loop issue.
