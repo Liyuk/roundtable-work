@@ -8,7 +8,7 @@ import { PathEscapeError } from './lib/paths.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { readQueue, isTerminal } from './lib/queue.mjs';
 import { createHash, randomUUID } from 'node:crypto';
-import { createStateStore, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
+import { createStateStore, ledgerEntry, PHASES, CorruptStateError, StaleEpochError } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
 import { createIntakeProvider } from './lib/intake.mjs';
 import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.mjs';
@@ -20,6 +20,7 @@ import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
+import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
 import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
@@ -129,7 +130,7 @@ export async function runQueue({
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -412,8 +413,8 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore });
-        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, merge: { squash }, models, routing });
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store });
+        const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
         return gated.result;
       } },
@@ -473,7 +474,7 @@ export async function runQueue({
     if (githubClient) {
       const manager = await createWorktreeManager({ workRoot, repoRoot, baseBranch, now });
       const coordinator = createClaimCoordinator({
-        client: githubClient, stateRoot: await store.confinement.resolve('locks'),
+        client: githubClient, stateRoot: await store.confinement.resolve('locks'), store,
         loadState: (id) => store.load(id), isStale: async (state) => store.staleness(state).stale,
         // The scheduler already holds the issue lock. Existing worktrees prevent new claims,
         // but a stale claimed issue must reuse its durable worktree.
@@ -494,6 +495,11 @@ export async function runQueue({
         afterClaim: async (issue) => { await store.update(issue.id, (state) => { state.claimPending = false; }); },
         canResume: (state) => state.status === 'working' || (['queued', 'waiting_external'].includes(state.status) && (state.claimPending === true || state.attempts.wakes > 0)), now,
       });
+      // Correct the managed labels of claimed issues to the state-derived projection (one store, one write path).
+      for (const item of items) {
+        if (!Array.isArray(item.labels) || !ledgerEntry(await store.load(item.id), 'claim')) continue;
+        await projectLabels({ number: item.number ?? item.id, issue: { state: 'open', labels: item.labels }, client: githubClient, store, now });
+      }
       const stopSchedulingRenewal = startRenewal();
       let scheduled;
       try { scheduled = await runWorkers({ issues: items, workRoot, repoRoot, workers, worktreeManager: manager, now,
@@ -605,6 +611,10 @@ export async function runQueue({
         // Chosen before the phase begins: development is never handed to Chief, and a rework goes to the fixer role.
         const role = phase === 'developing' ? implementerRole({ routing, rework: (await store.load(id)).attempts.developer > 0 }) : undefined;
         if (role?.stop) return await finish('stop', role.stop, role.stop, 'stop');
+        if (phase === 'developing' && preDispatch) {
+          const check = await preDispatch({ item, state, worktree: item.worktree ?? repoRoot });
+          if (!check.ok) return await finish('stop', 'predispatch_failed', check.reason, 'stop');
+        }
         await store.beginPhase(id, phase);
         if (!(await refreshLock())) return lost();
         state = await store.load(id);
@@ -698,7 +708,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState });
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
@@ -707,7 +717,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, merge: { squash: guardedSquash }, models, routing, modelRouter });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;
@@ -969,6 +979,12 @@ async function main(argv) {
   const handlerModule = await import(pathToFileURL(resolve(args.handler)).href);
   const handler = handlerModule.default;
   const escalationAdapter = handlerModule.escalationAdapter;
+  // The trusted handler builds the pre-dispatch preflight (it supplies `exec`); without it no implementer may start.
+  const preDispatch = handlerModule.preDispatch;
+  if (typeof preDispatch !== 'function') {
+    console.error('handler module must export preDispatch (the pre-dispatch preflight)');
+    return 2;
+  }
   const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
   const maxEscalationAttempts = escalationAdapter ? escalationAttemptBudget(process.env) : undefined;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
@@ -985,7 +1001,7 @@ async function main(argv) {
   }
   const writer = createGitHubWriter({ repo: args.repo });
   const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) {
     result.triage = queue.triage;
     if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });

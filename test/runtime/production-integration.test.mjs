@@ -236,7 +236,8 @@ import { fileURLToPath } from 'node:url';
 async function cliFixture(root, status, revertGreen = true) {
   const log = join(root, 'calls.jsonl');
   await writeFile(join(root, 'queue.json'), JSON.stringify(['53', '54']));
-  await writeFile(join(root, 'handler.mjs'), `export default async ({phase}) => ({exitCode:0, output:phase === 'reviewing' ? '审查结论：通过' : 'ok'});`);
+  await writeFile(join(root, 'handler.mjs'), `export default async ({phase}) => ({exitCode:0, output:phase === 'reviewing' ? '审查结论：通过' : 'ok'});
+export async function preDispatch() { return { ok: true }; }`);
   await writeFile(join(root, 'providers.mjs'), `
 import { appendFile } from 'node:fs/promises';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';

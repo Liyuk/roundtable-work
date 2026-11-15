@@ -76,6 +76,7 @@ export default async function handler({ item, phase }) {
   }
   return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' };
 }
+export async function preDispatch() { return { ok: true }; }
 `;
 
 async function cliSetup(mode) {

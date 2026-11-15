@@ -53,7 +53,7 @@ test('daemon resumes stale durable working state without a second claim', async 
     await manager.create('14');
     const { createStateStore } = await import('../../runtime/lib/state.mjs');
     const store = await createStateStore({ workRoot, now: () => 1000 });
-    await store.update('14', s => { s.status = 'working'; s.phase = 'testing'; s.checkpoint = { phase: 'developing', at: 1 }; s.lease = { owner: 'previous', expiresAt: 1 }; s.heartbeatAt = 1; });
+    await store.update('14', s => { s.status = 'working'; s.phase = 'testing'; s.checkpoint = { phase: 'developing', at: 1 }; s.lease = { owner: 'previous', expiresAt: 1 }; s.heartbeatAt = 1; s.ledger.push({ id: 'claim', type: 'claimed' }); });
     const phases = [];
     const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue, now: () => 1000000, handler: async ctx => { phases.push(ctx.phase); return handler(ctx); } });
     assert.deepEqual(phases, ['testing', 'reviewing', 'finalizing']);
@@ -77,12 +77,12 @@ test('daemon clears a stale ask pause and resumes after an owner reply', async (
       listComments: async () => issue.comments,
     };
     const store = await (await import('../../runtime/lib/state.mjs')).createStateStore({ workRoot, now: () => Date.parse(repliedAt) + 1 });
-    await store.update('15', state => { state.status = 'waiting_person'; state.pause = { kind: 'ask', category: 'scope', pausedAt: Date.parse('2026-01-01T00:00:00Z'), commentId: 1, commentCreatedAt: '2026-01-01T00:00:00Z' }; state.attempts.wakes = 1; });
+    await store.update('15', state => { state.status = 'waiting_person'; state.pause = { kind: 'ask', category: 'scope', pausedAt: Date.parse('2026-01-01T00:00:00Z'), commentId: 1, commentCreatedAt: '2026-01-01T00:00:00Z' }; state.attempts.wakes = 1; state.ledger.push({ id: 'claim', type: 'claimed' }); });
     const phases = [];
     const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], now: () => Date.parse(repliedAt) + 1,
       handler: async ({ phase }) => { phases.push(phase); return handler({ phase }); } });
     assert.equal(result.outcomes[0].status, 'done');
-    assert.deepEqual(events, [['removeLabel', 15, 'rt:ready-to-merge'], ['removeLabel', 15, 'rt:ask'], ['removeLabel', 15, 'rt:blocked']]);
+    assert.deepEqual(events, [['removeLabel', 15, 'rt:running'], ['removeLabel', 15, 'rt:ready-to-merge'], ['removeLabel', 15, 'rt:ask'], ['removeLabel', 15, 'rt:blocked']]);
     assert.equal(issue.labels.includes('rt:ask'), false);
     assert.equal((await store.load('15')).pause, undefined);
     assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
@@ -101,6 +101,7 @@ test('daemon claims and schedules bounded, non-conflicting workers with visible 
     const events = [];
     const client = {
       addLabel: async (n, label) => { events.push(['label', n]); issues.find(i => i.number === n).labels.push(label); },
+      removeLabel: async (n, label) => { events.push(['unlabel', n]); const issue = issues.find(i => i.number === n); issue.labels = issue.labels.filter(value => value !== label); },
       createComment: async (n, body) => { events.push(['comment', n]); issues.find(i => i.number === n).comments.push({ body }); },
       listComments: async n => issues.find(i => i.number === n).comments,
     };

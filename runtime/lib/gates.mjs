@@ -7,7 +7,9 @@ const PASS = (result) => result?.independent !== false && (result === true || re
 const UNAVAILABLE = (error) => error?.code === 'REVIEWER_UNAVAILABLE' || error?.unavailable === true;
 const required = (value, name) => { if (!value || typeof value !== 'object') throw new TypeError(`${name} is required`); return value; };
 /** How many cancelled-only CI re-runs one issue may request before a cancelled answer fails closed. */
-const MAX_CI_RERUNS = 2;
+export const MAX_CI_RERUNS = 2;
+/** Ledger entry type recorded once per requested CI re-run. */
+const CI_RERUN = 'ci_rerun';
 /** How many attempts a recorded-approval read gets before the gate holds for a later pass. */
 const MAX_APPROVAL_READS = 3;
 
@@ -33,11 +35,11 @@ export function createGateStateStore({ load, save }) {
  *   Required CI is a hold while the provider reports `status: 'pending'`; red CI, or a not-green answer
  *   without an explicit pending status, is a genuine failure that escalates instead of waiting. A cancelled-only
  *   answer is also a hold while an optional `ci.rerunCancelled(pr)` capability exists and the persisted budget
- *   (`MAX_CI_RERUNS` per issue, stored as `ciReruns` on the gate record) is not used up; otherwise it is
+ *   (`MAX_CI_RERUNS` per issue, counted from `ci_rerun` ledger entries via `store`) is not used up; otherwise it is
  *   red and fails closed as before.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
-export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, github, models = {}, routing, modelRouter, escalation }) {
+export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation }) {
   const id = assertSafeId(issue);
   if (![head, tree].every((v) => typeof v === 'string' && v.length)) throw new TypeError('head and tree are required');
   required(gates, 'gates'); required(ci, 'ci'); required(merge, 'merge'); required(state, 'state'); required(github, 'github');
@@ -49,7 +51,6 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   let record = stored;
   if (record && (record.issue !== id || record.head !== head || record.tree !== tree)) record = null;
   const passed = new Set(record?.passed ?? []);
-  let ciReruns = stored?.issue === id ? stored.ciReruns ?? 0 : 0;
   // Gate 2 triggers are recorded with the gate; a resumed record without them is treated as requiring Gate 2 (rationale unknown).
   let gate2Reasons = record?.gate2Reasons ?? gate2Triggers({ changedFiles });
   // The gated safety set is written on every persist so the merge entry point can compare it with the
@@ -58,7 +59,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   const gatedSafetyFiles = safetyFiles(changedFiles);
   const persist = async (gate) => {
     if (gate) passed.add(gate);
-    record = { issue: id, head, tree, passed: [...passed], ciReruns, gate2Reasons, safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
+    record = { issue: id, head, tree, passed: [...passed], gate2Reasons, safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
     await state.put(id, record);
   };
   // `hold` separates a resumable wait from a genuine failure; see the runGates contract above. Default is
@@ -143,12 +144,15 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   // Required CI is only reported as green/not green plus an optional status. Pending is resumable; a not-green
   // answer without an explicit pending status is red, which must escalate rather than silently wait.
   if (checks !== true && checks?.green !== true) {
-    if (checks?.status === 'cancelled' && ciReruns < MAX_CI_RERUNS && typeof ci.rerunCancelled === 'function') {
-      ciReruns += 1;
-      // Persist the budget before the side effect, so a throwing provider cannot cause unbounded re-runs.
-      await persist();
-      await ci.rerunCancelled(pr);
-      return failed('ci', `Required CI was cancelled by the runner; re-run requested (${ciReruns}/${MAX_CI_RERUNS})`, true);
+    // The re-run budget is the count of ledger entries for this issue, so it survives a crash and a head change.
+    if (checks?.status === 'cancelled' && typeof ci.rerunCancelled === 'function') {
+      const ciReruns = (await store.load(id)).ledger.filter((entry) => entry.type === CI_RERUN).length;
+      if (ciReruns < MAX_CI_RERUNS) {
+        // Record the re-run before the side effect, so a throwing provider cannot cause unbounded re-runs.
+        await store.append(id, { id: `${CI_RERUN}:${ciReruns + 1}`, type: CI_RERUN, detail: { pr } });
+        await ci.rerunCancelled(pr);
+        return failed('ci', `Required CI was cancelled by the runner; re-run requested (${ciReruns + 1}/${MAX_CI_RERUNS})`, true);
+      }
     }
     // A CI-wait timeout is not a failure: it holds like a pending run and is retried on a later pass.
     const pending = checks?.status === 'pending' || checks?.status === 'timeout';

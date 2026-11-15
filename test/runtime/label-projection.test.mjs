@@ -44,8 +44,8 @@ test('one projection call corrects blocked + ready-to-merge to the derived state
     const store = await createStateStore({ workRoot: root, now: () => 5000 });
     await store.update('234', (s) => { s.pause = { kind: 'blocked', category: 'gate' }; s.gateRecord = { passed: ['gate0', 'gate1', 'gate2'] }; });
     const client = fakeClient();
-    const observations = { issue: { state: 'open', labels: ['rt:blocked', 'rt:ready-to-merge', 'type:bug'] }, state: await store.load('234') };
-    const result = await projectLabels({ number: 234, observations, client, store, now: () => 6000 });
+    const issue = { state: 'open', labels: ['rt:blocked', 'rt:ready-to-merge', 'type:bug'] };
+    const result = await projectLabels({ number: 234, issue, client, store, now: () => 6000 });
     assert.deepEqual(client.calls, [['removeLabel', 234, 'rt:ready-to-merge']]);
     assert.deepEqual(result, { corrected: true, added: [], removed: ['rt:ready-to-merge'], desired: ['rt:blocked'] });
     const logged = await store.load('234');
@@ -54,21 +54,36 @@ test('one projection call corrects blocked + ready-to-merge to the derived state
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('projection writes only managed label add/remove and nothing when labels already match', async () => {
-  const events = [];
-  const store = { update: async (id, fn) => events.push(['update', id, typeof fn]) };
-  const client = fakeClient();
-  const working = { issue: { state: 'open', labels: ['type:bug'] }, state: { ...freshState('7'), status: 'working' } };
-  const added = await projectLabels({ number: 7, observations: working, client, store, now: () => 1 });
-  assert.deepEqual(client.calls, [['addLabel', 7, 'rt:running']]);
-  assert.deepEqual(added, { corrected: true, added: ['rt:running'], removed: [], desired: ['rt:running'] });
+test('projection reads the state from the same store it writes to, so a later write is seen without a second copy', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rt-label-'));
+  try {
+    const store = await createStateStore({ workRoot: root, now: () => 5000 });
+    const client = fakeClient();
+    const issue = { state: 'open', labels: ['rt:running'] };
+    assert.equal((await projectLabels({ number: 9, issue, client, store, now: () => 1 })).corrected, false);
+    await store.update('9', (s) => { s.status = 'done'; });
+    const result = await projectLabels({ number: 9, issue, client, store, now: () => 2 });
+    assert.deepEqual(result, { corrected: true, added: [], removed: ['rt:running'], desired: [] });
+    assert.deepEqual(client.calls, [['removeLabel', 9, 'rt:running']]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
-  const matching = { issue: { state: 'open', labels: ['rt:running', 'priority:high'] }, state: { ...freshState('7'), status: 'working' } };
-  const none = fakeClient();
-  const noop = await projectLabels({ number: 7, observations: matching, client: none, store, now: () => 1 });
-  assert.deepEqual(none.calls, []);
-  assert.deepEqual(noop, { corrected: false, added: [], removed: [], desired: ['rt:running'] });
-  assert.deepEqual(events.length, 1, 'no store event when nothing changed');
+test('projection writes only managed label add/remove and nothing when labels already match', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rt-label-'));
+  try {
+    const store = await createStateStore({ workRoot: root, now: () => 5000 });
+    await store.update('7', (s) => { s.status = 'working'; });
+    const client = fakeClient();
+    const added = await projectLabels({ number: 7, issue: { state: 'open', labels: ['type:bug'] }, client, store, now: () => 1 });
+    assert.deepEqual(client.calls, [['addLabel', 7, 'rt:running']]);
+    assert.deepEqual(added, { corrected: true, added: ['rt:running'], removed: [], desired: ['rt:running'] });
+
+    const none = fakeClient();
+    const noop = await projectLabels({ number: 7, issue: { state: 'open', labels: ['rt:running', 'priority:high'] }, client: none, store, now: () => 1 });
+    assert.deepEqual(none.calls, []);
+    assert.deepEqual(noop, { corrected: false, added: [], removed: [], desired: ['rt:running'] });
+    assert.equal((await store.load('7')).lastEvent.type, 'label_corrected', 'no new event when nothing changed');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('low-risk issues with gate0 and gate1 passed are ready-to-merge without gate2', () => {

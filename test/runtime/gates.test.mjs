@@ -9,11 +9,14 @@ const RATIONALE = 'Reviewed the diff against the acceptance criteria and found n
 function fixture(overrides = {}) {
   const calls = [];
   const records = new Map();
+  const ledger = [];
+  const store = { async load() { return { ledger }; }, async append(_id, entry) { if (!ledger.some((e) => e.id === entry.id)) ledger.push(entry); } };
   const input = {
     issue: '53', head: 'abc1234', tree: 'tree-a', highRisk: true,
     changedFiles: ['runtime/lib/gates.mjs'], pr: 90,
     models: { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' },
     state: { async get(id) { calls.push('state:get'); return records.get(id); }, async put(id, value) { calls.push(`state:put:${value.passed.at(-1)}`); records.set(id, structuredClone(value)); } },
+    store,
     gates: {
       async gate0() { calls.push('gate0'); return { passed: true }; },
       async reviewer(arg) { calls.push(`reviewer:${arg.attempt}`); return { passed: true, head: 'abc1234', rationale: RATIONALE }; },
@@ -26,12 +29,14 @@ function fixture(overrides = {}) {
       async addLabel(_pr, label) { calls.push(`label:${label}`); },
     },
   };
-  return { input: { ...input, ...overrides }, calls, records };
+  return { input: { ...input, ...overrides }, calls, records, ledger };
 }
 
 function gatedRecord(overrides = {}) {
   return { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false, ...overrides };
 }
+
+const rerunCount = (ledger) => ledger.filter((entry) => entry.type === 'ci_rerun').length;
 
 function livePullRequest(files) {
   return { state: 'open', draft: false, head: 'abc1234', mergeable: true, ...(files === undefined ? {} : { files }) };
@@ -212,7 +217,7 @@ test('cancelled-only required CI requests one re-run and holds instead of failin
   assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', true]);
   assert.equal(reruns, 1);
   assert.equal(f.calls.includes('merge'), false);
-  assert.equal(f.records.get('53').ciReruns, 1);
+  assert.equal(rerunCount(f.ledger), 1);
 });
 
 test('cancelled CI with a re-run capability is a hold and never a retryable fixer finding', async () => {
@@ -235,23 +240,24 @@ test('a real CI failure never requests a re-run and stays fail-closed', async ()
 test('a cancelled CI after two re-runs falls back to the fail-closed path without a third request', async () => {
   let reruns = 0;
   const f = fixture({ ci: { async requiredGreen() { f.calls.push('ci'); return { green: false, status: 'cancelled' }; }, async rerunCancelled() { reruns++; } } });
-  f.records.set('53', gatedRecord({ ciReruns: 2 }));
+  f.ledger.push({ id: 'ci_rerun:1', type: 'ci_rerun' }, { id: 'ci_rerun:2', type: 'ci_rerun' });
   const result = await runGates(f.input);
   assert.equal(result.hold, false);
   assert.equal(reruns, 0);
   assert.ok(f.calls.includes('ci'));
   assert.equal(f.calls.includes('merge'), false);
-  assert.equal(f.records.get('53').ciReruns, 2);
+  assert.equal(rerunCount(f.ledger), 2);
 });
 
 test('the cancelled-CI re-run budget is per issue and survives a head change', async () => {
   let reruns = 0;
   const f = fixture({ ci: { async requiredGreen() { return { green: false, status: 'cancelled' }; }, async rerunCancelled() { reruns++; } } });
-  f.records.set('53', gatedRecord({ ciReruns: 2, head: 'def5678', tree: 'tree-b' }));
+  f.records.set('53', gatedRecord({ head: 'def5678', tree: 'tree-b' }));
+  f.ledger.push({ id: 'ci_rerun:1', type: 'ci_rerun' }, { id: 'ci_rerun:2', type: 'ci_rerun' });
   const result = await runGates(f.input);
   assert.equal(result.hold, false);
   assert.equal(reruns, 0);
-  assert.equal(f.records.get('53').ciReruns, 2);
+  assert.equal(rerunCount(f.ledger), 2);
 });
 
 test('a provider without a re-run capability keeps the cancelled-CI behaviour of today', async () => {
