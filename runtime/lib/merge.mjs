@@ -1,5 +1,7 @@
 import { safetyFiles } from './safety.mjs';
 import { ledgerEntry } from './state.mjs';
+import { buildPrRecord, validatePrRecord, extractPrRecord } from './pr-record.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
 const isStringArray = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
@@ -22,6 +24,9 @@ export function createMergeEntryPoint({ github, gateState, store }) {
         !required.every((gate) => evidence.passed.includes(gate) && persisted.passed?.includes(gate))) {
       throw new Error('Gate evidence is missing or stale');
     }
+    const record = buildPrRecord({ issue: evidence.issue, head: persisted.head, tree: persisted.tree, passed: persisted.passed, rounds: evidence.roundMeta, usage: evidence.usage });
+    const valid = validatePrRecord(record, { head: evidence.head, tree: evidence.tree, requiredGates: required });
+    if (!valid.ok) throw new Error(`PR record is invalid: ${valid.reason}`);
     // The merge record lives in the ledger: a replayed squash for the same head returns the recorded merge instead of merging again.
     const mergeId = `merge:${evidence.head}`;
     if (store && ledgerEntry(await store.load(evidence.issue), mergeId)) return { replayed: true };
@@ -43,6 +48,12 @@ export function createMergeEntryPoint({ github, gateState, store }) {
     }
     const checks = await github.requiredGreen(pr);
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
+    // A live body that carries the record must carry this exact one; when no body text is supplied the check is skipped, visibly.
+    if (typeof live.body === 'string') {
+      if (!isDeepStrictEqual(extractPrRecord(live.body), record)) throw new Error('PR record is missing or stale in the pull request body');
+    } else {
+      console.warn(`PR record check skipped: pull request body not supplied (pr ${pr})`);
+    }
     const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
     if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });
     return merged;
