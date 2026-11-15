@@ -54,7 +54,8 @@ test('verdict line: pass continues, rejection spends a developer retry, block as
 });
 
 test('developer and test failures spend a developer retry; scope mismatch and human block do not', () => {
-  assert.equal(classify({ stage: 'developer', timedOut: true }).consumesDeveloperRetry, true);
+  assert.equal(classify({ stage: 'developer', timedOut: true, output: 'partial' }).consumesDeveloperRetry, true);
+  assert.equal(classify({ stage: 'developer', timedOut: true }).class, 'quota_wait', 'an output-less developer timeout is a candidate wait');
   assert.equal(classify({ stage: 'developer', exitCode: 0, output: '' }).reason, 'empty_output');
   assert.equal(classify({ stage: 'test', exitCode: 1 }).consumesDeveloperRetry, true);
   assert.equal(classify({ stage: 'test', exitCode: 0 }).class, 'ok');

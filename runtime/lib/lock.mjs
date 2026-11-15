@@ -61,7 +61,8 @@ export const EPOCH_KEEP = 8;
 const MAX_EPOCH = 999_999_999_999_999;
 const TMP_PREFIX = '.tmp-';
 const IDENTITY_PREFIX = '.repo-';
-const MAX_IDENTITY_BYTES = 512;
+const MAX_IDENTITY_BYTES = 8192;
+const PRUNE_LIMIT = 16;
 const MAX_DOMAIN_BYTES = 512;
 
 /** The lock fence cannot be read any more (anchor replaced, record gone): state writes must fail closed. */
@@ -96,11 +97,12 @@ export function anchorRootOf({ env = process.env, home = homedir() } = {}) {
   return resolve(home, '.local', 'state', 'roundtable');
 }
 
+/** `realpath(repoRoot)` when it resolves, else the resolved path (what the identity marker records). */
+const rootOf = (repoRoot) => { try { return realpathSync(repoRoot); } catch { return resolve(repoRoot); } };
+
 /** `sha256(realpath(repoRoot))`: the per-repo directory name under `<anchor>/locks/`. */
 export function repoIdOf(repoRoot) {
-  let real;
-  try { real = realpathSync(repoRoot); } catch { real = resolve(repoRoot); }
-  return createHash('sha256').update(real).digest('hex');
+  return createHash('sha256').update(rootOf(repoRoot)).digest('hex');
 }
 
 /** `sha256(realpath(anchor))`: the anchor-domain identity recorded in the work root. */
@@ -258,16 +260,19 @@ async function prepareAnchor(fs, { anchor, repoId, uid }) {
 }
 
 /**
- * Bind `locks/.repo-<repo-id>.json` to the validated per-repo directory inode (created once). The content is complete
- * before it is link()ed into place, so a concurrent creator never reads an empty or half-written identity file.
+ * Bind `locks/.repo-<repo-id>.json` to the validated per-repo directory inode and the repo root (created once). The
+ * content is complete before it is link()ed into place, so a concurrent creator never reads an empty or half-written
+ * identity file. A marker from before `root` was recorded is backfilled through a temp file + rename (same dev/ino);
+ * when that fails the marker stays unbacked and the directory is simply never pruned.
  */
-async function bindRepoIdentity(fs, { identityFile, repoIdStat }) {
+async function bindRepoIdentity(fs, { identityFile, repoIdStat, root }) {
   let identity = await readIdentityFile(fs, identityFile);
   if (!identity.ok) return identity;
+  const content = JSON.stringify({ dev: repoIdStat.dev, ino: repoIdStat.ino, root });
   if (identity.missing) {
     const tmp = join(dirname(identityFile), `${TMP_PREFIX}${randomUUID()}`);
     try {
-      await fs.writeFile(tmp, JSON.stringify({ dev: repoIdStat.dev, ino: repoIdStat.ino }), { flag: 'wx', mode: 0o600 });
+      await fs.writeFile(tmp, content, { flag: 'wx', mode: 0o600 });
       await fs.link(tmp, identityFile);
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
@@ -277,6 +282,13 @@ async function bindRepoIdentity(fs, { identityFile, repoIdStat }) {
     if (identity.missing) return { ok: false, detail: 'identity:missing' };
   }
   if (identity.value.dev !== repoIdStat.dev || identity.value.ino !== repoIdStat.ino) return { ok: false, detail: 'repo:id_changed' };
+  if (identity.value.root === undefined) {
+    const tmp = join(dirname(identityFile), `${TMP_PREFIX}${randomUUID()}`);
+    try {
+      await fs.writeFile(tmp, content, { flag: 'wx', mode: 0o600 });
+      await fs.rename(tmp, identityFile);
+    } catch { await fs.unlink(tmp).catch(() => {}); }
+  }
   return { ok: true };
 }
 
@@ -310,14 +322,15 @@ export async function acquireLock({
   const lockName = typeof lockPath === 'string' ? basename(lockPath) : '';
   if (!lockName || lockName === '.' || lockName === '..') return fail('invalid_lock_path');
   const anchor = anchorRoot === undefined ? anchorRootOf({ env }) : resolve(anchorRoot);
-  const ctx = await prepareAnchor(fs, { anchor, repoId: repoIdOf(repoRoot ?? dirname(lockPath)), uid: currentUid });
+  const repoId = repoIdOf(repoRoot ?? dirname(lockPath));
+  const ctx = await prepareAnchor(fs, { anchor, repoId, uid: currentUid });
   if (!ctx.ok) return fail('invalid_anchor', null, { detail: ctx.detail });
   const lockDir = join(ctx.repoDir, lockName);
   const madeLockDir = await mkdirPrivate(fs, lockDir, 'lock_dir');
   if (!madeLockDir.ok) return fail('invalid_anchor', null, { detail: madeLockDir.detail });
   const lockDirStat = await privateDir(fs, lockDir, currentUid, 'lock_dir');
   if (!lockDirStat.ok) return fail('invalid_lock_dir', null, { detail: lockDirStat.detail });
-  const identity = await bindRepoIdentity(fs, ctx);
+  const identity = await bindRepoIdentity(fs, { ...ctx, root: rootOf(repoRoot ?? dirname(lockPath)) });
   if (!identity.ok) return fail('invalid_anchor', null, { detail: identity.detail });
   // Refuse before any epoch exists, so a foreign anchor domain can never fence a state write in this work root.
   const domain = await bindDomain(fs, { domainRoot: repoRoot ?? dirname(lockPath), anchor });
@@ -373,8 +386,7 @@ export async function acquireLock({
    * `{ ok:true, missing?, holder, dev?, ino? }` (holder null when the content is not a JSON object) or
    * `{ ok:false, reason }`.
    */
-  async function readEpoch(epoch) {
-    const path = fileOf(epoch);
+  async function readRecord(path) {
     let st;
     try { st = await fs.lstat(path); } catch (err) { if (['ENOENT', 'ENOTDIR'].includes(err.code)) return { ok: true, missing: true, holder: null }; throw err; }
     if (!st.isFile() || st.size > MAX_LOCK_FILE_BYTES) return { ok: false, reason: 'invalid_epoch_file' };
@@ -397,6 +409,8 @@ export async function acquireLock({
       return { ok: true, holder, dev: fst.dev, ino: fst.ino };
     } finally { await fh.close().catch(() => {}); }
   }
+
+  const readEpoch = (epoch) => readRecord(fileOf(epoch));
 
   /** Our own record, only when it is still the exact file (`dev`+`ino`) this handle created or last published. */
   async function ownRecord() {
@@ -586,9 +600,57 @@ export async function acquireLock({
       }
     }
     await gc(next);
+    await pruneRepos();
     return handle;
   }
   return fail('contended');
+
+  /**
+   * Best effort: remove up to PRUNE_LIMIT per-repo directories whose recorded repo root is gone (ENOENT) and that hold
+   * nothing but stale epochs and temp files. Anything unexpected (symlink, foreign entry, unbacked marker, live
+   * epoch, other stat error) keeps the directory. Only entries under `locks/` are ever unlinked or removed.
+   */
+  async function pruneRepos() {
+    const names = (await fs.readdir(ctx.locks).catch(() => []))
+      .filter((n) => n !== repoId && !n.startsWith(IDENTITY_PREFIX));
+    let removed = 0;
+    for (const name of names) {
+      if (removed === PRUNE_LIMIT) break;
+      if (await pruneRepo(name).catch(() => false)) removed++;
+    }
+  }
+
+  /** Resolves true only when the repo directory was removed. */
+  async function pruneRepo(name) {
+    const dir = join(ctx.locks, name);
+    const st = await fs.lstat(dir);
+    if (!st.isDirectory()) return false;
+    const marker = join(ctx.locks, `${IDENTITY_PREFIX}${name}.json`);
+    const id = await readIdentityFile(fs, marker);
+    if (!id.ok || id.missing || typeof id.value.root !== 'string' || id.value.dev !== st.dev || id.value.ino !== st.ino) return false;
+    if (!(await fs.stat(id.value.root).then(() => false, (err) => err.code === 'ENOENT'))) return false;
+    const files = [];
+    const subdirs = [];
+    for (const sub of await fs.readdir(dir)) {
+      const subPath = join(dir, sub);
+      if (!(await fs.lstat(subPath)).isDirectory()) return false;
+      subdirs.push(subPath);
+      for (const entry of await fs.readdir(subPath)) {
+        const path = join(subPath, entry);
+        if (!(await fs.lstat(path)).isFile()) return false;
+        if (EPOCH_NAME.test(entry)) {
+          const cur = await readRecord(path);
+          if (!cur.ok || !cur.holder || !isStale(cur.holder)) return false;
+        } else if (!entry.startsWith(TMP_PREFIX)) return false;
+        files.push(path);
+      }
+    }
+    for (const file of files) await fs.unlink(file);
+    for (const subPath of subdirs) await fs.rmdir(subPath);
+    await fs.rmdir(dir);
+    await fs.unlink(marker);
+    return true;
+  }
 
   async function gc(newest) {
     try {
