@@ -36,7 +36,7 @@ export function parseDecisionFile(source) {
 
 /** Apply one validated decision using durable state and the caller's injected tracker client. */
 export async function applyDecision({ decision: raw, issue, store, client, repoRoot, now = Date.now,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2, retryDelayMs }) {
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, retryDelayMs, retryDelaysMs = [5000, 15000, 45000] }) {
   let decision = typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw);
   const number = issue?.number ?? issue?.id;
   if (!Number.isSafeInteger(Number(number)) || Number(number) < 1) throw new TypeError('issue number is required');
@@ -67,15 +67,18 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
       }
       const attempt = attempts + 1;
       await store.update(id, state => { state.pendingDecision = { decision, attempts: attempt }; });
-      let resolved;
-      try {
-        if (typeof modelRouter !== 'function') throw new TypeError('model router is required for escalation');
-        resolved = await escalationAdapter({ decision, issue, model: modelRouter('escalation'), attempt });
-        if (resolved !== null && resolved !== undefined) decision = validateDecision(resolved);
-      } catch (error) {
-        return await waitForRetry(error?.message ?? String(error));
+      if (typeof modelRouter !== 'function') return await waitForRetry('model router is required for escalation');
+      const resolved = await callEscalation({ escalationAdapter, decision, issue, model: modelRouter('escalation'), attempt, retryDelaysMs });
+      if (resolved === null) {
+        // No valid answer after every try: default-approve, so the owner is not interrupted by an unanswered escalation.
+        await store.update(id, state => {
+          state.status = 'queued'; state.phase = null; state.checkpoint = null; state.pause = undefined; state.pendingDecision = undefined;
+          state.lastEvent = { type: 'decision_fallback', at: now(), detail: `no valid escalation answer after attempt ${attempt}; default-approve: one more Chief wake; follow issue acceptance criteria; do not relax gates` };
+        });
+        if (client) await clearPauseLabels(client, number);
+        return { status: 'queued', decision: 'continue' };
       }
-      if (resolved === null || resolved === undefined) return await waitForRetry('adapter returned no resolution');
+      decision = resolved;
       queueNext = ['do', 'continue'].includes(decision.decision);
       await store.update(id, state => { state.pendingDecision = undefined; });
     }
@@ -121,6 +124,20 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
     state.lastEvent = { type: `decision_${decision.decision}`, at: now(), detail: asking ? decision.question : decision.reason };
   });
   return { status: asking ? 'waiting_person' : 'out-of-scope', decision: decision.decision };
+}
+
+/** One call plus one retry per delay; a missing, throwing, or invalid answer is retried. Returns null when none is valid. */
+async function callEscalation({ escalationAdapter, decision, issue, model, attempt, retryDelaysMs }) {
+  for (let retry = 0; ; retry++) {
+    try {
+      const resolved = await escalationAdapter({ decision, issue, model, attempt });
+      if (resolved !== null && resolved !== undefined) return validateDecision(resolved);
+    } catch {
+      // Treated as no answer; retried below.
+    }
+    if (retry >= retryDelaysMs.length) return null;
+    await new Promise(done => setTimeout(done, retryDelaysMs[retry]));
+  }
 }
 
 /** Continue only creation steps whose previous tracker outcome is known. */

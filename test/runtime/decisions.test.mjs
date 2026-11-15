@@ -111,24 +111,57 @@ test('ask writes the exact comment and rt:ask through the injected client, then 
   assert.deepEqual(tracker.events.slice(-2), [['removeLabel', 8, 'rt:ask'], ['removeLabel', 8, 'rt:blocked']]);
 }));
 
-test('failed escalation is durable and a later invocation can resolve before an owner comment', async () => fixture(async root => {
+test('failed escalation falls back to default-approve after one call and three retries, without an owner comment', async () => fixture(async root => {
   const store = await createStateStore({ workRoot: root }); const tracker = client();
   const decision = { decision: 'ask', category: 'scope', question: 'Expand scope?' };
-  const first = await applyDecision({ decision, issue: { number: 42 }, store, client: tracker,
-    escalationAdapter: async () => { throw new Error('adapter unavailable'); }, modelRouter: () => 'configured-escalation-model', maxEscalationAttempts: 2 });
-  assert.equal(first.status, 'waiting_external');
-  assert.deepEqual((await store.load('42')).pendingDecision, { decision, attempts: 1 });
-  assert.deepEqual(tracker.events, []);
-
-  const reopened = await createStateStore({ workRoot: root });
-  const second = await applyDecision({ decision, issue: { number: 42 }, store: reopened, client: tracker,
-    escalationAdapter: async ({ decision: pending, model, attempt }) => {
-      assert.deepEqual(pending, decision); assert.equal(model, 'configured-escalation-model'); assert.equal(attempt, 2);
-      return { decision: 'do', reason: 'Escalation resolved the question.' };
-    }, modelRouter: () => 'configured-escalation-model', maxEscalationAttempts: 2 });
-  assert.equal(second.status, 'queued');
-  assert.equal((await reopened.load('42')).pendingDecision, undefined);
+  const calls = [];
+  const result = await applyDecision({ decision, issue: { number: 42 }, store, client: tracker, retryDelaysMs: [0, 0, 0],
+    escalationAdapter: async ({ attempt }) => { calls.push(attempt); throw new Error('adapter unavailable'); }, modelRouter: () => 'configured-escalation-model', maxEscalationAttempts: 2 });
+  assert.deepEqual(result, { status: 'queued', decision: 'continue' });
+  assert.deepEqual(calls, [1, 1, 1, 1]);
+  const state = await store.load('42');
+  assert.equal(state.pendingDecision, undefined);
+  assert.equal(state.status, 'queued');
+  assert.equal(state.lastEvent.type, 'decision_fallback');
+  assert.match(state.lastEvent.detail, /one more Chief wake; follow issue acceptance criteria; do not relax gates/);
   assert.deepEqual(tracker.events, [['removeLabel', 42, 'rt:ask'], ['removeLabel', 42, 'rt:blocked']]);
+}));
+
+test('escalation retries null, throwing, and invalid answers and uses the first valid one with attempt 1', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const decision = { decision: 'ask', category: 'scope', question: 'Expand scope?' };
+  const answers = [null, undefined, { decision: 'merge', reason: 'bogus' }, { decision: 'do', reason: 'Resolved by retry.' }];
+  const calls = [];
+  const result = await applyDecision({ decision, issue: { number: 45 }, store, client: tracker, retryDelaysMs: [0, 0, 0],
+    escalationAdapter: async ({ attempt }) => { calls.push(attempt); return answers.shift(); }, modelRouter: () => 'escalation', maxEscalationAttempts: 2 });
+  assert.equal(result.status, 'queued');
+  assert.deepEqual(calls, [1, 1, 1, 1]);
+  assert.equal((await store.load('45')).pendingDecision, undefined);
+  assert.equal((await store.load('45')).lastEvent.type, 'decision_do');
+}));
+
+test('escalation that recovers after two failed calls is used without a fallback', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const decision = { decision: 'ask', category: 'direction', question: 'Which direction?' };
+  const answers = [new Error('down'), null, { decision: 'continue', reason: 'Recovered answer.' }];
+  const calls = [];
+  const result = await applyDecision({ decision, issue: { number: 46 }, store, client: tracker, retryDelaysMs: [0, 0, 0],
+    escalationAdapter: async ({ attempt }) => { calls.push(attempt); const answer = answers.shift(); if (answer instanceof Error) throw answer; return answer; }, modelRouter: () => 'escalation' });
+  assert.deepEqual(result, { status: 'queued', decision: 'continue' });
+  assert.deepEqual(calls, [1, 1, 1]);
+  assert.equal((await store.load('46')).lastEvent.type, 'decision_continue');
+  assert.equal(tracker.events.some(([type]) => type === 'createComment'), false);
+}));
+
+test('credentials and destructive asks never reach the escalation adapter', async () => fixture(async root => {
+  for (const category of ['credentials', 'destructive']) {
+    const store = await createStateStore({ workRoot: root }); const tracker = client();
+    let calls = 0;
+    const result = await applyDecision({ decision: { decision: 'ask', category, question: 'Approve?' }, issue: { number: 47 }, store, client: tracker,
+      escalationAdapter: async () => { calls++; return { decision: 'continue', reason: 'auto' }; }, modelRouter: () => 'escalation', retryDelaysMs: [0, 0, 0] });
+    assert.equal(result.status, 'waiting_person');
+    assert.equal(calls, 0);
+  }
 }));
 
 test('missing escalation adapter preserves a disputed decision without interrupting the owner', async () => fixture(async root => {
