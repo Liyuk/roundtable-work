@@ -2,13 +2,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { openInbox } from './event-inbox.mjs';
+import { ACKED_PATH, openInbox, sessionOf } from './event-inbox.mjs';
 import { pidAlive } from './lock.mjs';
 
 const STATE = '.roundtable/state';
 const CLAIM_DIR = join(STATE, 'claims');
 const APPLIED = join(STATE, 'applied.jsonl');
-const ACKED = join(STATE, 'acked.jsonl');
+const ACKED = ACKED_PATH;
 
 function appendDurable(file, line) {
   mkdirSync(dirname(file), { recursive: true });
@@ -45,6 +45,9 @@ export function openClaims(root) {
         unlinkSync(tmp);
       }
     },
+    release(key) {
+      unlinkSync(pathOf(key));
+    },
   };
 }
 
@@ -57,11 +60,12 @@ export function markApplied(root, id) {
   appendDurable(join(root, APPLIED), id);
 }
 
-// Pending events with the same kind and issue form one batch; first-seen order is kept.
+// Pending events with the same session form one batch; first-seen order is kept. Events with session none stay apart.
 export function coalesce(events) {
   const groups = new Map();
   for (const e of events) {
-    const key = `${e.kind}\u0000${e.issue}`;
+    const session = e.session ?? sessionOf(e);
+    const key = session === 'none' ? e : session;
     if (!groups.has(key)) groups.set(key, { kind: e.kind, issue: e.issue, events: [] });
     groups.get(key).events.push(e);
   }
@@ -76,18 +80,38 @@ export async function processPending(root, dispatch) {
   const applied = readIds(join(root, APPLIED));
   const acked = readIds(join(root, ACKED));
   const claims = openClaims(root);
+  const inbox = openInbox(root);
   const todo = [];
-  for (const e of openInbox(root).events()) {
+  for (const e of inbox.events()) {
     const id = e.source_event_id;
     if (acked.has(id)) continue;
-    if (applied.has(id)) appendDurable(join(root, ACKED), id);
-    else if (claims.claim(id) === 'claimed') todo.push(e);
-  }
-  for (const batch of coalesce(todo)) {
-    await dispatch(batch);
-    for (const e of batch.events) {
-      markApplied(root, e.source_event_id);
-      appendDurable(join(root, ACKED), e.source_event_id);
+    if (applied.has(id)) {
+      appendDurable(join(root, ACKED), id);
+      inbox.setStatus(id, 'done');
+    } else if (claims.claim(id) === 'claimed') {
+      todo.push(e);
+      inbox.setStatus(id, 'claimed');
     }
+  }
+  const finished = new Set();
+  try {
+    for (const batch of coalesce(todo)) {
+      await dispatch(batch);
+      for (const e of batch.events) {
+        const id = e.source_event_id;
+        markApplied(root, id);
+        appendDurable(join(root, ACKED), id);
+        inbox.setStatus(id, 'done');
+        finished.add(id);
+      }
+    }
+  } catch (err) {
+    // Unfinished claims are released so the events are dispatched again on the next call.
+    for (const e of todo) {
+      if (finished.has(e.source_event_id)) continue;
+      claims.release(e.source_event_id);
+      inbox.setStatus(e.source_event_id, 'pending');
+    }
+    throw err;
   }
 }

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, resumeDecomposition } from '../../runtime/lib/decisions.mjs';
@@ -12,11 +11,12 @@ import { runQueue } from './observation-fixture.mjs';
 // Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-decisions-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
+test.after(() => rm(ANCHOR, { recursive: true, force: true }));
 
+const scratch = join(process.cwd(), '.roundtable/scratch/96-core-decisions-dev-1');
+test.after(() => rm(scratch, { recursive: true, force: true }));
 
 async function fixture(fn) {
-  const scratch = join(process.cwd(), '.roundtable/scratch/96-core-decisions-dev-1');
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(join(scratch, 'case-'));
   try { await fn(root); } finally { await rm(root, { recursive: true, force: true }); }
