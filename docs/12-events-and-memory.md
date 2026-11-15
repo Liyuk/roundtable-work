@@ -1,8 +1,13 @@
 # External events, the continuous queue, and replaceable memory
 
-Status: candidate design. Any webhook, queue, storage, or wake-up mechanism must be provided by the chosen host or by a later implementation; this repository currently contains no receiving service.
+Status: candidate design. Any webhook, queue, storage, or wake-up mechanism must be provided by the chosen host or by a later implementation.
 
-Pointer (2026-11-15): the inbox, claim, timer and outbox libraries now exist under `runtime/lib/` but are not yet wired into the daemon; see [Architecture](architecture.md) for current status and the wiring plan. There is still no HTTP receiving service.
+Pointer (2026-11-15): the inbox, claim, timer and outbox libraries now exist under `runtime/lib/` but are not yet wired into the daemon; see [Architecture](architecture.md) for current status and the wiring plan. An optional loopback HTTP listener exists in `runtime/lib/webhook-listener.mjs`. It is optional and not started by default, binds to 127.0.0.1 by default, verifies signatures with the #367 verifier (`verifySignature` in `runtime/lib/intake-triggers.mjs`), and appends each accepted delivery to the event inbox before it acknowledges the request. It is not deployed and not exposed publicly. To start it from a host script:
+
+```js
+import { start } from './runtime/lib/webhook-listener.mjs';
+await start({ port, root, sources: { github: { secret, eventTypes: ['issues'] } } });
+```
 
 ## How the outside world gets involved
 

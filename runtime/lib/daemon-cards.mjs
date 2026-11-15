@@ -1,8 +1,8 @@
 // Decision cards in the daemon cycle: an ask becomes a card, a closed-category card suspends only its line and enqueues one
 // approval request, and an owner approve/reject reply resumes the suspended line. The daemon has no card provider, so a
 // non-closed card fails closed (the default provider throws) and suspends too.
-import { createHash } from 'node:crypto';
 import { resumeFromApproval, routeCard } from './decision-cards.mjs';
+import { askHash, decideByPolicy } from './daemon-asks.mjs';
 import { openOutbox } from './outbox.mjs';
 
 export const cardProvider = { decide: async () => { throw new Error('no card provider configured'); } };
@@ -14,16 +14,20 @@ export const ownerOf = (repo) => repo?.split('/')[0];
 // approval inbox only has to accept the event.
 const approvalInbox = { accept: () => true };
 
-/** Routes one ask as a card. A suspended card enqueues one approval request; the same question yields one item. */
-export async function dispatchAsk({ root, issue, category, question, evidence, provider = cardProvider }) {
+/**
+ * Routes one ask. With a `policy`, a resolvable ask is decided first and the line continues (`resolved`). Otherwise it
+ * is routed as a card: a suspended card enqueues one approval request; the same question yields one item.
+ */
+export async function dispatchAsk({ root, issue, category, question, evidence, options = ['approve', 'reject'], recommendation = 'reject', scopeKind, provider = cardProvider, policy }) {
   const card = {
-    issue, category, question, options: ['approve', 'reject'], recommendation: 'reject',
+    issue, category, question, options, recommendation,
     evidence: evidence?.length ? evidence : [`issue #${issue} DECISION=ask`],
   };
+  // scopeKind is read by the policy only: the routed card schema (routeCard) does not carry it.
+  if (policy && await decideByPolicy({ root, card: { ...card, scopeKind }, policy }) === 'resolved') return { status: 'resolved' };
   const result = await routeCard({ root, card, provider });
   if (result.status === 'suspended') {
-    const hash = createHash('sha256').update(question).digest('hex').slice(0, 16);
-    openOutbox(root).enqueue({ id: `notice:card:${issue}:${hash}`, kind: 'notification', issue, payload: { subtype: 'approval-request', ...card } });
+    openOutbox(root).enqueue({ id: `notice:card:${issue}:${askHash(question)}`, kind: 'notification', issue, payload: { subtype: 'approval-request', ...card } });
   }
   return result;
 }
@@ -33,11 +37,11 @@ export async function dispatchAsk({ root, issue, category, question, evidence, p
  * undefined. Owner decisions resume only when the comment author is the owner. An amend comment resumes the line's
  * session through `resume({ root, issue, sessionId, text, actionId })`; the default resume does nothing.
  */
-export function makeDispatchLine({ root, owner, decisionOf = () => undefined, provider, resume = async () => {} }) {
+export function makeDispatchLine({ root, owner, decisionOf = () => undefined, provider, policy, resume = async () => {} }) {
   return async (batch) => {
     console.error(JSON.stringify({ event: 'dispatch_line', issue: batch.issue, kinds: batch.events.map((e) => e.kind) }));
     const ask = decisionOf(batch.issue);
-    if (ask) await dispatchAsk({ root, issue: batch.issue, provider, ...ask });
+    if (ask) await dispatchAsk({ root, issue: batch.issue, provider, policy, ...ask });
     for (const event of batch.events) {
       if (event.kind === 'owner_comment' && event.payload.command === 'amend') {
         const { sessionId, text, actionId } = event.payload;
