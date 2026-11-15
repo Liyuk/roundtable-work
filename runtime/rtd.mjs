@@ -15,7 +15,7 @@ import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.m
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
 import { createWorktreeManager } from './lib/worktree.mjs';
-import { applyDecision, resumeAfterOwnerReply } from './lib/decisions.mjs';
+import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, validateDecision } from './lib/decisions.mjs';
 import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
@@ -31,6 +31,9 @@ import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
 const MERGE_UNKNOWN_MAX_ATTEMPTS = 3;
+/** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
+const DECISION_REASK = 'Your DECISION was missing or invalid. Reply with only the decision file for this turn, starting with the DECISION=<do|continue|ask|out-of-scope|decompose|done> line, then its required lines. Do no other work.';
+const parsesAsDecision = (raw) => { try { typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw); return true; } catch { return false; } };
 export const EXIT_LOCKED = 75;
 export const EXIT_LOCK_LOST = 76;
 
@@ -504,6 +507,7 @@ export async function runQueue({
       const stopSchedulingRenewal = startRenewal();
       let scheduled;
       try { scheduled = await runWorkers({ issues: items, workRoot, repoRoot, workers, worktreeManager: manager, now,
+        onSerialize: (event) => console.error(JSON.stringify({ event: 'serialize', ...event })),
         shouldStop: () => lockLost || abandonedHandler,
         prepare: async (item) => exclusive(async () => {
           if (await readMonitor()) { skipped.push({ id: item.id, reason: 'main_paused' }); return false; }
@@ -678,8 +682,13 @@ export async function runQueue({
         try {
           running = Promise.resolve().then(async () => {
             const routeType = { developing: 'development', testing: 'verification', reviewing: 'review', finalizing: 'chief' }[phase];
-            const result = await handler({ item, phase, stage: STAGE[phase], role, state, heartbeat, recordArtifacts, signal, routing,
-              ...(modelRouter ? { model: modelRouter(routeType) } : {}) });
+            const call = (extra) => handler({ item, phase, stage: STAGE[phase], role, state, heartbeat, recordArtifacts, signal, routing,
+              ...(modelRouter ? { model: modelRouter(routeType) } : {}), ...extra });
+            let result = await call({});
+            // A present but unparsable finalizing DECISION gets one re-ask in the same session; a missing one keeps its existing meaning.
+            const raw = result?.decisionFile ?? result?.decision;
+            if (phase === 'finalizing' && raw !== undefined && !state.pendingDecision && !parsesAsDecision(raw)
+              && classify({ ...result, stage: STAGE[phase] }).class === 'ok') result = await call({ reask: { prompt: DECISION_REASK } });
             if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
             const executeMerge = async () => {
               if (await readMonitor()) throw new Error('Main is paused');
@@ -846,8 +855,11 @@ export async function runQueue({
           await store.update(id, (s) => { s.rulesFingerprint = rulesFingerprint; });
           return out('interrupted', { class: cls, reason, decision: 'ask', phase });
         } else if (cls === 'reviewer_unavailable') {
-          const next = await store.bump(id, 'reviewerUnavailable');
+          // A reviewer outage is not work done by this wake: refund the wake and count only the reviewer budget.
+          const next = await store.update(id, (s) => { s.attempts.reviewerUnavailable += 1; s.attempts.wakes -= 1; });
           if (next.attempts.reviewerUnavailable >= maxReviewerUnavailable) return await finish('stop', cls, 'reviewer_unavailable_budget_exhausted', 'stop');
+          return await finish('waiting_external', cls, reason, 'wait');
+        } else if (cls === 'quota_wait') {
           return await finish('waiting_external', cls, reason, 'wait');
         } else if (cls === 'human_block') {
           return await finish('waiting_person', cls, reason, 'ask');

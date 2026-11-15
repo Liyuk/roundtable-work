@@ -287,12 +287,12 @@ test('recovers remaining drafts after an early label interruption without duplic
     await assert.rejects(applyDecision({ decision: { decision: 'decompose', drafts: ['1.json', '2.json'] }, issue: { number: 90 }, store, client, repoRoot: root }), /label failed/);
     const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(90, [...labels])], getIssue: async () => ({ state: closed ? 'CLOSED' : 'OPEN' }) }, { includeRunning: true });
     assert.deepEqual(await provider({ store, client }), []);
-    assert.deepEqual(created, ['Child 1', 'Child 2']);
+    assert.deepEqual(created, ['[90-1] Child 1', '[90-2] Child 2']);
     assert.deepEqual([...childLabels], [101, 102]);
     assert.equal(labels.has('rt:hold'), true);
     closed = true;
     assert.deepEqual((await provider({ store, client })).map(item => item.number), [90]);
-    assert.deepEqual(created, ['Child 1', 'Child 2']);
+    assert.deepEqual(created, ['[90-1] Child 1', '[90-2] Child 2']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
