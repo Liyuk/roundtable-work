@@ -1,4 +1,5 @@
 import { copyFile, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { isEntry } from './entry.mjs';
@@ -87,7 +88,9 @@ export async function plan({ target, harnesses, update }) {
   let previous = [];
   try { previous = JSON.parse(await readFile(recordPath, 'utf8')).harnesses ?? []; } catch {}
   const allHarnesses = [...new Set([...previous, ...harnesses])].filter((h) => harnessDirs[h]);
-  const record = { schemaVersion: 1, skillVersion: version, harnesses: allHarnesses, source: root, installedAt: new Date().toISOString() };
+  const head = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout?.trim() ?? '';
+  const sourceCommit = /^[0-9a-f]{40,64}$/.test(head) ? head : null;
+  const record = { schemaVersion: 1, skillVersion: version, harnesses: allHarnesses, source: root, sourceCommit, installedAt: new Date().toISOString() };
   actions.push({ op: 'write', to: recordPath, content: `${JSON.stringify(record, null, 2)}\n` });
   return { version, actions };
 }
