@@ -28,8 +28,9 @@ export function createGateStateStore({ load, save }) {
  * Non-merge outcomes keep `status: 'blocked'` (the established "not merged" status) and carry a boolean
  * `hold` discriminator, so the caller can tell a resumable hold from a genuine failure:
  * - `hold: true` — nothing was merged and the same head/tree may be retried once the condition clears:
- *   pending CI, missing/stale recorded safety approval, reviewer unavailable after the retry, or a gate/CI
- *   provider that threw (a transient error).
+ *   pending CI, missing/stale recorded safety approval, reviewer unavailable after the retry, a gate/CI
+ *   provider that threw (a transient error), or `review_precondition` (dirty worktree or HEAD not the pushed PR head;
+ *   the reviewer is not dispatched).
  * - `hold: false` — an explicit gate verdict that did not pass, or a configuration error that will not
  *   clear by waiting (gate0/gate2 not-pass, reviewer rejection or stale-head evidence, missing cross-check).
  *   Required CI is a hold while the provider reports `status: 'pending'`; red CI, or a not-green answer
@@ -39,7 +40,7 @@ export function createGateStateStore({ load, save }) {
  *   red and fails closed as before.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
-export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation }) {
+export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation, precondition }) {
   const id = assertSafeId(issue);
   if (![head, tree].every((v) => typeof v === 'string' && v.length)) throw new TypeError('head and tree are required');
   required(gates, 'gates'); required(ci, 'ci'); required(merge, 'merge'); required(state, 'state'); required(github, 'github');
@@ -76,6 +77,8 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     await persist('gate0');
   }
   if (!passed.has('gate1')) {
+    const unclean = await precondition?.({ head, pr });
+    if (unclean) return { ...await failed('gate1', 'review_precondition', true), detail: unclean };
     let result;
     for (let attempt = 0; attempt < 2; attempt++) {
       try { result = await gates.reviewer({ issue: id, head, tree, model: reviewModel, ...(routing && { routing, role: routing.facts.roles.reviewer, prompt: routing.prompts.reviewer }), attempt: attempt + 1 }); }

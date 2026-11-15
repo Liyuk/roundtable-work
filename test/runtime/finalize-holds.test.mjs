@@ -95,7 +95,7 @@ test('a CI hold waits: waiting_external/wait, recovery untouched, gate record ke
     assert.deepEqual([result.outcomes[0].status, result.outcomes[0].class, result.outcomes[0].decision], ['waiting_external', 'finalize_hold', 'wait']);
     assert.match(result.outcomes[0].reason, /^ci: /);
     assert.equal(w.squashes().length, 0, 'no merge attempt for a hold');
-    assert.equal(w.count('pr'), 0, 'the merge entry point was never reached');
+    assert.equal(w.count('pr'), 1, 'only the Gate 1 precondition read the PR; the merge entry point was never reached');
     const store = await createStateStore({ workRoot: root });
     const s = await store.load('53');
     assert.equal(s.status, 'waiting_external', 'not interrupted: the issue is picked up again');
