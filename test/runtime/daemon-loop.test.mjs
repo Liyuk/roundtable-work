@@ -82,7 +82,8 @@ test('after three freezes in the window the next pass sees base - 1, and a resta
     if (++n <= 3) freeze(clock);
     if (n === 4) ac.abort();
   };
-  await runLoop({ pass, pollMs: 1000, cycleDeadlineMs: 5000, workRoot: root, baseWorkers: 3, wall: clock.wall, mono: clock.mono, sleep: fakeSleep(clock), signal: ac.signal });
+  const calm = () => ({ load1: 0, cpus: 1, memAvailableRatio: 1 });
+  await runLoop({ pass, pollMs: 1000, cycleDeadlineMs: 5000, workRoot: root, baseWorkers: 3, wall: clock.wall, mono: clock.mono, sleep: fakeSleep(clock), signal: ac.signal, sample: calm });
   assert.deepEqual(seen, [3, 3, 3, 2]);
   assert.equal(ledgerOf(root).length, 3);
 
@@ -91,7 +92,7 @@ test('after three freezes in the window the next pass sees base - 1, and a resta
   const restarted = [];
   await runLoop({
     pass: async ({ workers }) => { restarted.push(workers()); again.abort(); },
-    pollMs: 1000, cycleDeadlineMs: 5000, workRoot: root, baseWorkers: 3, wall: clock.wall, mono: clock.mono, sleep: fakeSleep(clock), signal: again.signal,
+    pollMs: 1000, cycleDeadlineMs: 5000, workRoot: root, baseWorkers: 3, wall: clock.wall, mono: clock.mono, sleep: fakeSleep(clock), signal: again.signal, sample: calm,
   });
   assert.deepEqual(restarted, [2]);
 });
