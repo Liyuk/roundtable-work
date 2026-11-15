@@ -129,3 +129,13 @@ Each finding is `{ kind, signature, taskId, evidence }` with `signature = kind:t
 - **Merge**: all pending signatures in one cycle go into one message, one line per signature (`kind taskId`), sorted by signature.
 - **Rate limit**: the same set of pending signatures is delivered at most once per `windowMs` (default 30 minutes). Inside the window the signatures stay pending and are reported as `held`.
 - **Hold**: while the owner was active within `holdMs` (default 10 minutes), nothing is sent and the signatures stay pending. `ownerActiveAt(comments, owner)` gives the owner's latest comment time from the snapshot (`{ author, at }`, or `null`).
+
+## Role-injected instructions and separation
+
+The supervisor is a separate process from the front Chief session. They share no code path and no state.
+
+- **Entrypoint**: [supervise.mjs](../runtime/supervise.mjs) is the only supervisor entrypoint. It runs one observe cycle and does not import the chief session or front Chief code (`runtime/lib/chief-session.mjs`, `runtime/lib/front-chief.mjs`). A test asserts this.
+- **Chief state is untouched**: a run leaves `front-chief-session.json`, `front-chief.lock.d` and `task-ledger.jsonl` byte-identical. The only file read besides the fixture is the heartbeat, and the only file written is the supervisor ledger.
+- **Role injection**: each role's instructions are assembled at launch time by `assembleRolePrompt(role, { readFile })` in [role-prompt.mjs](../runtime/lib/role-prompt.mjs). `chief` maps to the Chief role file (`.agents/skills/roundtable-work/prompts/roles/chief.md`). `supervisor` maps to [supervisor.md](../runtime/prompts/supervisor.md), which states observe-only, no actuation, no chief-session access, and writes limited to the supervisor ledger. An unknown role throws `TypeError`.
+- **No cross-injection**: the chief prompt does not contain supervisor instructions, and the supervisor prompt is never sent to the Chief session. `rt-chief` uses `assembleRolePrompt('chief')` when no `--role-prompt` flag is given; an explicit `--role-prompt` file still overrides it.
+- **Tests**: [role-prompt.test.mjs](../test/runtime/supervisor/role-prompt.test.mjs) (assembly per role, unknown role) and [entry.test.mjs](../test/runtime/supervisor/entry.test.mjs) (no chief import, chief state byte-identical after `main`).
