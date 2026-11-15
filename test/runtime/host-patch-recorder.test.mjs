@@ -150,3 +150,14 @@ test('a follow-up whose size is not measured (no diffstat) is refused by admissi
     assert.equal(client.issues.length, 0);
   } finally { await cleanup(); }
 });
+
+test('a binary numstat row (dash counts) leaves the size not measured: admission refuses the follow-up and nothing is filed', async () => {
+  const { root, hygiene, cleanup } = await workspace();
+  try {
+    const client = fakeClient();
+    const diffstat = await numstat(root, '-\t-\tdir/a.mjs\n10\t0\tdir/b.mjs\n');
+    const result = await recordPatch({ workspace: root, tag: 'pt10', files: 'a.mjs,b.mjs', summary: 'Binary row', diffstat, client, hygiene, now: NOW });
+    assert.deepEqual([result.follow.outcome, result.follow.reason], ['refused', 'admission']);
+    assert.equal(client.issues.length, 0);
+  } finally { await cleanup(); }
+});

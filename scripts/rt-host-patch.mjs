@@ -26,7 +26,7 @@ function changesOf(names, diffstat) {
   const counts = new Map();
   for (const line of readFileSync(diffstat, 'utf8').split('\n')) {
     const [added, deleted, path] = line.split('\t');
-    if (path) counts.set(basename(path), Number(added) + Number(deleted));
+    if (path) counts.set(basename(path), /^\d+$/.test(added) && /^\d+$/.test(deleted) ? Number(added) + Number(deleted) : undefined);
   }
   return names.map((name) => [name, counts.get(name)]);
 }

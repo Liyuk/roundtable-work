@@ -29,9 +29,9 @@ reference or reason, on a `not ported:` row that names no issue, a missing refer
 | gate | Gates run in order; a failed gate blocks later gates and the merge. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: gate failure blocks subsequent gates and merge |
 | lenient | A thin Gate 1 rationale requires a Gate 2 cross-check. | `runtime/lib/gate2-triggers.mjs` + `test/runtime/gates.test.mjs` :: Gate 1 with an empty or thin rationale requires Gate 2 |
 | review / reviewer | An unavailable reviewer is retried once; then only ready-to-merge is labeled. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: reviewer unavailable is retried once, then only ready-to-merge is labeled |
-| skills | Skill selection for delegated work. | not needed after cutover: skill selection is an agent-side workflow with no runtime counterpart |
-| followup | Follow-up items are queued after a ticket. | not needed after cutover: the scheduler rule (rt-sched/rt-work) is not in this repository |
-| blockedrtm | Scheduler rule for blocked RTM items. | not needed after cutover: the scheduler rule (rt-sched) is not in this repository |
+| skills | Skill selection for delegated work. | not ported: skill selection is an agent-side workflow with no runtime counterpart; tracked by #428 |
+| followup | Follow-up items are queued after a ticket. | not ported: the scheduler rule (rt-sched/rt-work) is not in this repository; tracked by #428 |
+| blockedrtm | Scheduler rule for blocked RTM items. | not ported: the scheduler rule (rt-sched) is not in this repository; tracked by #428 |
 | series | Series key is the full tag minus its trailing letter; the series is waited on as a unit. | not ported: pending #310 |
 | utf8 | State readers decode with replacement and never throw on a truncated multi-byte sequence (covered by test/runtime/state.test.mjs and test/runtime/status.test.mjs); writers that truncate text cut on a code-point boundary. | `runtime/lib/ci-classifier.mjs` + `test/runtime/ci-classifier.test.mjs` :: truncation cuts on a code-point boundary, not inside a surrogate pair |
 | waitguard | Bounded wait with a cycle-gap WARN. | not ported: pending #333 [RT-O-3] |
@@ -39,10 +39,10 @@ reference or reason, on a `not ported:` row that names no issue, a missing refer
 | cirerun | Re-run only cancelled required CI, then hold. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: cancelled-only required CI requests one re-run and holds instead of failing into the fixer path |
 | ciwait | Only pending required CI is a resumable hold; every other not-green answer fails closed. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: only pending required CI is a resumable hold; every other not-green answer fails closed before squash |
 | mergelock | Only one holder at a time may own the merge lock. | `runtime/lib/lock.mjs` + `test/runtime/lock.test.mjs` :: lock: stale takeover is mutually exclusive across real processes: one winner per round, never two holders |
-| nopr-close | Close an issue that has no pull request. | not needed after cutover: no close-without-PR path in the runtime (parent-close covers decomposition parents only) |
+| nopr-close | Close an issue that has no pull request. | not ported: no close-without-PR path in the runtime (parent-close covers decomposition parents only); tracked by #428 |
 | recordretry | Read-back retry for a safety record. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: a missed recorded-approval read is retried and then succeeds without becoming a rejection |
-| safetyfmt | Format of the safety record. | not needed after cutover: the rule lives in the rt-work script, which is not in this repository |
+| safetyfmt | Format of the safety record. | not ported: the rule lives in the rt-work script, which is not in this repository; tracked by #428 |
 | subretry | Sub-issue create retry with a duplicate check. | not ported: pending #332 [RT-O-2] |
-| syncbudget | Budget sync rule. | not needed after cutover: the rule lives in the rt-work script, which is not in this repository |
-| trim | Trimming of queue.txt. | not needed after cutover: queue.txt trimming is a scheduler rule; the runtime reads the queue through queue.mjs only |
-| dated snapshots 20261112/20261113 | Dated copies of prompt, policy, and config files. | not needed after cutover: dated snapshot files are agent-side artifacts with no runtime counterpart |
+| syncbudget | Budget sync rule. | not ported: the rule lives in the rt-work script, which is not in this repository; tracked by #428 |
+| trim | Trimming of queue.txt. | not ported: queue.txt trimming is a scheduler rule; the runtime reads the queue through queue.mjs only; tracked by #428 |
+| dated snapshots 20261112/20261113 | Dated copies of prompt, policy, and config files. | not ported: dated snapshot files are agent-side artifacts with no runtime counterpart; tracked by #428 |
