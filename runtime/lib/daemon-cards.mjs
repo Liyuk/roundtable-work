@@ -1,0 +1,46 @@
+// Decision cards in the daemon cycle: an ask becomes a card, a closed-category card suspends only its line and enqueues one
+// approval request, and an owner approve/reject reply resumes the suspended line. The daemon has no card provider, so a
+// non-closed card fails closed (the default provider throws) and suspends too.
+import { createHash } from 'node:crypto';
+import { resumeFromApproval, routeCard } from './decision-cards.mjs';
+import { openOutbox } from './outbox.mjs';
+
+export const cardProvider = { decide: async () => { throw new Error('no card provider configured'); } };
+
+/** The owner is the login of the repo owner segment; without a repo there is no owner. */
+export const ownerOf = (repo) => repo?.split('/')[0];
+
+// processPending already guarantees at-most-once dispatch per source_event_id (claim and applied markers), so the
+// approval inbox only has to accept the event.
+const approvalInbox = { accept: () => true };
+
+/** Routes one ask as a card. A suspended card enqueues one approval request; the same question yields one item. */
+export async function dispatchAsk({ root, issue, category, question, evidence, provider = cardProvider }) {
+  const card = {
+    issue, category, question, options: ['approve', 'reject'], recommendation: 'reject',
+    evidence: evidence?.length ? evidence : [`issue #${issue} DECISION=ask`],
+  };
+  const result = await routeCard({ root, card, provider });
+  if (result.status === 'suspended') {
+    const hash = createHash('sha256').update(question).digest('hex').slice(0, 16);
+    openOutbox(root).enqueue({ id: `notice:card:${issue}:${hash}`, kind: 'notification', issue, payload: { subtype: 'approval-request', ...card } });
+  }
+  return result;
+}
+
+/**
+ * The `dispatchLine(batch)` for the cycle. `decisionOf(issue)` returns `{ category, question, evidence }` for an ask or
+ * undefined. Owner decisions resume only when the comment author is the owner.
+ */
+export function makeDispatchLine({ root, owner, decisionOf = () => undefined, provider }) {
+  return async (batch) => {
+    console.error(JSON.stringify({ event: 'dispatch_line', issue: batch.issue, kinds: batch.events.map((e) => e.kind) }));
+    const ask = decisionOf(batch.issue);
+    if (ask) await dispatchAsk({ root, issue: batch.issue, provider, ...ask });
+    for (const event of batch.events) {
+      if (event.kind === 'owner_comment' && event.payload.decision && owner && event.payload.author === owner) {
+        await resumeFromApproval({ root, inbox: approvalInbox, event });
+      }
+    }
+  };
+}
