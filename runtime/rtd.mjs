@@ -84,6 +84,12 @@ export function exitCodeFor(result) {
   return 0;
 }
 
+/** The self-review tracker client: reads from `reader`; `search` and the writes go through the shadow fence when `shadow`. */
+export function createSelfReviewClient({ reader, writer, shadow, attempted }) {
+  const out = shadow ? createShadowGitHub(writer, attempted) : writer;
+  return { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: out.createIssue, createLabel: out.createLabel, addLabel: out.addLabel, removeLabel: out.removeLabel };
+}
+
 /** Appends the role's preloaded memory (capped by preload) under `## Memory`; the prompt is unchanged when there is none. */
 export function appendMemory(promptText, { store, role }) {
   const memory = preload({ store, role });
@@ -1154,7 +1160,7 @@ async function main(argv) {
   const selfReview = args.loop && reader && {
     goals,
     hygiene: { denylistPath: process.env.RT_HYGIENE_DENYLIST, expectedSha256: process.env.RT_HYGIENE_DENYLIST_SHA256, repoRoot: resolve(args['repo-root'] ?? '.') },
-    client: { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: writer.createIssue, createLabel: writer.createLabel, addLabel: writer.addLabel, removeLabel: writer.removeLabel },
+    client: createSelfReviewClient({ reader, writer, shadow }),
   };
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
