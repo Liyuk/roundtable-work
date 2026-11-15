@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ADAPTERS, createAdapterLauncher } from './agent-adapter.mjs';
 import { ROLES, routingFacts } from './routing.mjs';
+import { recordUsageRow } from './usage-ledger.mjs';
 
 export const HARNESS_CONFIG = fileURLToPath(new URL('../harness.config.json', import.meta.url));
 // Workspace-relative file where install writes the per-role candidate table.
@@ -31,10 +32,11 @@ export async function loadHarnessConfig(file = HARNESS_CONFIG, read = readFile) 
   return config;
 }
 
-/** Launcher for the implementer role: its configured harness, and the model routed to that role. */
-export function implementerLaunch({ config, facts, command, spawnFn, env }) {
+/** Launcher for the implementer role: its configured harness, and the model routed to that role. Usage goes to `workRoot` when given. */
+export function implementerLaunch({ config, facts, command, spawnFn, env, workRoot }) {
   const role = config.implementerRole;
-  const launch = createAdapterLauncher({ adapter: selectHarness(config.roles[role]), command, spawnFn, env });
+  const recordUsage = workRoot && ((row) => recordUsageRow(workRoot, row));
+  const launch = createAdapterLauncher({ adapter: selectHarness(config.roles[role]), command, spawnFn, env, recordUsage });
   return { launch, model: facts.roles[role].model };
 }
 

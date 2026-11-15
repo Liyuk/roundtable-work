@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const units = {
   daemon: new URL('../../deploy/systemd/rtd.service', import.meta.url),
@@ -19,7 +21,7 @@ test('daemon unit is a restartable service template with Unit and Service sectio
   const unit = read('daemon');
   assert.match(unit, /^\[Unit\]$/m);
   assert.match(unit, /^\[Service\]$/m);
-  assert.match(unit, /^Restart=on-failure$/m);
+  assert.match(unit, /^Restart=always$/m);
   assert.match(unit, /^ExecStart=\/usr\/bin\/env node <workspace>\/runtime\/rtd\.mjs --work-root /m);
   assert.match(unit, /^WorkingDirectory=<workspace>$/m);
   assert.match(unit, /^User=<daemon-user>$/m);
@@ -48,13 +50,17 @@ test('systemd-analyze verify parses both templates (skipped when not installed)'
   // placeholder users and paths, so verify reports those as "not absolute: <workspace>" or
   // "does not match strict user/group name rules". Every file:line diagnostic must point at a
   // <placeholder>; any other diagnostic is a real parse/config error and fails the test.
-  for (const name of Object.keys(units)) {
-    const r = spawnSync('systemd-analyze', ['--user', 'verify', units[name].pathname], { encoding: 'utf8' });
-    const out = `${r.stdout}${r.stderr}`;
-    console.log(`systemd-analyze --user verify ${name}: exit=${r.status}\n${out}`);
-    assert.doesNotMatch(out, /Failed to create directory/, `${name}: systemd-analyze did not run`);
-    for (const line of out.split('\n').filter((l) => /:\d+: /.test(l))) {
-      assert.match(line, /<[a-z-]+>/, `${name} has a non-placeholder diagnostic: ${line}`);
+  // The inherited XDG_RUNTIME_DIR may not exist here, so point it at a directory this test creates.
+  const runtimeDir = mkdtempSync(join(tmpdir(), 'rt-xdg-'));
+  try {
+    for (const name of Object.keys(units)) {
+      const r = spawnSync('systemd-analyze', ['--user', 'verify', units[name].pathname], { encoding: 'utf8', env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir } });
+      const out = `${r.stdout}${r.stderr}`;
+      console.log(`systemd-analyze --user verify ${name}: exit=${r.status}\n${out}`);
+      assert.doesNotMatch(out, /Failed to create directory/, `${name}: systemd-analyze did not run`);
+      for (const line of out.split('\n').filter((l) => /:\d+: /.test(l))) {
+        assert.match(line, /<[a-z-]+>/, `${name} has a non-placeholder diagnostic: ${line}`);
+      }
     }
-  }
+  } finally { rmSync(runtimeDir, { recursive: true, force: true }); }
 });

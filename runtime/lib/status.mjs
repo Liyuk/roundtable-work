@@ -1,5 +1,12 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { openActionJournal } from './action-journal.mjs';
+import { fileLedgerStore, LEDGER_PATH, loopWorkspace } from './daemon-loop.mjs';
+import { loadGoals } from './goals.mjs';
+import { computeMetrics, loadMetricSources } from './metrics.mjs';
+import { openInterventions } from './interventions.mjs';
+import { selfMetrics } from './self-metrics.mjs';
 import { dependencies, selectIssues } from './intake.mjs';
 import { normalizeState } from './state.mjs';
 import { homedir, hostname, userInfo } from 'node:os';
@@ -59,6 +66,37 @@ const budget = (used, limit) => ({
   remaining: Number.isSafeInteger(used) && used >= 0 && Number.isSafeInteger(limit) && limit >= 0 ? Math.max(0, limit - used) : null,
 });
 
+// Actions the owner still has to act on: confirm or amend, approve, or retry a failed rollback.
+const OPEN_ACTION_STATES = ['executed_pending_confirmation', 'awaiting_approval', 'revert_failed'];
+// Read-only: opening the journal performs no side effect. The journal root is the workspace above `.roundtable`.
+const openActions = (workRoot) => {
+  const abs = resolve(workRoot);
+  const root = basename(abs) === '.roundtable' ? dirname(abs) : abs;
+  return openActionJournal(root).list().filter((a) => OPEN_ACTION_STATES.includes(a.state)).map(({ id, kind, issue, state }) => ({ id, kind, issue, state }));
+};
+
+const DAY = 86_400_000;
+// Self-supervision block (#419): ledger metrics plus #337's tokens per merged PR and first-pass rate over the same window.
+async function selfSupervision(workRoot, now) {
+  const workspace = loopWorkspace(workRoot) ?? resolve(workRoot);
+  const windowDays = await loadGoals().then((goals) => goals.metrics.windowDays, () => 7);
+  const ledgerFile = join(workspace, '.roundtable', 'state', 'interventions.jsonl');
+  const freezeFile = join(workspace, LEDGER_PATH);
+  const metrics = !existsSync(ledgerFile) ? { na: 'intervention ledger absent' }
+    : !existsSync(freezeFile) ? { na: 'freeze ledger absent' }
+      : selfMetrics({ entries: openInterventions(workspace).entries().entries, freezes: fileLedgerStore(freezeFile).load(), now, windowDays });
+  const total = await loadMetricSources(workRoot).then(
+    (sources) => computeMetrics({ since: now - windowDays * DAY, until: now, owner: null, ...sources }).total,
+    () => null,
+  );
+  const unreadable = { na: 'metric sources could not be read' };
+  return {
+    ...metrics,
+    tokensPerMergedPr: total ? (total.tokensPerMergedPr.na ? total.tokensPerMergedPr : total.tokensPerMergedPr.perPr) : unreadable,
+    firstPassRate: total ? (total.firstDispatchSuccess.na ? total.firstDispatchSuccess : total.firstDispatchSuccess.rate) : unreadable,
+  };
+}
+
 /** Collect a best-effort, read-only status snapshot. Sources may be injected for synthetic tests. */
 export async function collectStatus({ workRoot = '.', sources = {}, now = Date.now, budgets = {}, heartbeatTimeoutMs = RUNTIME_DEFAULTS.heartbeatTimeoutMs } = {}) {
   const generatedAt = new Date(now()).toISOString();
@@ -115,6 +153,8 @@ export async function collectStatus({ workRoot = '.', sources = {}, now = Date.n
   const activeIssues = issues.filter((issue) => issue.status === 'working' || (issue.metadata.labels.includes('rt:running') && !['waiting_person', 'waiting_external', 'blocked', 'out-of-scope'].includes(issue.status) && !issue.metadata.labels.some(label => ['rt:ask', 'rt:blocked'].includes(label))));
   const activeIssue = activeIssues[0] ?? null;
   const blockers = issues.filter((issue) => ['blocked', 'waiting_person', 'interrupted', 'out-of-scope'].includes(issue.status) || issue.metadata.labels.some((label) => ['rt:blocked', 'rt:ask'].includes(label))).map(({ id, status, waiting, metadata }) => ({ id, status: status ?? (metadata.labels.includes('rt:blocked') ? 'blocked' : 'waiting_person'), waiting }));
+  let actions = null;
+  try { actions = openActions(workRoot); } catch { actions = null; }
   const quotaWait = remoteData?.quotaWait ?? null;
   const queue = Array.isArray(remoteData?.queue) ? remoteData.queue.map(String) : null;
   const heartbeatTimes = issues.map((issue) => issue.heartbeat).filter(Boolean);
@@ -125,6 +165,7 @@ export async function collectStatus({ workRoot = '.', sources = {}, now = Date.n
     queue: { count: queue?.length ?? null, issueIds: queue },
     active: { issue: activeIssue?.id ?? null, issueIds: activeIssues.map(issue => issue.id), idle: activeIssue ? false : (remote.refreshed && local.available && local.complete ? true : null) },
     blockers,
+    actions,
     blockerCount: remote.refreshed && local.available && local.complete ? blockers.length : null,
     quotaWait,
     issues,
@@ -136,6 +177,7 @@ export async function collectStatus({ workRoot = '.', sources = {}, now = Date.n
       developerRetries: budgets.maxDeveloperAttempts ?? null,
       reviewerUnavailable: budgets.maxReviewerUnavailable ?? null,
     },
+    selfSupervision: await selfSupervision(workRoot, now()),
   };
 }
 

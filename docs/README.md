@@ -5,6 +5,7 @@ Runtime instructions are governed by the [skill directory](../.agents/skills/rou
 | Topic | Authoritative document | Related |
 | --- | --- | --- |
 | Target architecture for the 7x24 loop: inbox, timers, pipeline, completion tiers, outbox, approvals, cutover | [Architecture](architecture.md) | [Operator guide](operator-guide.md) · [12 Events and Memory](12-events-and-memory.md) |
+| Self-supervision: intervention ledger, MTBI, liveness, governor, self-sourced backlog, default ask policy, stages to an observer-only assistant | [Self-supervision](self-supervision.md) | [Architecture](architecture.md) · [Supervisor heartbeat](supervisor.md) |
 | Goals, architecture, the two loops, decision boundaries | [01 Overall Plan](01-architecture.md) | [07 Sources and Differences](07-sources.md) |
 | Concepts: Chief / Bot / Session / Ticket / Assignment | [02 Team and Sessions](02-team-and-sessions.md) | [Role creation card](../.agents/skills/roundtable-work/templates/bot.md) |
 | Continuation decisions, trigger sources, memory layers | [03 Autonomy Loop and Memory](03-autonomy-and-memory.md) | [11 Chief Continuous Loop](11-chief-continuous-loop.md) (human-machine division of labor, multi-session trade-offs) · [12 Events and Memory](12-events-and-memory.md) (external event format, write and recall timing) |
@@ -14,6 +15,7 @@ Runtime instructions are governed by the [skill directory](../.agents/skills/rou
 | Organization scaling and multi-level reporting | [08 Organization Adjustment](08-organization.md) | [10 Evolving Studio Case](10-evolving-studio.md) |
 | Prompt assembly, host gaps, engineering roadmap | [14 Prompt to Runtime](14-prompt-to-runtime.md) | [15 Single Harness First](15-single-harness-communication.md) · [Host mapping](../.agents/skills/roundtable-work/references/harnesses.md) |
 | Installation and configuration | [SETUP](../SETUP.md) | [Setup flow](../.agents/skills/roundtable-work/references/setup.md) |
+| Running rtd 7x24: cloud server, macOS, Docker | [Deploy](deploy.md) | [Operator guide](operator-guide.md) · [Supervisor heartbeat](supervisor.md) |
 | Project contracts and invariants, identity-key rules (cite by path and section) | [Project contracts](project-contracts.md) | [Shared behavior](../.agents/skills/roundtable-work/prompts/shared.md) |
 | Operating the runtime: shadow run, heartbeat, pause, rollback, proposals, merge risk, owner-only steps | [Operator guide](operator-guide.md) | [Supervisor heartbeat](supervisor.md) |
 | Skill discovery | [16 Skill Discovery](16-skill-discovery.md) | [Runtime flow](../.agents/skills/roundtable-work/references/skill-discovery.md) |

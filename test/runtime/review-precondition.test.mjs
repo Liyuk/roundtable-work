@@ -17,7 +17,7 @@ function gateFixture({ prHead = HEAD, verdict = { passed: true }, ...facts } = {
   const calls = [];
   const records = new Map();
   const ledger = [];
-  const github = { async getPullRequest() { return { state: 'open', draft: false, head: prHead, mergeable: true, files: [] }; }, async addLabel() {} };
+  const github = { async getPullRequest() { return { body: 'Closes #341', state: 'open', draft: false, head: prHead, mergeable: true, files: [] }; }, async addLabel() {} };
   const input = {
     issue: '341', head: HEAD, tree: 'tree-a', pr: 9, changedFiles: [],
     precondition: createReviewPrecondition({ clients: clients(facts), issue: '341', github }),
@@ -45,7 +45,7 @@ test('a worktree with staged, unstaged or untracked changes is held before the r
 
 test('a worktree whose cleanliness is unknown is held, never assumed clean', async () => {
   const f = gateFixture();
-  f.input.precondition = createReviewPrecondition({ clients: { worktree: { async inspect() { return {}; } }, git: { async head() { return HEAD; } } }, issue: '341', github: { async getPullRequest() { return { head: HEAD }; } } });
+  f.input.precondition = createReviewPrecondition({ clients: { worktree: { async inspect() { return {}; } }, git: { async head() { return HEAD; } } }, issue: '341', github: { async getPullRequest() { return { body: 'Closes #341', head: HEAD }; } } });
   const result = await runGates(f.input);
   assert.deepEqual([result.reason, result.hold], ['review_precondition', true]);
   assert.equal(f.calls.includes('reviewer'), false);

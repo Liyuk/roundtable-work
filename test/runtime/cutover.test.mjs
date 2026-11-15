@@ -62,7 +62,7 @@ export default {
     async crossCheck() { log('gate2'); return true; },
   },
   github: {
-    async getPullRequest() { return { state: 'open', draft: false, mergeable: true, head: SHA, files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }; },
+    async setBase() {}, async getPullRequest() { return { state: 'open', body: 'Closes #21', draft: false, mergeable: true, head: SHA, files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr) { log(['squash', pr]); return { mergeCommit: 'abcdef0123456789' }; },
     async addLabel() {}, async recordedEscalationApproval() { return null; }, async createComment() {},

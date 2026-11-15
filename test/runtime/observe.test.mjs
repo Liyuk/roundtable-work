@@ -66,7 +66,7 @@ test('production adapter requires observation providers', async () => {
   const fn = async () => {};
   const providers = {
     context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn },
-    github: Object.fromEntries(['getPullRequest', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'].map((name) => [name, fn])),
+    github: Object.fromEntries(['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'].map((name) => [name, fn])),
     git: { createRevert: fn },
   };
   assert.throws(() => createProductionAdapter(providers), /observation/i);
@@ -109,7 +109,7 @@ test('production merge is held before squash when the observed SHA differs', asy
     const c = clients({ git: { async head() { return 'b'.repeat(40); }, async commit() { return { sha: 'b'.repeat(40) }; } } });
     let squashes = 0;
     const github = {
-      async getPullRequest() { return { state: 'open', head: sha, mergeable: true, files: [] }; },
+      async setBase() {}, async getPullRequest() { return { body: 'Closes #109', state: 'open', head: sha, mergeable: true, files: [] }; },
       async requiredGreen() { return true; }, async squashMerge() { squashes++; return { mergeCommit: sha }; },
       async addLabel() {}, async recordedEscalationApproval() { return { approved: false }; },
       async mainStatus() { return { head: sha, status: 'green' }; }, async openRevertPullRequest() {}, async createIssue() {},
@@ -144,7 +144,7 @@ test('the merge call head cannot replace the immutable transition target', async
       async context() { return { pr: 1, head: other, tree: 'tree', highRisk: false, changedFiles: [] }; },
       gates: { async gate0() { head = other; return true; }, async reviewer() { return { passed: true, head: other, rationale: RATIONALE }; }, async crossCheck() { return true; } },
       github: {
-        async getPullRequest() { return { state: 'open', head: other, mergeable: true, files: [] }; },
+        async setBase() {}, async getPullRequest() { return { body: 'Closes #109', state: 'open', head: other, mergeable: true, files: [] }; },
         async requiredGreen() { return true; }, async squashMerge() { squashes++; return { mergeCommit: other }; },
         async addLabel() {}, async recordedEscalationApproval() { return { approved: false }; },
         async mainStatus() { return { head: other, status: 'green' }; }, async openRevertPullRequest() {}, async createIssue() {},
@@ -212,7 +212,7 @@ test('finalizing runs gates before requiring current-head evidence and refuses s
         async context() { return { pr: 1, head: sha, tree: 'tree', highRisk: false, changedFiles: [] }; },
         gates: { async gate0() { gatesRan = true; return true; }, async reviewer() { return { passed: true, head: sha, rationale: RATIONALE }; } },
         github: {
-          async requiredGreen() { return true; }, async getPullRequest() { return { state: 'open', head: sha, mergeable: true, files: [] }; },
+          async requiredGreen() { return true; }, async setBase() {}, async getPullRequest() { return { body: 'Closes #109', state: 'open', head: sha, mergeable: true, files: [] }; },
           async squashMerge() { squashes++; return { mergeCommit: sha }; },
         },
       };

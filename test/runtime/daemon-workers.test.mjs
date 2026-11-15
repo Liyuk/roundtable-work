@@ -1,19 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { runQueue } from './observation-fixture.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
 
-const scratch = join(process.cwd(), '.roundtable/scratch/rt51-fix2/tmp');
+const base = join(process.cwd(), '.roundtable/scratch/rt51-fix2');
+const scratch = join(base, 'tmp');
+test.after(() => rm(base, { recursive: true, force: true }));
 const tmp = async () => { await mkdir(scratch, { recursive: true }); return mkdtemp(join(scratch, 'case-')); };
 // Locks live in the private anchor (RTW_STATE_DIR), never in the work root.
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
+test.after(() => rm(ANCHOR, { recursive: true, force: true }));
 async function fixture() {
   const root = await tmp(), repo = join(root, 'repo'), workRoot = join(root, 'work');
   await mkdir(repo); await mkdir(workRoot);

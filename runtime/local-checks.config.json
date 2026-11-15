@@ -1,0 +1,5 @@
+{
+  "enabled": false,
+  "command": "npm run check",
+  "description": "Runs the repository's local check script as merge evidence when required CI is not configured to run."
+}

@@ -21,3 +21,22 @@ export function overlappingIssues(draft, closed = [], { now = Date.now(), days =
     .filter(issue => similarity(draftTokens, textOf(issue)) > threshold)
     .map(issue => issue.number);
 }
+
+const held = issue => (issue.labels ?? []).some(label => (typeof label === 'string' ? label : label.name) === 'rt:hold');
+
+/**
+ * Numbers of open issues and pull requests that duplicate the draft: a pull request linked to the draft's own number
+ * (`linked` maps an issue number to its linked pull requests), or a similar title on an open pull request or an older
+ * open issue. Titles only, at a high threshold: shared acceptance boilerplate must not make unrelated work a duplicate.
+ * Of two similar open issues only the newer one is a duplicate; decomposition parents (`rt:hold`) never count.
+ */
+export function duplicatesOf(draft, { open = [], linked = {}, threshold = 0.5 } = {}) {
+  const draftTokens = tokens(draft.title ?? '');
+  const pulls = Object.values(linked).flat();
+  const older = open.filter(issue => !held(issue) && (draft.number === undefined || issue.number < draft.number));
+  const similar = [...older, ...pulls]
+    .filter(item => item.number !== draft.number && similarity(draftTokens, tokens(item.title ?? '')) >= threshold)
+    .map(item => item.number);
+  const linkedToDraft = (draft.number ? linked[draft.number] ?? [] : []).map(pull => pull.number);
+  return [...new Set([...linkedToDraft, ...similar])];
+}

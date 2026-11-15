@@ -22,12 +22,50 @@ Nothing is posted, labelled, merged or closed on GitHub. Pass `--live` only when
 
 The supervisor has its own observe-only mode, described in [supervisor.md](supervisor.md). `runtime/supervise.mjs --mode observe` (the default) reads a GitHub fixture file and records decisions in `<workspace>/.roundtable/state/supervisor-ledger.jsonl`. It does not act. It makes no network calls.
 
+## Reference modules shadow run
+
+The reference modules in [examples/operator](../examples/operator) let the loop run in shadow mode from the repository alone. They are a starting point, not a live setup: `handler.mjs` reports every phase as failed (`no implementer configured`) and `providers.mjs` stubs every method so that it throws if called. `routing.json` uses placeholder model names. Replace all three before a live run.
+
+```sh
+node runtime/rtd.mjs --work-root <workspace>/.roundtable --github --repo <owner/repo> --repo-root <repo> \
+  --handler examples/operator/handler.mjs --providers examples/operator/providers.mjs --routing examples/operator/routing.json --loop --poll-ms 50
+```
+
+- `--work-root` must be a directory named `.roundtable` for `--loop`.
+- `--poll-ms 50` is the pause between passes; choose a larger value for normal use (default `DEFAULT_POLL_MS` in [daemon-loop.mjs](../runtime/lib/daemon-loop.mjs)).
+- Without `--live` the run is shadow: each pass writes `<workspace>/.roundtable/shadow/cycle-<n>.jsonl` and makes no GitHub write. Stop it with SIGTERM.
+
 ## Cutover and rollback
 
-- **Switch to live**: add `--live` to the `ExecStart` line of the installed `rtd.service`, then reload and restart the unit. This is a configuration change only. The template in `deploy/systemd/rtd.service` has no `--live`, so its default is shadow.
-- **Rollback**: remove `--live` from `ExecStart`, then reload and restart the unit. The daemon code is unchanged by either step.
-- **Shadow diff**: `<work-root>/shadow/cycle-<n>.jsonl`, one line per decision that differs from the live decisions in `--live-decisions FILE`. It is written only when `--live` is absent.
-- **Production switch**: a deployer action. The tests in this repository exercise shadow and live runs against fixtures and fake providers only.
+Run the steps in order. Steps 3 and 5 and every host unit edit are owner-only; see [Owner-only steps](#owner-only-steps).
+
+1. **Shadow run.** Run the unit with `--loop` and without `--live`, with its own work root `<workspace>/.roundtable`, as in the template [rtd.service](../deploy/systemd/rtd.service). Shadow mode is described in [Shadow run](#shadow-run). Each cycle writes state under the work root and one `shadow/cycle-<n>.jsonl` with the decisions that differ from `--live-decisions FILE`. To build that file from a copy of the host status table, run `node scripts/host-decisions-export.mjs --status-tsv FILE --out FILE`. It keeps the last status of each issue, mapped to decision words: `done`, `out-of-scope` and `stop` unchanged, `held` and `running` to `wait`, `error` to `ask`; rows with other statuses are skipped.
+2. **Readiness.** Run the check and act on its output:
+
+   ```sh
+   node scripts/cutover-check.mjs --work-root <workspace>/.roundtable --inventory docs/host-patch-inventory.md [--explained FILE]
+   ```
+
+   - Exit `0`: every check prints `PASS`. Go to step 3.
+   - Exit `1`: at least one `FAIL <check>: <detail>` line. Fix that check and run again.
+   - Exit `2`: usage error.
+
+   The checks are:
+   - `shadow-coverage`: the oldest and newest `shadow/cycle-<n>.jsonl` are at least 48 h apart.
+   - `shadow-diff`: every difference in a cycle file from the last 24 h has an entry in the explained file (default `shadow/explained.json`, a JSON array of `{"issue": "<n>", "reason": "<text>"}`). A malformed file fails.
+   - `heartbeat`: `state/heartbeat.json` exists and parses.
+   - `scheduler-stall`: the freeze ledger has no `scheduler-stall` entry in the last 24 h.
+   - `inbox-timers-outbox`: `event-inbox.jsonl`, `timers.json` and `outbox.jsonl` in `.roundtable/state/` are non-empty.
+   - `inventory`: every row of [host-patch-inventory.md](host-patch-inventory.md) is `superseded by ...`, a ported rule with an existing test, or `not needed after cutover: <reason>`. Rows marked `not ported` fail this check. The checker does not edit the inventory.
+3. **Live with one worker** (owner-only). Add `--live --workers 1 --exclusive-with <pidfile>` to `ExecStart`, then reload and restart the unit. `<pidfile>` is the host loop's pid file. `rtd` exits `2` before any side effect when that file names a live process, or when it does not hold a positive integer pid. A missing file means no holder.
+4. **Ramp.** Raise the base `--workers` (default `2`) from `1` toward the host value of 6 to 8 over days. During freeze clusters the loop lowers the effective cap (`effectiveCap` in [liveness.mjs](../runtime/lib/liveness.mjs)).
+5. **Rollback** (owner-only). Remove `--live` from `ExecStart` (or stop the unit), then reload and restart it. Then:
+   - List the issues still labelled `rt:running` with `node runtime/rtd.mjs status`.
+   - Requeue them with `/rt requeue`. [rt-commands.mjs](../runtime/lib/rt-commands.mjs) accepts that word, but no code in this repository acts on it, so the requeue is done by hand on GitHub.
+   - Restart the host scheduler.
+
+   Local state under the work root is kept for diagnosis and is not read by the host.
+6. **Owner-only steps.** Step 3 starts a live run, and the unit edits in steps 1, 3 and 5 are host configuration. The rest of the owner-only work (tags, enabling units, the switch from `$RT_HOME`, lingering, and `--apply` in [Rolling back `current`](#rolling-back-current)) is in [Owner-only steps](#owner-only-steps).
 
 ## Reading the heartbeat
 

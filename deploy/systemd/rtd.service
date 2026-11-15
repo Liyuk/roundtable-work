@@ -10,5 +10,5 @@ Type=simple
 User=<daemon-user>
 WorkingDirectory=<workspace>
 EnvironmentFile=-<env-file>
-ExecStart=/usr/bin/env node <workspace>/runtime/rtd.mjs --work-root <workspace>/.roundtable --github --handler <handler-module> --providers <providers-module> --routing <routing-file>
-Restart=on-failure
+ExecStart=/usr/bin/env node <workspace>/runtime/rtd.mjs --work-root <workspace>/.roundtable --github --handler <handler-module> --providers <providers-module> --routing <routing-file> --loop
+Restart=always

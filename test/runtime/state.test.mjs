@@ -283,3 +283,24 @@ test('a fence at or below our epoch does not block writes, and the epoch is stam
     await assert.rejects(store.update('1', (state) => { state.changedFiles = 2; }), { code: 'RT_STALE_EPOCH' });
   } finally { await cleanup(); }
 });
+
+// Criterion 8: a machine lease whose heartbeat expired is reclaimed by recover and the reclaim is recorded; a live lease is untouched.
+test('lease: an expired lease is reclaimed by recover and recorded; a live lease is never touched', async () => {
+  const { store, clock, cleanup } = await setup();
+  try {
+    await store.acquireLease('1', 'dead');
+    await store.beginPhase('1', 'developing');
+    await store.acquireLease('2', 'alive');
+    await store.beginPhase('2', 'developing');
+    clock.t += 6000; // both leases and heartbeats are past their limits ...
+    await store.heartbeat('2', 'alive'); // ... until the live owner renews its lease and heartbeat
+    const reclaimed = await store.recover('1');
+    assert.equal(reclaimed.action, 'resume');
+    const dead = await store.load('1');
+    assert.deepEqual([dead.lease, dead.status, dead.lastEvent.type, dead.recovery.leaseExpired], [null, 'queued', 'recovered', true]);
+    const live = await store.recover('2');
+    assert.deepEqual([live.action, live.owner], ['held', 'alive']);
+    const held = await store.load('2');
+    assert.deepEqual([held.lease.owner, held.status, held.recovery], ['alive', 'working', null]);
+  } finally { await cleanup(); }
+});
