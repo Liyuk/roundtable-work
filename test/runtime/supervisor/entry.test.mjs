@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { runCycle, parseArgs, main } from '../../../runtime/supervise.mjs';
 import { createLedger, parseLedger } from '../../../runtime/supervisor/ledger.mjs';
 import { HEARTBEAT_PATH } from '../../../runtime/supervisor/heartbeat.mjs';
+import { recordUsageRow } from '../../../runtime/lib/usage-ledger.mjs';
 
 const DAY = 86_400_000;
 const NOW = 10 * DAY;
@@ -135,6 +136,24 @@ test('main runs one observe cycle and writes only the ledger (plus the test-writ
     assert.equal(ledger.filter((e) => e.action === 'cycle').length, 1);
     const files = (await readdir(ws, { recursive: true, withFileTypes: true })).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(ws.length + 1)).sort();
     assert.deepEqual(files, [HEARTBEAT_PATH, '.roundtable/state/supervisor-ledger.jsonl']);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('main feeds persisted usage rows for RT_ISSUE into tokens-no-commit and reports budget-overflow', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'sup-usage-'));
+  const ws = join(work, 'ws');
+  try {
+    mkdirSync(join(ws, '.roundtable/state'), { recursive: true });
+    writeFileSync(join(ws, HEARTBEAT_PATH), freshHeartbeat);
+    const githubFile = join(work, 'github.json');
+    writeFileSync(githubFile, JSON.stringify(fixture));
+    const row = { issue: '336', role: 'developer', model: 'm', harness: 'pi', usageKnown: true, cachedInputTokens: 0, wallMs: 1, at: NOW - 1 };
+    await recordUsageRow(join(ws, '.roundtable'), { ...row, inputTokens: 499000, outputTokens: 1000 });
+    await recordUsageRow(join(ws, '.roundtable'), { ...row, inputTokens: 100, outputTokens: 7 });
+    const result = await main(['--workspace', ws, '--github-fixture', githubFile], { now: () => NOW, stdout: () => {}, env: { RT_ISSUE: '336' } });
+    assert.ok(result.findings.includes('budget-overflow'), `findings: ${result.findings}`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
