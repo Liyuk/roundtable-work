@@ -2,7 +2,7 @@
 name: roundtable-work
 description: Advance a goal to an acceptable result as Chief or a team role: break it down, delegate to sub-sessions, independently review, rework, and continue when the goal is not complete or state the waiting condition. Use when the user gives a goal that needs sustained progress, a Roundtable delegation card is received, or the user asks to install/configure a workshop team.
 metadata:
-  version: "0.2.1"
+  version: "0.2.2"
 ---
 
 # Roundtable Work
