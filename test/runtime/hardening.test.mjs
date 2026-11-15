@@ -665,12 +665,15 @@ test('timeout: renewal prevents a second runner after the original TTL while the
   // record only reaches `target + ttlMs` when a real renewal tick ran after the clock was set to `target`.
   let clock = t0;
   const lockDir = lockDirOf(root);
+  const holderOf = async () => {
+    const epochs = (await readdir(lockDir)).filter((n) => /^epoch-\d+$/.test(n)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+    return JSON.parse(await readFile(join(lockDir, epochs.at(-1)), 'utf8'));
+  };
   const renewTo = async (target) => {
     clock = target;
     const deadline = Date.now() + 15000;
     for (;;) {
-      const epochs = (await readdir(lockDir)).filter((n) => /^epoch-\d+$/.test(n)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
-      const holder = JSON.parse(await readFile(join(lockDir, epochs.at(-1)), 'utf8'));
+      const holder = await holderOf();
       const { lease } = JSON.parse(await readFile(stateFile(root, 'A'), 'utf8'));
       if (holder.expiresAt === target + ttlMs && lease.expiresAt === target + ttlMs) return;
       if (Date.now() > deadline) assert.fail(`no renewal tick after the clock reached +${target - t0} ms (lock lease +${holder.expiresAt - t0} ms, issue lease +${lease.expiresAt - t0} ms)`);
@@ -690,5 +693,14 @@ test('timeout: renewal prevents a second runner after the original TTL while the
     assert.equal(await readFile(resultFile, 'utf8'), 'locked');
     const state = await createStateStore({ workRoot: root }).then((store) => store.load('A'));
     assert.ok(state.lease.expiresAt > clock, 'the issue lease is also renewed past the original TTL');
-  } finally { release(); }
+  } finally {
+    release();
+    // The abandoned handler settles, then its renewal stops and the lock record is released last. Waiting for that
+    // keeps the renewal timer from writing into the lock dir while withRoot() removes it.
+    const deadline = Date.now() + 15000;
+    while (!(await holderOf()).released) {
+      if (Date.now() > deadline) assert.fail('the abandoned handler never released the lock');
+      await sleep(25);
+    }
+  }
 }));
