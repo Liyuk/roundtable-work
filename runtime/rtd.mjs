@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { PathEscapeError } from './lib/paths.mjs';
 import { acquireLock } from './lib/lock.mjs';
@@ -27,6 +27,10 @@ import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
+import { CANDIDATES_FILE } from './lib/harness.mjs';
+import { createCandidateRouter } from './lib/fallback.mjs';
+import { openTimers } from './lib/event-timers.mjs';
+import { loadCandidateRecords, openContinuation, runRound, saveCandidateRecords } from './lib/executor-record.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
@@ -135,6 +139,7 @@ export async function runQueue({
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
+  candidates, probe, probeIntervalMs,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -152,6 +157,8 @@ export async function runQueue({
   if (lockRenewMinMs > lockTtlMs / 2) throw new TypeError(`lockRenewMinMs (${lockRenewMinMs}) must be <= lockTtlMs / 2 (${lockTtlMs / 2}), otherwise the lock can expire before its first renewal`);
   await mkdir(workRoot, { recursive: true });
   const store = await createStateStore({ workRoot, now, leaseTtlMs, heartbeatTimeoutMs });
+  // Per-role candidates with fallback and interval probing (#309); without a candidate table the developer runs as before.
+  const candidateRouter = candidates && createCandidateRouter({ candidates, now, probeIntervalMs, records: loadCandidateRecords(workRoot) });
   const ruleFiles = ['.agents/skills/roundtable-work/prompts/roles/chief.md', '.agents/skills/roundtable-work/prompts/roles/reviewer.md', '.roundtable/policy.md'];
   const ruleRoot = repoRoot ?? workRoot;
   const ruleContents = await Promise.all(ruleFiles.map((path) => readFile(resolve(ruleRoot, path)).catch((error) => {
@@ -682,9 +689,20 @@ export async function runQueue({
         try {
           running = Promise.resolve().then(async () => {
             const routeType = { developing: 'development', testing: 'verification', reviewing: 'review', finalizing: 'chief' }[phase];
-            const call = (extra) => handler({ item, phase, stage: STAGE[phase], role, state, heartbeat, recordArtifacts, signal, routing,
-              ...(modelRouter ? { model: modelRouter(routeType) } : {}), ...extra });
-            let result = await call({});
+            const call = (extra, candidate) => handler({ item, phase, stage: STAGE[phase], role, state, heartbeat, recordArtifacts, signal, routing,
+              ...(candidate ? { candidate, model: candidate.model } : modelRouter ? { model: modelRouter(routeType) } : {}), ...extra });
+            let result;
+            if (candidateRouter && phase === 'developing') {
+              // The developer round runs over the candidates; a quota wait leaves the round open and writes the due timer.
+              const cont = state.continuation ?? openContinuation();
+              const round = await runRound({ router: candidateRouter, role, cont, kind: state.attempts.developer > 0 ? 'fix' : 'implement', timers: openTimers(workRoot),
+                timerId: `wait:${id}:developer`, event: { kind: 'heartbeat', issue: Number(id), payload: { wait: 'quota' } },
+                probe: probe && ((candidate) => probe({ item, candidate })), worker: (candidate) => call({}, candidate) });
+              saveCandidateRecords(workRoot, candidateRouter.unavailable());
+              if (round.author === 'chief') cont.rounds.at(-1).executors.at(-1).independent = false;
+              await store.update(id, (s) => { s.continuation = cont; });
+              result = round.class === 'quota_wait' ? { quotaWait: true } : round;
+            } else result = await call({});
             // A present but unparsable finalizing DECISION gets one re-ask in the same session; a missing one keeps its existing meaning.
             const raw = result?.decisionFile ?? result?.decision;
             if (phase === 'finalizing' && raw !== undefined && !state.pendingDecision && !parsesAsDecision(raw)
@@ -797,6 +815,8 @@ export async function runQueue({
           } else await stopPhaseRenewal();
         }
         if (lockLost || !(await refreshLock())) return lost();
+        // A quota wait of the developer round: no attempt is spent; the round stays open and the timer resumes it.
+        if (step.quotaWait) return await finish('waiting_external', 'quota_wait', 'quota', 'wait');
         try {
           await store.recordArtifacts(id, step.artifacts);
         } catch (err) {
@@ -999,6 +1019,8 @@ async function main(argv) {
     return 2;
   }
   const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
+  const candidatesFile = join(resolve(args['repo-root'] ?? '.'), CANDIDATES_FILE);
+  const candidates = existsSync(candidatesFile) ? JSON.parse(await readFile(candidatesFile, 'utf8')).roles : undefined;
   const maxEscalationAttempts = escalationAdapter ? escalationAttemptBudget(process.env) : undefined;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
   if (args.github && !args.providers) {
@@ -1014,7 +1036,7 @@ async function main(argv) {
   }
   const writer = createGitHubWriter({ repo: args.repo });
   const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) {
     result.triage = queue.triage;
     if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
