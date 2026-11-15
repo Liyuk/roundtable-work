@@ -24,9 +24,11 @@ test('the same source_event_id delivered twice is stored exactly once', () => {
     assert.equal(inbox.accept(event()), true);
     assert.equal(inbox.accept(event({ payload: { ok: false }, receivedAt: 2000 })), false);
     assert.equal(inbox.events().length, 1);
-    assert.deepEqual(inbox.events()[0], event());
+    assert.deepEqual(inbox.events()[0], { ...event(), when: 1000, what: 'ci {"ok":true}', session: 'issue:266' });
     const lines = readFileSync(join(root, INBOX_PATH), 'utf8').split('\n').filter(Boolean);
-    assert.equal(lines.length, 1);
+    assert.equal(lines.length, 2);
+    assert.equal(JSON.parse(lines[1]).type, 'dropped');
+    assert.equal(JSON.parse(lines[1]).original, 'evt-1');
   });
 });
 
@@ -36,8 +38,8 @@ test('the inbox survives restart with the same content', () => {
     openInbox(root).accept(event({ source_event_id: 'evt-2', kind: 'heartbeat', issue: null, payload: {} }));
     const reopened = openInbox(root);
     assert.deepEqual(reopened.events(), [
-      event(),
-      event({ source_event_id: 'evt-2', kind: 'heartbeat', issue: null, payload: {} }),
+      { ...event(), when: 1000, what: 'ci {"ok":true}', session: 'issue:266' },
+      { ...event({ source_event_id: 'evt-2', kind: 'heartbeat', issue: null, payload: {} }), when: 1000, what: 'heartbeat {}', session: 'none' },
     ]);
     assert.equal(reopened.accept(event()), false);
   });
