@@ -35,6 +35,7 @@ import { openMemoryStore } from './lib/memory-store.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, fileLedgerStore, LEDGER_PATH, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { createResourceGovernor } from './lib/prune.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
 import { openActionJournal } from './lib/action-journal.mjs';
@@ -1171,7 +1172,8 @@ async function main(argv) {
     const stateStore = await createStateStore({ workRoot: args['work-root'] });
     // An inbox write from this process ends the inter-cycle wait early.
     const wake = createWakeSignal();
-    const code = await runLoop({ pass: async ({ workers }) => {
+    const governor = createResourceGovernor({ root: workspace });
+    const code = await runLoop({ pass: async ({ workers, admit }) => {
       // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
       const owner = ownerOf(args.repo);
       const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
@@ -1201,11 +1203,12 @@ async function main(argv) {
           }
           await dispatchLine(batch);
         } });
-      console.log(JSON.stringify(await pass(workers)));
+      // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
+      if (admit) console.log(JSON.stringify(await pass(workers)));
       // End of each cycle: raise anomaly alerts, then flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
       if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
       await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
-    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake });
+    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }
     return code;
