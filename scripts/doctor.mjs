@@ -4,9 +4,10 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { exists, harnessDirs, skillSource, skillVersion } from './install.mjs';
 import { classifyProbeResult } from './probe.mjs';
-import { HARNESSES } from '../runtime/lib/harness.mjs';
+import { CANDIDATES_FILE, HARNESS_CONFIG, HARNESSES, loadHarnessConfig, validateCandidates } from '../runtime/lib/harness.mjs';
+import { loadRouting } from '../runtime/lib/routing.mjs';
 
-const { values } = parseArgs({ options: { json: { type: 'boolean', default: false }, target: { type: 'string' } } });
+const { values } = parseArgs({ options: { json: { type: 'boolean', default: false }, target: { type: 'string' }, routing: { type: 'string' } } });
 
 const commands = [
   ['node', process.execPath, ['--version']],
@@ -38,7 +39,16 @@ const adapters = Object.values(HARNESSES).map(({ name, capabilities }) => {
     : { name, available: false, capabilities, status: 'no-binary', reason: 'runs in-process; no binary to probe' };
 });
 
-async function inspect(target) {
+// Candidates are validated against the routing table and deny list, so an invalid file fails here rather than at wake time.
+async function candidatesOf(target, routing) {
+  const file = join(target, CANDIDATES_FILE);
+  if (!routing || !await exists(file)) return null;
+  const config = await loadHarnessConfig(HARNESS_CONFIG);
+  const table = validateCandidates(JSON.parse(await readFile(file, 'utf8')), { routing, deny: config.deny });
+  return Object.fromEntries(Object.entries(table.roles).map(([role, list]) => [role, list.map((e) => `${e.harness}/${e.model}`)]));
+}
+
+async function inspect(target, routing) {
   const sourceVersion = await skillVersion(skillSource);
   const skills = [];
   for (const [harness, dir] of Object.entries(harnessDirs)) {
@@ -62,6 +72,7 @@ async function inspect(target) {
       policy: await exists(join(target, '.roundtable', 'policy.md')),
     },
     installedVersion: installRecord?.skillVersion ?? null,
+    candidates: await candidatesOf(target, routing),
   };
 }
 
@@ -73,7 +84,7 @@ const report = {
   persistentDelegation: 'unverified',
   modelAuthentication: 'not-checked',
 };
-if (values.target) report.installation = await inspect(resolve(values.target));
+if (values.target) report.installation = await inspect(resolve(values.target), values.routing ? await loadRouting(resolve(values.routing)) : null);
 
 if (values.json) console.log(JSON.stringify(report, null, 2));
 else {
@@ -90,6 +101,7 @@ else {
     const agents = inst.claudeAgents.filter((a) => a.installed).map((a) => a.name);
     console.log(`  Claude Code subagents: ${agents.length ? agents.join(', ') : 'none'}`);
     console.log(`  .roundtable/team.md: ${inst.config.team ? 'present' : 'missing'} · policy.md: ${inst.config.policy ? 'present' : 'missing'}`);
+    if (inst.candidates) for (const [role, list] of Object.entries(inst.candidates)) console.log(`  candidates ${role}: ${list.join(' → ')}`);
   }
   console.log('Background wake-up and persistent delegation: not verified.');
   console.log('Model authentication: not checked. This does not install or start a team.');
