@@ -35,7 +35,7 @@ export function parseDecisionFile(source) {
 
 /** Apply one validated decision using durable state and the caller's injected tracker client. */
 export async function applyDecision({ decision: raw, issue, store, client, repoRoot, now = Date.now,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2 }) {
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, retryDelayMs }) {
   let decision = typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw);
   const number = issue?.number ?? issue?.id;
   if (!Number.isSafeInteger(Number(number)) || Number(number) < 1) throw new TypeError('issue number is required');
@@ -89,7 +89,7 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
       state.decomposition = { status: 'creating', drafts, childIds: [], closedPullRequests: [], inFlight: false };
       state.status = 'waiting_external';
     });
-    const childIds = await resumeDecomposition({ number, store, client, now });
+    const childIds = await resumeDecomposition({ number, store, client, now, retryDelayMs });
     return { status: 'waiting_external', decision: decision.decision, childIds };
   }
 
@@ -123,7 +123,7 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
 }
 
 /** Continue only creation steps whose previous tracker outcome is known. */
-export async function resumeDecomposition({ number, store, client, now = Date.now }) {
+export async function resumeDecomposition({ number, store, client, now = Date.now, retryDelayMs = 500 }) {
   const id = String(number);
   let decomposition = (await store.load(id)).decomposition;
   if (decomposition?.status !== 'creating' || !Array.isArray(decomposition.drafts)
@@ -137,19 +137,26 @@ export async function resumeDecomposition({ number, store, client, now = Date.no
       || new Set(decomposition.closedPullRequests).size !== decomposition.closedPullRequests.length))) return null;
   await client.addLabel(number, 'rt:hold');
   for (const child of decomposition.childIds) for (const label of ['rt:self', 'rt:go']) await client.addLabel(child, label);
-  // A failed or interrupted create may have succeeded remotely. Never retry it blindly.
-  if (decomposition.inFlight !== false) return null;
+  const titles = tagTitles(number, decomposition.drafts);
+  // A create whose outcome is unknown is verified by search before it is repeated; without search it is not repeated.
+  let verify = decomposition.inFlight !== false;
   while (decomposition.childIds.length < decomposition.drafts.length) {
-    const draft = decomposition.drafts[decomposition.childIds.length];
+    const index = decomposition.childIds.length;
     await store.update(id, state => { state.decomposition.inFlight = true; });
-    const created = await client.createIssue(draft.title, draft.body);
-    const child = Number(created?.number ?? created?.id);
+    const child = await createChild({ client, number, title: titles[index], body: childBody(number, decomposition.drafts[index].body), verify, retryDelayMs });
+    if (child === null) return null;
     if (!Number.isSafeInteger(child) || child < 1 || decomposition.childIds.includes(child)) throw new TypeError('tracker did not return a valid child issue number');
     await store.update(id, state => { state.decomposition.childIds.push(child); state.decomposition.inFlight = false; });
     decomposition = (await store.load(id)).decomposition;
+    verify = false;
     for (const label of ['rt:self', 'rt:go']) await client.addLabel(child, label);
   }
   const childIds = decomposition.childIds;
+  // Phase 2: point each sub:NN reference and dependency line at the real child number of that draft.
+  for (const [index, draft] of decomposition.drafts.entries()) {
+    const body = childBody(number, rewriteReferences(draft.body, childIds));
+    if (body !== childBody(number, draft.body)) await client.updateIssueBody(childIds[index], body);
+  }
   const closedPullRequests = decomposition.closedPullRequests ?? [];
   const branchPrefix = `rt/${number}-`;
   // The children take over the work, so the parent's open pull requests are closed but their branches are kept.
@@ -167,6 +174,57 @@ export async function resumeDecomposition({ number, store, client, now = Date.no
     state.lastEvent = { type: 'decision_decompose', at: now(), detail: childIds };
   });
   return childIds;
+}
+
+const childMarker = number => `<!-- rt:decompose-child-of:${number} -->`;
+const childBody = (number, body) => `${body}\n\n${childMarker(number)}`;
+
+/** Create one child; after a failure, search for the issue a lost response may have left and reuse it. */
+async function createChild({ client, number, title, body, verify, retryDelayMs }) {
+  const canSearch = typeof client.searchIssues === 'function';
+  if (verify && !canSearch) return null;
+  for (let retry = 0; ; retry++) {
+    if (retry > 0 || verify) {
+      const found = (await client.searchIssues(title)).find(issue => issue.title === title && issue.body?.includes(childMarker(number)));
+      if (found) return Number(found.number);
+    }
+    try {
+      const created = await client.createIssue(title, body);
+      return Number(created?.number ?? created?.id);
+    } catch (error) {
+      if (!canSearch || retry === 4) throw error;
+      await new Promise(done => setTimeout(done, retryDelayMs * (retry + 1)));
+    }
+  }
+}
+
+/** Indexes of the sibling drafts a draft depends on, from its `Depends on sub:NN` lines (NN is the 1-based position). */
+const dependsOn = (body, count) => [...body.matchAll(/^[ \t]*depends on sub:(\d+)/gim)].map(match => Number(match[1]) - 1).filter(index => index >= 0 && index < count);
+
+/** Prefix each title with [parent-n]; mutually dependent siblings share n and take letter suffixes. */
+function tagTitles(number, drafts) {
+  const parent = drafts.map((_, index) => index);
+  const root = index => parent[index] === index ? index : root(parent[index]);
+  drafts.forEach((draft, index) => dependsOn(draft.body, drafts.length).forEach(other => { parent[root(index)] = root(other); }));
+  const size = new Map();
+  for (const index of drafts.keys()) size.set(root(index), (size.get(root(index)) ?? 0) + 1);
+  const numbers = new Map(), letters = new Map();
+  return drafts.map((draft, index) => {
+    const group = root(index);
+    if (!numbers.has(group)) numbers.set(group, numbers.size + 1);
+    const letter = letters.get(group) ?? 0;
+    letters.set(group, letter + 1);
+    const suffix = size.get(group) > 1 ? String.fromCharCode(97 + letter) : '';
+    return `[${number}-${numbers.get(group)}${suffix}] ${draft.title}`;
+  });
+}
+
+/** Replace sub:NN references with the child numbers; a dependency line becomes `Depends on: #N`. */
+function rewriteReferences(body, childIds) {
+  const childOf = nn => childIds[Number(nn) - 1];
+  return body
+    .replace(/^([ \t]*)depends on sub:(\d+)/gim, (line, indent, nn) => childOf(nn) ? `${indent}Depends on: #${childOf(nn)}` : line)
+    .replace(/\bsub:(\d+)\b/g, (text, nn) => childOf(nn) ? `#${childOf(nn)}` : text);
 }
 
 async function readDraft(repoRoot, path) {
