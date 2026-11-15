@@ -4,6 +4,9 @@ export const SCOPE_KINDS = Object.freeze(['acceptance-needs-files', 'criterion-u
 const OWNER_CATEGORIES = Object.freeze(['credentials', 'destructive', 'production']);
 const MAX_TOUCH_EXPANSION = 5;
 
+/** A goal change: never resolved by policy, whatever its category or recommendation. */
+export const isGoalChange = ({ category, scopeKind }) => category === 'scope' || scopeKind === 'scope-change';
+
 /** Fixed keyword rules for a card whose scopeKind is missing or outside SCOPE_KINDS. */
 export function inferScopeKind(question = '') {
   const text = String(question).toLowerCase();

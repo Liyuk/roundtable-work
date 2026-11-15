@@ -1,8 +1,9 @@
 // Decision cards in the daemon cycle: an ask becomes a card, a closed-category card suspends only its line and enqueues one
 // approval request, and an owner approve/reject reply resumes the suspended line. The daemon has no card provider, so a
 // non-closed card fails closed (the default provider throws) and suspends too.
-import { resumeFromApproval, routeCard } from './decision-cards.mjs';
+import { readLine, resumeFromApproval, routeCard } from './decision-cards.mjs';
 import { askHash, decideByPolicy } from './daemon-asks.mjs';
+import { recordOwnerAnswer, stampSuspension } from './ask-timeout.mjs';
 import { openOutbox } from './outbox.mjs';
 
 export const cardProvider = { decide: async () => { throw new Error('no card provider configured'); } };
@@ -18,15 +19,17 @@ const approvalInbox = { accept: () => true };
  * Routes one ask. With a `policy`, a resolvable ask is decided first and the line continues (`resolved`). Otherwise it
  * is routed as a card: a suspended card enqueues one approval request; the same question yields one item.
  */
-export async function dispatchAsk({ root, issue, category, question, evidence, options = ['approve', 'reject'], recommendation = 'reject', scopeKind, provider = cardProvider, policy }) {
+export async function dispatchAsk({ root, issue, category, question, evidence, options = ['approve', 'reject'], recommendation = 'reject', scopeKind, provider = cardProvider, policy, now = Date.now }) {
   const card = {
     issue, category, question, options, recommendation,
     evidence: evidence?.length ? evidence : [`issue #${issue} DECISION=ask`],
   };
   // scopeKind is read by the policy only: the routed card schema (routeCard) does not carry it.
   if (policy && await decideByPolicy({ root, card: { ...card, scopeKind }, policy }) === 'resolved') return { status: 'resolved' };
+  const { pending: prior } = await readLine(root, issue);
   const result = await routeCard({ root, card, provider });
   if (result.status === 'suspended') {
+    await stampSuspension({ root, issue, scopeKind, now, since: prior?.question === question ? prior.at : undefined });
     openOutbox(root).enqueue({ id: `notice:card:${issue}:${askHash(question)}`, kind: 'notification', issue, payload: { subtype: 'approval-request', ...card } });
   }
   return result;
@@ -48,7 +51,10 @@ export function makeDispatchLine({ root, owner, decisionOf = () => undefined, pr
         await resume({ root, issue: batch.issue, sessionId, text, actionId });
       }
       if (event.kind === 'owner_comment' && event.payload.decision && owner && event.payload.author === owner) {
-        await resumeFromApproval({ root, inbox: approvalInbox, event });
+        const { pending } = await readLine(root, batch.issue);
+        if ((await resumeFromApproval({ root, inbox: approvalInbox, event })).status === 'resumed') {
+          recordOwnerAnswer({ root, category: pending.category, question: pending.question });
+        }
       }
     }
   };

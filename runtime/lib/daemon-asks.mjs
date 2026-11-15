@@ -4,16 +4,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { resolveAsk } from './ask-policy.mjs';
+import { isGoalChange, resolveAsk } from './ask-policy.mjs';
 import { autonomyTier } from './autonomy.mjs';
 import { readLine } from './decision-cards.mjs';
 import { openOutbox } from './outbox.mjs';
 
 export const askHash = (question) => createHash('sha256').update(question).digest('hex').slice(0, 16);
+/** The owner notice for an action: the journal's notices become outbox notifications for the issue. */
+export const notifyAction = (root, issue) => (notice) => openOutbox(root).enqueue({ id: notice.id, kind: 'notification', issue, payload: { subtype: notice.subtype, actionId: notice.actionId, state: notice.state } });
 const lineFile = (issue) => `.roundtable/state/lines/${issue}.json`;
 
 /** Decides one ask by policy. Returns `resolved` when the line continues, or `route` when routeCard must decide. */
 export async function decideByPolicy({ root, card, policy, now = Date.now }) {
+  if (isGoalChange(card)) return 'route';
   const verdict = resolveAsk({ card });
   if (verdict.outcome !== 'resolve') return 'route';
   const { issue, question } = card;
@@ -32,8 +35,7 @@ export async function decideByPolicy({ root, card, policy, now = Date.now }) {
     await writeFile(tmp, JSON.stringify(line, null, 2) + '\n');
     await rename(tmp, file);
   };
-  const notify = (notice) => openOutbox(root).enqueue({ id: notice.id, kind: 'notification', issue, payload: { subtype: notice.subtype, actionId: notice.actionId, state: notice.state } });
-  const { id, state } = await journal.perform({ action: { ...action, reasons }, tier, apply, notify });
+  const { id, state } = await journal.perform({ action: { ...action, reasons }, tier, apply, notify: notifyAction(root, issue) });
   if (state === 'rolled_back') return 'route';
   ledger.append({ category: 'decision', ref: `#${issue}`, reason: `ask resolved by policy: ${verdict.rule}`, internalized: 'no', source: 'self' }, { key: id });
   return 'resolved';
