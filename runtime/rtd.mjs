@@ -1123,7 +1123,7 @@ async function main(argv) {
     // An inbox write from this process ends the inter-cycle wait early.
     const wake = createWakeSignal();
     const governor = createResourceGovernor({ root: workspace });
-    const code = await runLoop({ pass: async ({ workers }) => {
+    const code = await runLoop({ pass: async ({ workers, admit }) => {
       // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
       const owner = ownerOf(args.repo);
       const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
@@ -1143,7 +1143,8 @@ async function main(argv) {
           }
           await dispatchLine(batch);
         } });
-      console.log(JSON.stringify(await pass(workers)));
+      // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
+      if (admit) console.log(JSON.stringify(await pass(workers)));
       // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
       await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
     }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });

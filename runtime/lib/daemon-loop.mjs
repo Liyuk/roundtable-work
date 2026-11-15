@@ -64,8 +64,8 @@ export function watchdogVerdict({ heartbeat, ledgerEntries, now, pollMs }) {
 }
 
 /**
- * Runs `pass({ workers })` once per cycle until `signal` aborts. Each cycle first runs `prune()`, then `budget()`: when the
- * budget resolves false the pass is not started, so no new line is admitted while the running ones finish in their own pass.
+ * Runs `pass({ admit, workers })` once per cycle until `signal` aborts. Each cycle first runs `prune()`, then `budget()`;
+ * `admit` is false when the budget resolves false, and the pass still runs so the inbox and outbox work continue.
  * Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass does not settle within `cycleDeadlineMs`. A throwing pass writes a
  * stopped heartbeat and rethrows.
  */
@@ -107,8 +107,8 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
     try {
       const cycle = async () => {
         if (prune) await prune();
-        if (budget && !(await budget())) return null;
-        return pass({ workers: () => Math.min(effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }), governorCap) });
+        const admit = !budget || (await budget());
+        return pass({ admit, workers: () => Math.min(effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }), governorCap) });
       };
       outcome = await Promise.race([cycle(), deadline]);
     } catch (error) {

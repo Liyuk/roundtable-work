@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { createResourceGovernor, prune } from '../../runtime/lib/prune.mjs';
 import { hostId } from '../../runtime/lib/lock.mjs';
 import { openInterventions } from '../../runtime/lib/interventions.mjs';
-import { openOutbox } from '../../runtime/lib/outbox.mjs';
+import { dispatch, openOutbox } from '../../runtime/lib/outbox.mjs';
 import { runLoop } from '../../runtime/lib/daemon-loop.mjs';
 
 const MIN = 60_000;
@@ -178,17 +178,39 @@ test('RT-S6 disk budget closes admission when the state and anchor sizes or the 
   assert.equal(await readFile(stateFile, 'utf8'), 'keep');
 });
 
-test('RT-S6 a closed disk budget gate skips new admission after prune runs first, while the cycle still ends', async (t) => {
+test('RT-S6 a closed disk budget gate still runs the cycle and dispatches the alert, but admits no new pass', async (t) => {
+  const root = await fixture(t);
+  const anchorRoot = await fixture(t);
+  const gov = createResourceGovernor({ root, tmpRoot: root, anchorRoot, uid: UID, now: () => NOW, size: async () => 0, statfs: async () => ({ bavail: 0, blocks: 100 }) });
+  const calls = [];
+  const delivered = [];
+  const ac = new AbortController();
+  const code = await runLoop({
+    // Stands in for the rtd pass: the inbox cycle, the admitted queue run, then the outbox dispatch.
+    pass: async ({ admit }) => {
+      calls.push(['cycle', admit]);
+      if (admit) calls.push(['queue']);
+      await dispatch({ outbox: openOutbox(root), provider: { deliver: async (item) => { delivered.push(item.id); return {}; } } });
+    },
+    pollMs: 1000, cycleDeadlineMs: 5000, workRoot: root, baseWorkers: 3,
+    sleep: async () => ac.abort(), signal: ac.signal,
+    prune: gov.prune, budget: gov.budget,
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls, [['cycle', false]]);
+  assert.deepEqual(delivered, ['notice:disk-budget:2026-11-15']);
+});
+
+test('RT-S6 an open disk budget gate admits the queue run', async (t) => {
   const root = await fixture(t);
   const calls = [];
   const ac = new AbortController();
   const code = await runLoop({
-    pass: async () => calls.push('pass'),
+    pass: async ({ admit }) => calls.push(admit),
     pollMs: 1000, cycleDeadlineMs: 5000, workRoot: root, baseWorkers: 3,
     sleep: async () => ac.abort(), signal: ac.signal,
-    prune: async () => calls.push('prune'),
-    budget: async () => { calls.push('budget'); return false; },
+    budget: async () => true,
   });
   assert.equal(code, 0);
-  assert.deepEqual(calls, ['prune', 'budget']);
+  assert.deepEqual(calls, [true]);
 });
