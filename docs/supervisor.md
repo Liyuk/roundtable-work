@@ -105,3 +105,27 @@ Code: [stage.mjs](../runtime/lib/stage.mjs) (`stage`, `exitConditions`, `observe
 - **Denied**: every action in `ALLOWED_ACTIONS` of [actuator.mjs](../runtime/supervisor/actuator.mjs) (`restart-daemon`, `pause-queue`, `void-stale-pause`, `reprompt`, `rollback`, `add-label`, `convert-to-draft`). `observerAllows(action)` returns `false` for these and for any unknown name, so the check fails closed.
 - **Final exit**: `node scripts/rt-stage.mjs --workspace DIR --exit` exits 0 only when all five conditions hold over the last `exit.windowHours`. It prints one line per condition (`condition=<name> ok|fail value=<n>`) and then `exit: pass|fail`.
 - **Owner steps** (never automated; see section (g) of [self-supervision.md](self-supervision.md)): reboot the host; change proxy, SSH, firewall or network configuration; install system packages or binaries; create OS users, tokens or credentials; delete data (state, worktrees, branches, history); stop or reconfigure other services on the host; install or enable units; run the `--live` cutover and rollback. These are recorded as `owner-only` and do not count toward the exit.
+
+## Signal loop
+
+Code: [signals.mjs](../runtime/supervisor/signals.mjs). It is pure (no fs, network or clock reads; `now` is passed in), uses no LLM, and is **observe-only**: it is not wired into the supervisor entrypoint and does not act on any task.
+
+Input is the task-row list from the ledger snapshot: `{ id, status, owner, checkpoint, askedAt, heartbeatAt, startError }`. Active statuses are `running`, `asking` and `pending-review`.
+
+Six detectors, each exported and run by `detectSignals(tasks, now, config)`, in this order (`SIGNAL_KINDS`):
+
+- `pending-review`: the row is `pending-review`.
+- `stopped-midway`: the row is `stopped` and has a checkpoint.
+- `ask-timeout`: the row is `asking` and has waited `askTimeoutMs` (default 2 hours).
+- `stalled`: the row is `running` and its heartbeat is at least `stallMs` old (default 30 minutes).
+- `start-failed`: the row has a `startError`.
+- `orphaned`: the row is active and has no owner.
+
+Each finding is `{ kind, signature, taskId, evidence }` with `signature = kind:taskId`. The signature keys on the condition, not on time.
+
+`createSignalLoop({ windowMs, holdMs })` returns `cycle({ findings, now, ownerActiveAt })`, which returns `{ message, held }`:
+
+- **Dedupe**: a signature already delivered and still active is never sent again. When a condition clears, it is forgotten, so a reappearance is sent again.
+- **Merge**: all pending signatures in one cycle go into one message, one line per signature (`kind taskId`), sorted by signature.
+- **Rate limit**: the same set of pending signatures is delivered at most once per `windowMs` (default 30 minutes). Inside the window the signatures stay pending and are reported as `held`.
+- **Hold**: while the owner was active within `holdMs` (default 10 minutes), nothing is sent and the signatures stay pending. `ownerActiveAt(comments, owner)` gives the owner's latest comment time from the snapshot (`{ author, at }`, or `null`).
