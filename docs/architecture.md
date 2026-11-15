@@ -1,6 +1,6 @@
 # Architecture: a Haiku-stable 7x24 loop
 
-Status: canonical target architecture, 2026-11-15. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue #374 [RT-B] (see [Work items](#work-items)).
+Status: canonical target architecture, 2026-11-15. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue #374 [RT-B] (see [Work items](#work-items)). The layer that lets this loop run without the external assistant is designed in [Self-supervision](self-supervision.md) (#414 [RT-S]).
 
 ## Why this redesign
 
