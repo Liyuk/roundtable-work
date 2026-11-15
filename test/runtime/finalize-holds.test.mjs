@@ -44,7 +44,7 @@ function world(overrides = {}) {
     async addLabel(_pr, label) { log(`label:${label}`); },
     async createComment(pr, body) { log(['comment', pr, body]); },
     async recordedEscalationApproval() { log('approval'); return w.state.approval; },
-    async getPullRequest() { log('pr'); return { state: 'open', draft: false, mergeable: true, head: w.state.head, files: w.state.changedFiles, ownerLogin: w.state.ownerLogin, comments: w.state.comments }; },
+    async setBase() {}, async getPullRequest() { log('pr'); return { body: '', state: 'open', draft: false, mergeable: true, head: w.state.head, files: w.state.changedFiles, ownerLogin: w.state.ownerLogin, comments: w.state.comments }; },
     async requiredGreen() {
       log('ci');
       if (w.state.ciThrow) throw new Error('checks provider offline');
@@ -95,7 +95,7 @@ test('a CI hold waits: waiting_external/wait, recovery untouched, gate record ke
     assert.deepEqual([result.outcomes[0].status, result.outcomes[0].class, result.outcomes[0].decision], ['waiting_external', 'finalize_hold', 'wait']);
     assert.match(result.outcomes[0].reason, /^ci: /);
     assert.equal(w.squashes().length, 0, 'no merge attempt for a hold');
-    assert.equal(w.count('pr'), 1, 'only the Gate 1 precondition read the PR; the merge entry point was never reached');
+    assert.equal(w.count('pr'), 2, 'the stack check and the Gate 1 precondition read the PR; the merge entry point was never reached');
     const store = await createStateStore({ workRoot: root });
     const s = await store.load('53');
     assert.equal(s.status, 'waiting_external', 'not interrupted: the issue is picked up again');
@@ -386,9 +386,9 @@ function productionWorld(overrides = {}) {
   };
   w.github = {
     ...w.github,
-    async getPullRequest(pr) {
+    async setBase() {}, async getPullRequest(pr) {
       w.calls.push(`pr:${pr}`);
-      return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : REVERT_SHA, files: w.state.changedFiles };
+      return { body: '', state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : REVERT_SHA, files: w.state.changedFiles };
     },
     async squashMerge(pr, options) { w.calls.push(['squash', pr, options]); return structuredClone(w.state.squashResult); },
     async mainStatus() {

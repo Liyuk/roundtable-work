@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nextMergeable, mergeOne } from '../../runtime/lib/merge-order.mjs';
+import { nextMergeable, mergeOne, retargetAndMerge, stackedOn } from '../../runtime/lib/merge-order.mjs';
 
 // Scripted fakes: `syncs` is the queue of mergeBase outcomes (default up-to-date); each push moves the head.
 function fakeGit(syncs = []) {
@@ -105,5 +105,47 @@ test('two PRs green on an old base merge one at a time; the second is re-checked
   assert.deepEqual(calls, [
     ['mergeBase', 'main'], ['checks', 'head-0'], ['mergeBase', 'main'], ['merge', 41, 'head-0'], ['cleanup', '41'],
     ['mergeBase', 'main'], ['push'], ['checks', 'head-1'], ['mergeBase', 'main'], ['merge', 42, 'head-1'], ['cleanup', '42'],
+  ]);
+});
+
+test('stackedOn parses the upstream named by `Stacked on #N`', () => {
+  assert.deepEqual(stackedOn('Stacked on #7'), [7]);
+  assert.deepEqual(stackedOn('Depends on #7'), []);
+  assert.deepEqual(stackedOn(), []);
+});
+
+test('a Stacked on downstream waits for its upstream to merge', () => {
+  const prs = [{ number: 51, body: 'Stacked on #50' }];
+  assert.equal(nextMergeable(prs, new Set()), null);
+  assert.equal(nextMergeable(prs, new Set([50])).number, 51);
+});
+
+test('a downstream is never returned while its upstream is open', () => {
+  // An open upstream is not in `merged`, so its downstream waits.
+  const prs = [{ number: 60, body: '' }, { number: 61, body: 'Stacked on #60' }];
+  assert.equal(nextMergeable(prs.slice(1), new Set()), null);
+});
+
+test('a downstream is never returned while its upstream is closed without merge', () => {
+  // A closed-unmerged upstream never enters `merged`, so its downstream stays unmergeable.
+  const prs = [{ number: 62, body: 'Stacked on #60' }];
+  assert.equal(nextMergeable(prs, new Set()), null);
+});
+
+test('a downstream is never returned while its upstream is blocked', () => {
+  // A blocked upstream (waiting on #69) is not merged, so its downstream waits behind it.
+  const blocked = [{ number: 70, body: 'Blocked by #69' }, { number: 71, body: 'Stacked on #70' }];
+  assert.equal(nextMergeable(blocked.slice(1), new Set()), null);
+  assert.equal(nextMergeable(blocked, new Set([69])).number, 70);
+  assert.equal(nextMergeable(blocked.slice(1), new Set([69])), null);
+});
+
+test('retargetAndMerge sets the base first, then catches up, checks the new head and merges it', async () => {
+  const { git, calls } = fakeGit(['clean', 'up-to-date']);
+  const github = { async setBase(pr, base) { calls.push(['setBase', pr, base]); } };
+  const result = await retargetAndMerge({ github, pr: 61, base: 'main', issue: '61', git, checks: fakeGates(calls), merge: merge(calls), cleanup: cleanup(calls) });
+  assert.deepEqual(result, { merged: true });
+  assert.deepEqual(calls, [
+    ['setBase', 61, 'main'], ['mergeBase', 'main'], ['push'], ['checks', 'head-1'], ['mergeBase', 'main'], ['merge', 61, 'head-1'], ['cleanup', '61'],
   ]);
 });

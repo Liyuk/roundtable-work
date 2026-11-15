@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { assertSafeId, createConfinement } from './paths.mjs';
 import { acquireLock } from './lock.mjs';
-import { mergeOne } from './merge-order.mjs';
+import { mergeOne, retargetAndMerge } from './merge-order.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -116,11 +116,12 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
  * with a normal push, which git refuses unless it fast-forwards the remote branch. A conflicting merge is aborted and
  * returns `{ stop: 'conflict' }` with nothing pushed. A repository without an `origin` remote has no base to sync
  * with, so it is left as it is. The checks and merge steps of `mergeOne` are no-ops here: the gates run next.
+ * With `github` and `pr` (a stacked pull request whose upstreams merged) the base is first set through `github.setBase`.
  */
-export async function syncWithBase({ path, id, base }) {
+export async function syncWithBase({ path, id, base, github, pr }) {
   const git = async (...args) => (await execFile('git', ['-C', path, ...args], { maxBuffer: 1024 * 1024 })).stdout.trim();
   if (!(await git('remote')).split('\n').includes('origin')) return {};
-  return mergeOne({
+  const step = {
     issue: id, pr: null, base,
     git: {
       async mergeBase(name) {
@@ -134,5 +135,6 @@ export async function syncWithBase({ path, id, base }) {
       head: () => git('rev-parse', 'HEAD'),
     },
     checks: { run: async () => true }, merge: async () => true, cleanup: async () => {},
-  });
+  };
+  return github ? retargetAndMerge({ github, ...step, pr }) : mergeOne(step);
 }
