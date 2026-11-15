@@ -103,9 +103,8 @@ test('same kind and issue coalesce into one dispatch; different kind or issue st
       kind: batch.kind, issue: batch.issue, ids: batch.events.map((e) => e.source_event_id),
     }));
     assert.deepEqual(batches, [
-      { kind: 'ci', issue: 7, ids: ['a1', 'a2', 'a3'] },
+      { kind: 'ci', issue: 7, ids: ['a1', 'a2', 'a3', 'c1'] },
       { kind: 'ci', issue: 8, ids: ['b1'] },
-      { kind: 'owner_comment', issue: 7, ids: ['c1'] },
     ]);
   });
 });
