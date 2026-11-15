@@ -1,5 +1,6 @@
 import { safetyFiles } from './safety.mjs';
 import { ledgerEntry } from './state.mjs';
+import { ciAllowsMerge } from './local-checks.mjs';
 import { MERGE_MODES } from './merge-mode.mjs';
 
 const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
@@ -15,7 +16,7 @@ export class ApprovalRequired extends Error {
 }
 
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
-export function createMergeEntryPoint({ github, gateState, store, tierOf, mode = 'dry-run' }) {
+export function createMergeEntryPoint({ github, gateState, store, tierOf, mode = 'dry-run', localChecks = { enabled: false } }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
   const resolvedMode = MERGE_MODES.includes(mode) ? mode : 'dry-run';
   for (const name of ['getPullRequest', 'requiredGreen', 'squashMerge']) {
@@ -36,8 +37,9 @@ export function createMergeEntryPoint({ github, gateState, store, tierOf, mode =
     // The merge record lives in the ledger: a replayed squash for the same head returns the recorded merge instead of merging again.
     const mergeId = `merge:${evidence.head}`;
     const dryRunId = `dry-run:${evidence.head}`;
-    if (store && ledgerEntry(await store.load(evidence.issue), mergeId)) return { replayed: true };
-    if (resolvedMode === 'dry-run' && store && ledgerEntry(await store.load(evidence.issue), dryRunId)) return { held: 'dry-run', mode: 'dry-run', replayed: true };
+    const ledger = store ? (await store.load(evidence.issue)).ledger : [];
+    if (ledgerEntry({ ledger }, mergeId)) return { replayed: true };
+    if (resolvedMode === 'dry-run' && ledgerEntry({ ledger }, dryRunId)) return { held: 'dry-run', mode: 'dry-run', replayed: true };
     const live = await github.getPullRequest(pr);
     if (!live || live.state !== 'open' || live.draft === true || live.head !== evidence.head || live.mergeable !== true) {
       throw new Error('Pull request is not open, ready, current, and mergeable');
@@ -55,7 +57,7 @@ export function createMergeEntryPoint({ github, gateState, store, tierOf, mode =
       throw new Error('Safety-file approval is missing or stale for the current head and tree');
     }
     const checks = await github.requiredGreen(pr);
-    if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
+    if (!ciAllowsMerge({ checks, enabled: localChecks.enabled, ledger, head: live.head })) throw new Error('Required CI is red or pending');
     const tier = tierOf ? await tierOf(evidence, live) : null;
     if (tier?.tier === 'approve-first') throw new ApprovalRequired(tier.reasons);
     // owner and dry-run hold the merge: no provider squash, and no merge record.
