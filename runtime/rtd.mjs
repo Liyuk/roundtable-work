@@ -30,6 +30,7 @@ import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
 import { openTimers } from './lib/event-timers.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
@@ -1096,7 +1097,7 @@ async function main(argv) {
     const wake = createWakeSignal();
     const code = await runLoop({ pass: async ({ workers }) => {
       await cycleSteps({ root: workspace, inbox: openInbox(workspace, { onWrite: () => wake.notify() }), timers: openTimers(workspace), reader,
-        dispatchLine: (batch) => console.error(JSON.stringify({ event: 'dispatch_line', issue: batch.issue, kinds: batch.events.map((e) => e.kind) })) });
+        dispatchLine: makeDispatchLine({ root: workspace, owner: ownerOf(args.repo) }) });
       console.log(JSON.stringify(await pass(workers)));
       // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
       await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
