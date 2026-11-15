@@ -22,6 +22,19 @@ Nothing is posted, labelled, merged or closed on GitHub. Pass `--live` only when
 
 The supervisor has its own observe-only mode, described in [supervisor.md](supervisor.md). `runtime/supervise.mjs --mode observe` (the default) reads a GitHub fixture file and records decisions in `<workspace>/.roundtable/state/supervisor-ledger.jsonl`. It does not act. It makes no network calls.
 
+## Reference modules shadow run
+
+The reference modules in [examples/operator](../examples/operator) let the loop run in shadow mode from the repository alone. They are a starting point, not a live setup: `handler.mjs` reports every phase as failed (`no implementer configured`) and `providers.mjs` stubs every method so that it throws if called. `routing.json` uses placeholder model names. Replace all three before a live run.
+
+```sh
+node runtime/rtd.mjs --work-root <workspace>/.roundtable --github --repo <owner/repo> --repo-root <repo> \
+  --handler examples/operator/handler.mjs --providers examples/operator/providers.mjs --routing examples/operator/routing.json --loop --poll-ms 50
+```
+
+- `--work-root` must be a directory named `.roundtable` for `--loop`.
+- `--poll-ms 50` is the pause between passes; choose a larger value for normal use (default `DEFAULT_POLL_MS` in [daemon-loop.mjs](../runtime/lib/daemon-loop.mjs)).
+- Without `--live` the run is shadow: each pass writes `<workspace>/.roundtable/shadow/cycle-<n>.jsonl` and makes no GitHub write. Stop it with SIGTERM.
+
 ## Cutover and rollback
 
 Run the steps in order. Steps 3 and 5 and every host unit edit are owner-only; see [Owner-only steps](#owner-only-steps).

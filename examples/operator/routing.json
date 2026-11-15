@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "windows": [
+    {
+      "id": "reference",
+      "from": "2000-01-01T00:00:00Z",
+      "to": "2100-01-01T00:00:00Z",
+      "roles": {
+        "chief": { "harness": "pi", "model": "reference-chief", "tier": "standard" },
+        "developer": { "harness": "pi", "model": "reference-developer", "tier": "standard" },
+        "fixer": { "harness": "pi", "model": "reference-fixer", "tier": "standard" },
+        "reviewer": { "harness": "pi", "model": "reference-reviewer", "tier": "strong" },
+        "researcher": { "harness": "pi", "model": "reference-researcher", "tier": "standard" },
+        "crosscheck": { "harness": "pi", "model": "reference-crosscheck", "tier": "strong" }
+      }
+    }
+  ]
+}
