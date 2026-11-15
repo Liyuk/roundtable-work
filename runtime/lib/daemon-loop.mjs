@@ -57,10 +57,12 @@ export function watchdogVerdict({ heartbeat, ledgerEntries, now, pollMs }) {
 }
 
 /**
- * Runs `pass({ workers })` once per cycle until `signal` aborts. Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass
- * does not settle within `cycleDeadlineMs`. A throwing pass writes a stopped heartbeat and rethrows.
+ * Runs `pass({ workers })` once per cycle until `signal` aborts. Each cycle first runs `prune()`, then `budget()`: when the
+ * budget resolves false the pass is not started, so no new line is admitted while the running ones finish in their own pass.
+ * Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass does not settle within `cycleDeadlineMs`. A throwing pass writes a
+ * stopped heartbeat and rethrows.
  */
-export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal, wake }) {
+export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal, wake, prune, budget }) {
   const ledger = createFreezeLedger({ store: fileLedgerStore(join(workRoot, LEDGER_PATH)) });
   const cap = createCapState(baseWorkers);
   const aborted = new Promise((resolve) => signal?.addEventListener('abort', resolve, { once: true }));
@@ -87,7 +89,12 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
     const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(DEADLINE), cycleDeadlineMs); });
     let outcome;
     try {
-      outcome = await Promise.race([pass({ workers: () => effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }) }), deadline]);
+      const cycle = async () => {
+        if (prune) await prune();
+        if (budget && !(await budget())) return null;
+        return pass({ workers: () => effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }) });
+      };
+      outcome = await Promise.race([cycle(), deadline]);
     } catch (error) {
       heartbeat('stopped', start, error);
       throw error;
