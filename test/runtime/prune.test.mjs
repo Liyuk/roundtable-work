@@ -88,8 +88,10 @@ test('RT-S6 symlinks are never followed, nothing outside the two roots is remove
   // A temp entry that is itself a symlink to an old outside directory.
   await symlink(outside, join(tmpRoot, 'rt-lock-link'));
   // A real old temp entry holding a symlink to outside: removed, but the outside file survives.
-  const real = await oldDir(join(tmpRoot, 'rt-lock-real'), 60 * MIN);
+  const real = join(tmpRoot, 'rt-lock-real');
+  await mkdir(real);
   await symlink(outside, join(real, 'inner'));
+  await aged(real, 60 * MIN);
   // An anchor repo directory that is a symlink to an outside repo with an old dead lock.
   const outsideRepo = join(outside, 'repo');
   await oldDir(join(outsideRepo, 'merge.lock.d'), 130 * MIN, [{ pid: DEAD_PID, hostId: hostId() }]);
