@@ -36,6 +36,7 @@ import { createResourceGovernor } from './lib/prune.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
 import { openActionJournal } from './lib/action-journal.mjs';
+import { loadAutonomy } from './lib/autonomy.mjs';
 import { applyActionReply } from './lib/action-replies.mjs';
 import { recordOwnerEvent } from './lib/intervention-producers.mjs';
 import { openInterventions } from './lib/interventions.mjs';
@@ -1128,8 +1129,9 @@ async function main(argv) {
       const owner = ownerOf(args.repo);
       const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
       const journal = openActionJournal(workspace, { git: autoMerge?.git, github: shadow ? createShadowGitHub(writer) : writer });
-      const dispatchLine = makeDispatchLine({ root: workspace, owner });
       const ledger = openInterventions(workspace);
+      const policy = { autonomy: (await loadAutonomy()).autonomy, journal, ledger };
+      const dispatchLine = makeDispatchLine({ root: workspace, owner, policy });
       const timers = openTimers(workspace);
       if (selfReview) ensureSelfReviewTimer(timers, selfReview.goals, Date.now());
       await cycleSteps({ root: workspace, inbox, timers, reader,
