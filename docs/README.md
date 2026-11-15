@@ -20,6 +20,7 @@ Runtime instructions are governed by the [skill directory](../.agents/skills/rou
 
 ## Practice Records
 
+- [Field cases](cases/README.md): anonymized records of real iterations (self-loop and downstream projects), with quantified findings and follow-ups.
 - [In-session multi-agent trial](../practice/2026-11-10-session-trial.md): dispatch, independent review, rejection and rework.
 - [Continuous queue trial](../practice/2026-11-10-queue-trial.md): sequential tasks and mid-course revision.
 - [Single-host trial](../practice/2026-11-10-native-harness-demo.md): dispatch, course correction and reclaiming with the same host's native tools.
