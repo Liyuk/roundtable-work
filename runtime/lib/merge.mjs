@@ -1,10 +1,11 @@
 import { safetyFiles } from './safety.mjs';
+import { ledgerEntry } from './state.mjs';
 
 const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
 const isStringArray = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
-export function createMergeEntryPoint({ github, gateState }) {
+export function createMergeEntryPoint({ github, gateState, store }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
   for (const name of ['getPullRequest', 'requiredGreen', 'squashMerge']) {
     if (typeof github[name] !== 'function') throw new TypeError(`github.${name} is required`);
@@ -21,6 +22,9 @@ export function createMergeEntryPoint({ github, gateState }) {
         !required.every((gate) => evidence.passed.includes(gate) && persisted.passed?.includes(gate))) {
       throw new Error('Gate evidence is missing or stale');
     }
+    // The merge record lives in the ledger: a replayed squash for the same head returns the recorded merge instead of merging again.
+    const mergeId = `merge:${evidence.head}`;
+    if (store && ledgerEntry(await store.load(evidence.issue), mergeId)) return { replayed: true };
     const live = await github.getPullRequest(pr);
     if (!live || live.state !== 'open' || live.draft === true || live.head !== evidence.head || live.mergeable !== true) {
       throw new Error('Pull request is not open, ready, current, and mergeable');
@@ -39,6 +43,8 @@ export function createMergeEntryPoint({ github, gateState }) {
     }
     const checks = await github.requiredGreen(pr);
     if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
-    return github.squashMerge(pr, { method: 'squash', sha: live.head });
+    const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
+    if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });
+    return merged;
   };
 }
