@@ -136,8 +136,8 @@ test('GitHub adapter uses the selected repository for each read', async () => {
 test('orders by bug, priority, self, age and extracts series', () => {
   const result = select([issue(1), issue(2, ['type:feature', 'priority:p2']), issue(3, ['type:feature', 'priority:p1']), issue(4, ['type:feature', 'priority:p0']), issue(5, ['type:bug']), issue(6, ['type:bug', 'priority:p2']), issue(7, ['type:bug', 'priority:p2', 'rt:self', 'rt:go']), issue(8, ['type:bug', 'priority:p2', 'rt:self', 'rt:go'], { createdAt: '2020-01-01T00:00:00Z', title: '[Pages] build' })]);
   assert.deepEqual(result.issues.map(i => i.id), ['8','7','6','5','4','3','2','1']);
-  assert.equal(result.issues[0].series, 'Pages');
-  assert.equal(select([issue(9, ['type:bug'], { title: '[I18N] text' }), issue(10, ['type:bug'], { title: '[RT] text' })]).issues[1].series, 'RT');
+  assert.equal(result.issues[0].series, 'pages');
+  assert.equal(select([issue(9, ['type:bug'], { title: '[I18N] text' }), issue(10, ['type:bug'], { title: '[RT] text' })]).issues[1].series, 'rt');
 });
 test('GitHub adapter only invokes read-only allowlisted commands', async () => {
   const calls = [];
