@@ -75,9 +75,12 @@ test('install --dry-run through the real CLI exits 0 and creates no unit dir', (
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /ExecStart=/);
     assertClean(r.stdout);
+  } else if (process.platform === 'darwin') {
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /<key>ProgramArguments<\/key>/);
   } else {
     assert.equal(r.status, 2, r.stderr);
-    assert.match(r.stderr, /not supported in this change/);
+    assert.match(r.stderr, /not supported on/);
   }
   await assert.rejects(access(unitDir), { code: 'ENOENT' });
 }));
