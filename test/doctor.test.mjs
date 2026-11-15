@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyProbeResult } from '../scripts/probe.mjs';
+import { HARNESSES } from '../runtime/lib/harness.mjs';
 
 const cli = fileURLToPath(new URL('../scripts/doctor.mjs', import.meta.url));
 const installer = fileURLToPath(new URL('../scripts/install.mjs', import.meta.url));
@@ -66,4 +67,26 @@ test('doctor host status distinguishes ok / not-found / failed / timeout (fake c
   assert.match(text, /codex: failed \(exited with code 3\)/);
   assert.match(text, /pi: timeout \(timed out after 5s\)/);
   assert.match(text, /dsh: not available/);
+});
+
+test('doctor adapters mirror HARNESSES, reusing the host probe (fake binaries on PATH)', { skip: process.platform === 'win32' }, (t) => {
+  const bin = mkdtempSync(join(tmpdir(), 'rtw-adapters-'));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const fake = (name, body) => { const f = join(bin, name); writeFileSync(f, `#!/bin/sh\n${body}\n`); chmodSync(f, 0o755); };
+  fake('pi', 'exit 0');
+  fake('codex', 'exit 3');
+  const opts = { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:/nonexistent` } };
+  const json = JSON.parse(execFileSync(process.execPath, [cli, '--json'], opts));
+  const by = Object.fromEntries(json.adapters.map((a) => [a.name, a]));
+  assert.equal(json.schemaVersion, 2);
+  assert.equal(json.adapters.length, Object.keys(HARNESSES).length);
+  assert.equal(by.pi.available, true);
+  assert.equal(by.codex.available, false);
+  assert.equal(by['host-agent'].available, false);
+  assert.equal(by['host-agent'].status, 'no-binary');
+  for (const name of Object.keys(HARNESSES)) assert.deepEqual(by[name].capabilities, HARNESSES[name].capabilities);
+  const text = execFileSync(process.execPath, [cli], opts);
+  assert.match(text, /^ {2}adapter pi: available$/m);
+  assert.match(text, /^ {2}adapter codex: not available$/m);
+  assert.match(text, /^ {2}adapter host-agent: not available/m);
 });

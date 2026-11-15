@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { exists, harnessDirs, skillSource, skillVersion } from './install.mjs';
 import { classifyProbeResult } from './probe.mjs';
+import { HARNESSES } from '../runtime/lib/harness.mjs';
 
 const { values } = parseArgs({ options: { json: { type: 'boolean', default: false }, target: { type: 'string' } } });
 
@@ -27,6 +28,14 @@ const hosts = commands.map(([name, command, args]) => {
   reasons.set(name, reason);
   const available = probeResult.available;
   return { name, available, version: available ? (run.stdout || '').trim().split('\n')[0].slice(0, 200) : null, status };
+});
+
+// Adapters reuse the host probe of the same-named binary; host-agent runs in-process and has no binary to probe.
+const adapters = Object.values(HARNESSES).map(({ name, capabilities }) => {
+  const host = hosts.find((h) => h.name === name);
+  return host
+    ? { name, available: host.available, capabilities }
+    : { name, available: false, capabilities, status: 'no-binary', reason: 'runs in-process; no binary to probe' };
 });
 
 async function inspect(target) {
@@ -59,6 +68,7 @@ async function inspect(target) {
 const report = {
   schemaVersion: 2,
   hosts,
+  adapters,
   backgroundWakeup: 'unverified',
   persistentDelegation: 'unverified',
   modelAuthentication: 'not-checked',
@@ -72,6 +82,7 @@ else {
     const detail = host.status === 'not-found' ? 'not available' : `${host.status} (${reasons.get(host.name)})`;
     console.log(`  ${host.name}: ${host.available ? host.version || 'available' : detail}`);
   }
+  for (const a of adapters) console.log(`  adapter ${a.name}: ${a.available ? 'available' : 'not available'}`);
   const inst = report.installation;
   if (inst) {
     console.log(`Installation in ${inst.target} (source skill ${inst.sourceVersion}):`);
