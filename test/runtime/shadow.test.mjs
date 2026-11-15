@@ -56,7 +56,7 @@ async function resumedCycle({ root, repo, workRoot, githubClient }) {
   const queue = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue] }, { includeRunning: true });
   await (await createWorktreeManager({ repoRoot: repo, workRoot })).create('14');
   const store = await createStateStore({ workRoot, now: () => 1000 });
-  await store.update('14', (s) => { s.status = 'working'; s.phase = 'testing'; s.checkpoint = { phase: 'developing', at: 1 }; s.lease = { owner: 'previous', expiresAt: 1 }; s.heartbeatAt = 1; });
+  await store.update('14', (s) => { s.status = 'working'; s.phase = 'testing'; s.checkpoint = { phase: 'developing', at: 1 }; s.lease = { owner: 'previous', expiresAt: 1 }; s.heartbeatAt = 1; s.ledger.push({ id: 'claim', type: 'claimed' }); });
   return runQueue({ workRoot, repoRoot: repo, githubClient, queue, now: () => 1000000, handler });
 }
 

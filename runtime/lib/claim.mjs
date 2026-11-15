@@ -1,4 +1,5 @@
 import { acquireLock } from './lock.mjs';
+import { ledgerEntry } from './state.mjs';
 import { assertSafeId } from './paths.mjs';
 
 export const CLAIM_LABEL = 'rt:running';
@@ -7,17 +8,17 @@ export const CLAIM_MARKER = '<!-- rt:claim -->';
 const labelsOf = (issue) => (issue.labels ?? []).map((label) => typeof label === 'string' ? label : label.name);
 
 /** Coordinate idempotent claims and stale orphan recovery using an injected tracker client. */
-export function createClaimCoordinator({ client, stateRoot, repoRoot, loadState, isStale, isInFlight, worktreeManager, resume, beforeClaim = async () => {}, afterClaim = async () => {}, canResume = (state) => state.status === 'working', workerSlot = 1, now = Date.now }) {
+export function createClaimCoordinator({ client, stateRoot, repoRoot, store, loadState, isStale, isInFlight, worktreeManager, resume, beforeClaim = async () => {}, afterClaim = async () => {}, canResume = (state) => state.status === 'working', workerSlot = 1, now = Date.now }) {
   if (!client || !stateRoot || typeof loadState !== 'function' || typeof resume !== 'function') throw new TypeError('client, stateRoot, loadState, and resume are required');
   const inFlight = isInFlight ?? (worktreeManager ? async (issue) => {
     const status = await worktreeManager.inspect(issue.number ?? issue.id);
     return status.heldLock || (!labelsOf(issue).includes(CLAIM_LABEL) && status.liveWorktree);
   } : async () => false);
-  return { tick: (issues) => tickClaims({ client, stateRoot, repoRoot, issues, loadState, isStale, isInFlight: inFlight, resume, beforeClaim, afterClaim, canResume, workerSlot, now }) };
+  return { tick: (issues) => tickClaims({ client, stateRoot, repoRoot, issues, store, loadState, isStale, isInFlight: inFlight, resume, beforeClaim, afterClaim, canResume, workerSlot, now }) };
 }
 
-export async function tickClaims({ client, stateRoot, repoRoot, issues, loadState, isStale = async (state) => !state.lease || state.lease.expiresAt <= Date.now(), isInFlight = async () => false, resume, beforeClaim = async () => {}, afterClaim = async () => {}, canResume = (state) => state.status === 'working', workerSlot = 1, now = Date.now }) {
-  if (!client || !Array.isArray(issues) || typeof loadState !== 'function') throw new TypeError('client, issues, and loadState are required');
+export async function tickClaims({ client, stateRoot, repoRoot, issues, store, loadState, isStale = async (state) => !state.lease || state.lease.expiresAt <= Date.now(), isInFlight = async () => false, resume, beforeClaim = async () => {}, afterClaim = async () => {}, canResume = (state) => state.status === 'working', workerSlot = 1, now = Date.now }) {
+  if (!client || !Array.isArray(issues) || typeof loadState !== 'function' || !store) throw new TypeError('client, issues, store, and loadState are required');
   const result = { claimed: 0, resumed: 0, skipped: [] };
   for (const issue of issues) {
     const id = assertSafeId(issue.number ?? issue.id);
@@ -26,7 +27,8 @@ export async function tickClaims({ client, stateRoot, repoRoot, issues, loadStat
     if (!lock.acquired) { result.skipped.push({ id, reason: 'claim_locked' }); continue; }
     try {
       const state = await loadState(id);
-      if (labelsOf(issue).includes(CLAIM_LABEL)) {
+      // The ledger's claim entry decides "already claimed"; the rt:running label is only a projection of it.
+      if (ledgerEntry(state, 'claim')) {
         if (await isInFlight(issue, state)) { result.skipped.push({ id, reason: 'in_flight' }); continue; }
         if (canResume(state) && await isStale(state)) {
           if (typeof resume !== 'function') throw new TypeError('resume is required for stale claims');
@@ -35,11 +37,15 @@ export async function tickClaims({ client, stateRoot, repoRoot, issues, loadStat
         } else result.skipped.push({ id, reason: 'already_claimed' });
         continue;
       }
+      // A label with no ledger claim is not a claim: it cannot start work, and the projection corrects it.
+      if (labelsOf(issue).includes(CLAIM_LABEL)) { result.skipped.push({ id, reason: 'orphan_label' }); continue; }
       if (await isInFlight(issue, state)) { result.skipped.push({ id, reason: 'in_flight' }); continue; }
       // Refresh comments before writing so repeated ticks (and a restarted daemon) preserve one marker.
       const comments = typeof client.listComments === 'function' ? await client.listComments(issue.number ?? issue.id) : issue.comments ?? [];
       const hasMarker = comments.some((comment) => String(comment.body ?? comment).includes(CLAIM_MARKER));
       await beforeClaim(issue, state);
+      // The ledger claim is written first and is the decision; the label and marker comment are its projections.
+      await store.append(id, { id: 'claim', type: 'claimed' });
       await client.addLabel(issue.number ?? issue.id, CLAIM_LABEL);
       if (!hasMarker) await client.createComment(issue.number ?? issue.id, `${CLAIM_MARKER}\nClaimed by the roundtable loop (worker slot ${workerSlot}).`);
       await afterClaim(issue, state);
