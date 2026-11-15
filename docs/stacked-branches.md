@@ -28,3 +28,7 @@ A stacked change is a downstream pull request whose work builds on an upstream p
 
 - A closed (without merge) or blocked upstream means the downstream pull request is never merged.
 - A downstream whose upstream is still open waits; it is not retargeted or merged early.
+
+## Missing body
+
+- A pull request whose body cannot be read is held, never treated as unstacked: the hold waits until the body is readable.

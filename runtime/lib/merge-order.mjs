@@ -11,6 +11,24 @@ export function nextMergeable(prs, merged) {
 }
 
 /**
+ * Stack state of `pr` from the injected `github.getPullRequest`: `{ stacked: false }` when its body names no upstream;
+ * otherwise `ready` only when every upstream it names is merged (`nextMergeable`). A closed or open upstream is not ready.
+ * A missing or unreadable body fails closed: `{ stacked: true, ready: false }`, never `{ stacked: false }`.
+ */
+export async function stackStatus(github, pr) {
+  const { body } = await github.getPullRequest(pr);
+  if (typeof body !== 'string') return { stacked: true, ready: false };
+  const upstreams = stackedOn(body);
+  if (!upstreams.length) return { stacked: false };
+  const merged = new Set();
+  for (const n of upstreams) {
+    const up = await github.getPullRequest(n);
+    if (up.state === 'merged' || up.merged === true) merged.add(n);
+  }
+  return { stacked: true, ready: nextMergeable([{ number: pr, body }], merged) !== null };
+}
+
+/**
  * Sync `pr`'s head with `base` (merge, never rebase or force), re-check every new head, and merge only the head that
  * passed the checks while the base was already in it. `merge({ pr, head })` returns false when the live head moved.
  */

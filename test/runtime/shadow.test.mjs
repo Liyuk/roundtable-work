@@ -39,6 +39,7 @@ function countingClient(issue) {
   const client = {
     listComments: record('listComments', async () => issue.comments),
     listOpenPullRequests: record('listOpenPullRequests', async () => []),
+    setBase: record('setBase', async () => {}),
     getPullRequest: record('getPullRequest', async () => ({ state: 'open' })),
     createIssue: record('createIssue', async () => ({ number: 99 })),
     addLabel: record('addLabel', async () => {}),
@@ -158,7 +159,7 @@ console.log(JSON.stringify(answers[key]));
     await writeFile(providers, `const stub = () => { throw new Error('not reached in shadow'); };
 export default {
   context: { get: stub }, gates: { gate0: stub, reviewer: stub, crossCheck: stub },
-  github: { getPullRequest: stub, requiredGreen: stub, squashMerge: stub, addLabel: stub, recordedEscalationApproval: stub, mainStatus: stub, openRevertPullRequest: stub, createIssue: stub, createComment: stub },
+  github: { setBase: stub, getPullRequest: stub, requiredGreen: stub, squashMerge: stub, addLabel: stub, recordedEscalationApproval: stub, mainStatus: stub, openRevertPullRequest: stub, createIssue: stub, createComment: stub },
   git: { createRevert: stub },
   observation: { issue: { get: stub }, worktree: { inspect: stub }, git: { head: stub, commit: stub }, evidence: { checks: stub, review: stub } },
 };

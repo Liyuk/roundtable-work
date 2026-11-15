@@ -85,7 +85,7 @@ function world(worktree, { ci = true } = {}) {
       crossCheck: async () => true,
     },
     github: {
-      getPullRequest: async () => ({ state: 'open', draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
+      getPullRequest: async () => ({ state: 'open', body: '', draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
       requiredGreen: async () => (state.ci === true ? true : { green: false, status: state.ci }),
       squashMerge: async (_pr, options) => { squashes.push(options); return { mergeCommit: 'abcdef0123456789' }; },
       addLabel: async () => {},

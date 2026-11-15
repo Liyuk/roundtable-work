@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mergeOne, nextMergeable, retargetAndMerge } from '../../runtime/lib/merge-order.mjs';
+import { mergeOne, nextMergeable, retargetAndMerge, stackStatus } from '../../runtime/lib/merge-order.mjs';
 import { syncWithBase } from '../../runtime/lib/worktree.mjs';
 
 // Real local git: a bare `origin`, one clone per PR branch, and a fake GitHub client that squash-merges into main.
@@ -43,8 +43,13 @@ function fakeGitHub({ root, origin }) {
   const gh = {
     prs: [],
     merged: new Set(),
+    closed: new Set(),
     calls: [],
     find(n) { return gh.prs.find((pr) => pr.number === n); },
+    async getPullRequest(n) {
+      const pr = gh.find(n);
+      return { number: n, base: pr.base, body: pr.body, state: gh.merged.has(n) ? 'merged' : gh.closed.has(n) ? 'closed' : 'open' };
+    },
     async setBase(n, base) { gh.calls.push(['setBase', n, base]); gh.find(n).base = base; },
     headOf(n) { return git(origin, 'rev-parse', `refs/heads/${gh.find(n).branch}`); },
     squashMerge(n) {
@@ -166,4 +171,89 @@ test('syncWithBase on a conflicting catch-up stops with the worktree clean, no m
   assert.equal(git(path, 'status', '--porcelain'), '');
   assert.throws(() => git(path, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'));
   assert.equal(git(fx.origin, 'rev-parse', 'refs/heads/rt/86-pi'), before, 'nothing pushed');
+});
+
+test('stackStatus: a stacked PR is ready only once every named upstream merged; a closed upstream never is', async () => {
+  const fx = fixture();
+  const gh = fakeGitHub(fx);
+  gh.prs.push({ number: 61, branch: 'rt/A', base: 'main', body: '' });
+  gh.prs.push({ number: 62, branch: 'rt/B', base: 'rt/A', body: 'Stacked on #61' });
+  assert.deepEqual(await stackStatus(gh, 61), { stacked: false });
+  assert.deepEqual(await stackStatus(gh, 62), { stacked: true, ready: false });
+  gh.merged.add(61);
+  assert.deepEqual(await stackStatus(gh, 62), { stacked: true, ready: true });
+  gh.merged.delete(61); gh.closed.add(61);
+  assert.deepEqual(await stackStatus(gh, 62), { stacked: true, ready: false });
+});
+
+test('stackStatus fails closed when the body is missing: a hold, never treated as not stacked', async () => {
+  const fx = fixture();
+  const gh = fakeGitHub(fx);
+  gh.prs.push({ number: 62, branch: 'rt/B', base: 'rt/A', body: 'Stacked on #61' });
+  gh.getPullRequest = async (n) => ({ number: n, base: 'rt/A', state: 'open' });
+  assert.deepEqual(await stackStatus(gh, 62), { stacked: true, ready: false });
+});
+
+test('the loop wiring: syncWithBase with github and pr retargets the downstream to main, catches up by merge, and merges A, B, C in order', async () => {
+  const fx = fixture();
+  const gh = fakeGitHub(fx);
+  const a = branchOn(fx, 'rt/A', 'origin/main', 'a.txt', 'a\n');
+  const b = branchOn(fx, 'rt/B', 'origin/rt/A', 'b.txt', 'b\n');
+  const c = branchOn(fx, 'rt/C', 'origin/rt/B', 'c.txt', 'c\n');
+  gh.prs.push({ number: 61, branch: 'rt/A', base: 'main', body: '' });
+  gh.prs.push({ number: 62, branch: 'rt/B', base: 'rt/A', body: 'Stacked on #61' });
+  gh.prs.push({ number: 63, branch: 'rt/C', base: 'rt/B', body: 'Stacked on #62' });
+  const dirs = { 61: a, 62: b, 63: c };
+  const sync = (pr, stacked) => syncWithBase({ path: dirs[pr], id: String(pr), base: 'main', ...(stacked ? { github: gh, pr } : {}) });
+
+  // Downstream before upstream is merged: not ready, nothing retargeted, nothing merged.
+  assert.deepEqual(await stackStatus(gh, 62), { stacked: true, ready: false });
+  assert.deepEqual(gh.calls.filter((call) => call[0] === 'setBase'), []);
+
+  for (const n of [61, 62, 63]) {
+    const status = await stackStatus(gh, n);
+    if (status.stacked) assert.equal(status.ready, true, `#${n} is ready`);
+    const before = gh.headOf(n);
+    assert.deepEqual(await sync(n, status.stacked), { merged: true });
+    if (n !== 61) {
+      assert.equal(isAncestor(fx.origin, before, gh.headOf(n)), true, 'catch-up is a merge, no force push');
+      assert.equal(git(fx.origin, 'rev-list', '--parents', '-n1', gh.headOf(n)).split(' ').length, 3);
+    }
+    gh.squashMerge(n);
+  }
+  assert.deepEqual(gh.calls.filter((call) => call[0] === 'setBase'), [['setBase', 62, 'main'], ['setBase', 63, 'main']]);
+  assert.deepEqual(gh.calls.filter((call) => call[0] === 'squash').map((call) => call[1]), [61, 62, 63]);
+  assert.equal(git(fx.origin, 'show', 'refs/heads/main:c.txt'), 'c');
+});
+
+test('the loop wiring: a downstream whose upstream is closed or blocked is never retargeted or merged', async () => {
+  const fx = fixture();
+  const gh = fakeGitHub(fx);
+  branchOn(fx, 'rt/A', 'origin/main', 'a.txt', 'a\n');
+  branchOn(fx, 'rt/B', 'origin/rt/A', 'b.txt', 'b\n');
+  gh.prs.push({ number: 61, branch: 'rt/A', base: 'main', body: '' });
+  gh.prs.push({ number: 62, branch: 'rt/B', base: 'rt/A', body: 'Stacked on #61' });
+  gh.closed.add(61);
+  assert.deepEqual(await stackStatus(gh, 62), { stacked: true, ready: false });
+  assert.equal(gh.merged.has(62), false);
+  assert.deepEqual(gh.calls, [], 'no setBase, no squash');
+});
+
+test('the loop wiring: a conflicting catch-up after retargeting stops with nothing pushed and nothing merged', async () => {
+  const fx = fixture();
+  const gh = fakeGitHub(fx);
+  const a = branchOn(fx, 'rt/A', 'origin/main', 'a.txt', 'a\n');
+  const b = branchOn(fx, 'rt/B', 'origin/rt/A', 'shared.txt', 'branch side\n');
+  gh.prs.push({ number: 61, branch: 'rt/A', base: 'main', body: '' });
+  gh.prs.push({ number: 62, branch: 'rt/B', base: 'rt/A', body: 'Stacked on #61' });
+  await land({ gh, dir: a, pr: gh.prs[0], checks: [] });
+  git(fx.seed, 'pull', '-q', 'origin', 'main');
+  writeFileSync(join(fx.seed, 'shared.txt'), 'main side\n');
+  git(fx.seed, 'add', '-A'); git(fx.seed, 'commit', '-q', '-m', 'main side'); git(fx.seed, 'push', '-q', 'origin', 'main');
+
+  const before = gh.headOf(62);
+  assert.deepEqual(await syncWithBase({ path: b, id: '62', base: 'main', github: gh, pr: 62 }), { stop: 'conflict' });
+  assert.deepEqual(gh.calls.filter((call) => call[0] === 'setBase'), [['setBase', 62, 'main']]);
+  assert.equal(gh.headOf(62), before, 'nothing pushed');
+  assert.equal(gh.merged.has(62), false);
 });

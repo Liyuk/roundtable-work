@@ -3,13 +3,15 @@
  *
  * context.get receives the worker completion arguments, or { recovery: { pr, issue, mergeCommit } }
  * for a revert, and returns { pr, head, tree, highRisk, changedFiles }. Gate providers follow the
- * runGates contract. github.getPullRequest must return { state, draft, head, mergeable, files } and,
- * for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where
- * files is the pull request's changed paths: the merge entry point derives the safety-file set from it
- * and fails closed when it is absent; the monitor uses `state: 'merged'`/`merged: true` with an optional
+ * runGates contract. github.getPullRequest must return { state, draft, head, mergeable, files, body } and,
+ * for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where files is the pull
+ * request's changed paths: the merge entry point derives the safety-file set from it and fails closed when it is
+ * absent; body is the pull request description (a string: a stacked hold reads `Stacked on #N` from it and fails
+ * closed when it is missing). The monitor uses `state: 'merged'`/`merged: true` with an optional
  * `mergeCommit` SHA to resolve a merge whose outcome was unknown, and a closed pull request must report
  * `merged: false` to be treated as unmerged. github.squashMerge resolves only after a successful squash and returns
- * { mergeCommit: <SHA> }; github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
+ * { mergeCommit: <SHA> }. github.setBase(pr, base) updates the pull request's base through the provider.
+ * github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
  * github.requiredGreen returns `true` or `{ green, status? }`, where `status: 'cancelled'` means cancelled-only
  * required CI; a provider may also expose the optional `rerunCancelled(pr)` used to re-run such CI. That method is
  * optional by design: without it a cancelled answer keeps today's fail-closed behaviour.
@@ -22,7 +24,7 @@
 export function createProductionAdapter(providers = {}) {
   for (const [name, methods] of Object.entries({
     context: ['get'], gates: ['gate0', 'reviewer', 'crossCheck'],
-    github: ['getPullRequest', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'],
+    github: ['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'],
     git: ['createRevert'],
   })) {
     for (const method of methods) {
