@@ -612,32 +612,36 @@ export async function acquireLock({
    */
   async function pruneRepos() {
     const names = (await fs.readdir(ctx.locks).catch(() => []))
-      .filter((n) => n !== repoId && !n.startsWith(IDENTITY_PREFIX))
-      .slice(0, PRUNE_LIMIT);
-    for (const name of names) await pruneRepo(name).catch(() => {});
+      .filter((n) => n !== repoId && !n.startsWith(IDENTITY_PREFIX));
+    let removed = 0;
+    for (const name of names) {
+      if (removed === PRUNE_LIMIT) break;
+      if (await pruneRepo(name).catch(() => false)) removed++;
+    }
   }
 
+  /** Resolves true only when the repo directory was removed. */
   async function pruneRepo(name) {
     const dir = join(ctx.locks, name);
     const st = await fs.lstat(dir);
-    if (!st.isDirectory()) return;
+    if (!st.isDirectory()) return false;
     const marker = join(ctx.locks, `${IDENTITY_PREFIX}${name}.json`);
     const id = await readIdentityFile(fs, marker);
-    if (!id.ok || id.missing || typeof id.value.root !== 'string' || id.value.dev !== st.dev || id.value.ino !== st.ino) return;
-    if (!(await fs.stat(id.value.root).then(() => false, (err) => err.code === 'ENOENT'))) return;
+    if (!id.ok || id.missing || typeof id.value.root !== 'string' || id.value.dev !== st.dev || id.value.ino !== st.ino) return false;
+    if (!(await fs.stat(id.value.root).then(() => false, (err) => err.code === 'ENOENT'))) return false;
     const files = [];
     const subdirs = [];
     for (const sub of await fs.readdir(dir)) {
       const subPath = join(dir, sub);
-      if (!(await fs.lstat(subPath)).isDirectory()) return;
+      if (!(await fs.lstat(subPath)).isDirectory()) return false;
       subdirs.push(subPath);
       for (const entry of await fs.readdir(subPath)) {
         const path = join(subPath, entry);
-        if (!(await fs.lstat(path)).isFile()) return;
+        if (!(await fs.lstat(path)).isFile()) return false;
         if (EPOCH_NAME.test(entry)) {
           const cur = await readRecord(path);
-          if (!cur.ok || !cur.holder || !isStale(cur.holder)) return;
-        } else if (!entry.startsWith(TMP_PREFIX)) return;
+          if (!cur.ok || !cur.holder || !isStale(cur.holder)) return false;
+        } else if (!entry.startsWith(TMP_PREFIX)) return false;
         files.push(path);
       }
     }
@@ -645,6 +649,7 @@ export async function acquireLock({
     for (const subPath of subdirs) await fs.rmdir(subPath);
     await fs.rmdir(dir);
     await fs.unlink(marker);
+    return true;
   }
 
   async function gc(newest) {

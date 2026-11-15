@@ -902,8 +902,8 @@ test('concurrent first acquisitions in a fresh anchor all succeed', async () => 
   }
 });
 
-// ---- Pruning of stale per-repo directories under locks/ (each test gets its own anchor: the scan is bounded to
-// 16 candidates per call, so a shared anchor full of earlier tests' dirs would make the outcome order-dependent)
+// ---- Pruning of stale per-repo directories under locks/ (each test gets its own anchor: the scan stops after
+// PRUNE_LIMIT (16) removals, so a shared anchor full of earlier tests' dirs would make the outcome order-dependent)
 const withAnchor = (fn) => withDir(async (dir) => {
   const anchorRoot = await tmp();
   try { await fn(dir, anchorRoot); } finally { await rm(anchorRoot, { recursive: true, force: true }); }
@@ -1032,4 +1032,35 @@ test('prune: a legacy marker without root is backfilled on the next open, and an
   assert.equal(h3.acquired, true);
   assert.equal(await exists(backedRepo), false, 'the backfilled dir is pruned once its root is gone');
   assert.equal(await h3.release(), true);
+}));
+
+test('prune: a stale repo dir sorted after the first 16 entries is still removed', withAnchor(async (_dir, anchorRoot) => {
+  // 40 kept repo roots (they stay on disk) so that most stale dirs land after readdir's first 16 entries.
+  const roots = [];
+  try {
+    for (let i = 0; i < 40; i++) {
+      const kept = await tmp();
+      roots.push(kept);
+      assert.equal(await (await acq(kept, anchorRoot)).release(), true);
+    }
+    // readdir order is filesystem-defined: retry until the stale dir is outside the first 16 entries.
+    let repo;
+    for (let attempt = 0; ; attempt++) {
+      assert.ok(attempt < 100, 'could not place a stale dir past the first 16 entries');
+      const stale = await tmp();
+      repo = await staleRepo(stale, anchorRoot);
+      const names = (await readdir(dirname(repo))).filter((n) => !n.startsWith('.repo-'));
+      if (names.indexOf(basename(repo)) >= 16) break;
+      await rm(repo, { recursive: true, force: true });
+      await rm(markerOf(stale, anchorRoot), { force: true });
+    }
+    const other = await tmp();
+    roots.push(other);
+    const h = await acq(other, anchorRoot);
+    assert.equal(h.acquired, true);
+    assert.equal(await exists(repo), false, 'the stale repo directory is removed');
+    assert.equal(await h.release(), true);
+  } finally {
+    for (const root of roots) await rm(root, { recursive: true, force: true });
+  }
 }));
