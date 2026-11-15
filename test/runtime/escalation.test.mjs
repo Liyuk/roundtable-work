@@ -1,8 +1,7 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +12,7 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const CLI = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-escalation-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
+after(() => rm(ANCHOR, { recursive: true, force: true }));
 
 async function fixture(fn) {
   const scratch = join(ROOT, '.roundtable/scratch/98-dev-01');
