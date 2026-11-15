@@ -17,9 +17,12 @@ export function deriveLabelState({ issue, state, highRisk = false }) {
 }
 
 /** Correct the managed labels of one issue to the derived state; log a `label_corrected` event when anything changed. */
-export async function projectLabels({ number, observations, client, store, now = Date.now }) {
-  const desired = deriveLabelState(observations);
-  const current = observations.issue.labels.filter((label) => MANAGED_LABELS.includes(label));
+export async function projectLabels({ number, issue, highRisk = false, client, store, now = Date.now }) {
+  // The state is read from the same store the projection writes to: there is no second copy to drift from.
+  const state = await store.load(String(number));
+  const labels = issue.labels.map((label) => typeof label === 'string' ? label : label.name);
+  const desired = deriveLabelState({ issue: { ...issue, labels }, state, highRisk });
+  const current = labels.filter((label) => MANAGED_LABELS.includes(label));
   const added = desired.filter((label) => !current.includes(label));
   const removed = current.filter((label) => !desired.includes(label));
   for (const label of removed) await client.removeLabel(number, label);

@@ -80,7 +80,11 @@ export const freshState = (id) => ({
   artifactHistory: [],
   lockEpoch: 0,
   recovery: null,
+  ledger: [],
 });
+
+/** Pure: the ledger entry with this id, or null. Claims and merges are derived from this ledger only. */
+export const ledgerEntry = (state, id) => state.ledger.find((entry) => entry.id === id) ?? null;
 
 /**
  * Durable per-issue state under `<workRoot>/state/`. Epoch owners publish to separate files;
@@ -286,6 +290,12 @@ export async function createStateStore({
     }),
 
     setEvent: (id, type, detail) => update(id, (s) => event(s, type, detail)),
+
+    /** Append one entry to the ledger. A repeated `entry.id` is a no-op, so a replayed step never records twice. */
+    append: (id, entry) => update(id, (s) => {
+      if (s.ledger.some((e) => e.id === entry.id)) return;
+      s.ledger.push({ ...entry, at: now() });
+    }),
 
     bump: (id, key) => update(id, (s) => {
       if (!(key in s.attempts)) throw new TypeError(`Unknown counter: ${key}`);
