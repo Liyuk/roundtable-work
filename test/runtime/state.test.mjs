@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CorruptStateError, createStateStore, freshState, normalizeState } from '../../runtime/lib/state.mjs';
@@ -24,6 +24,20 @@ test('fresh state has zeroed counters; updates persist across store instances', 
     assert.equal(again.checkpoint.phase, 'developing');
     assert.equal(again.changedFiles, 3);
     assert.equal(again.lastEvent.type, 'checkpoint');
+  } finally { await cleanup(); }
+});
+
+test('state reads decode invalid or truncated UTF-8 with replacement and never throw', async () => {
+  const { root, store, cleanup } = await setup();
+  try {
+    await mkdir(join(root, 'state'));
+    const stateFile = (id, detail) => writeFile(join(root, 'state', `${id}.json`), Buffer.concat([
+      Buffer.from('{"status":"queued","lastEvent":{"type":"note","detail":"'), detail, Buffer.from('"}}'),
+    ]));
+    await stateFile('1', Buffer.from('€').subarray(0, 2)); // U+20AC cut inside its three bytes
+    assert.match((await store.load('1')).lastEvent.detail, /\uFFFD/);
+    await stateFile('2', Buffer.from([0xff, 0x41])); // invalid lead byte, then "A"
+    assert.equal((await store.load('2')).lastEvent.detail, '\uFFFDA');
   } finally { await cleanup(); }
 });
 
