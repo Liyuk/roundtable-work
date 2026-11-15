@@ -122,6 +122,7 @@ export default async function ({ phase }) {
   }
   return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' };
 }
+export async function preDispatch() { return { ok: true }; }
 `);
     const cli = (mode) => new Promise((resolve) => {
       const child = spawn(process.execPath, [RTD, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs')],
