@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { openActionJournal } from './action-journal.mjs';
 import { dependencies, selectIssues } from './intake.mjs';
 import { normalizeState } from './state.mjs';
 import { homedir, hostname, userInfo } from 'node:os';
@@ -59,6 +60,15 @@ const budget = (used, limit) => ({
   remaining: Number.isSafeInteger(used) && used >= 0 && Number.isSafeInteger(limit) && limit >= 0 ? Math.max(0, limit - used) : null,
 });
 
+// Actions the owner still has to act on: confirm or amend, approve, or retry a failed rollback.
+const OPEN_ACTION_STATES = ['executed_pending_confirmation', 'awaiting_approval', 'revert_failed'];
+// Read-only: opening the journal performs no side effect. The journal root is the workspace above `.roundtable`.
+const openActions = (workRoot) => {
+  const abs = resolve(workRoot);
+  const root = basename(abs) === '.roundtable' ? dirname(abs) : abs;
+  return openActionJournal(root).list().filter((a) => OPEN_ACTION_STATES.includes(a.state)).map(({ id, kind, issue, state }) => ({ id, kind, issue, state }));
+};
+
 /** Collect a best-effort, read-only status snapshot. Sources may be injected for synthetic tests. */
 export async function collectStatus({ workRoot = '.', sources = {}, now = Date.now, budgets = {}, heartbeatTimeoutMs = RUNTIME_DEFAULTS.heartbeatTimeoutMs } = {}) {
   const generatedAt = new Date(now()).toISOString();
@@ -115,6 +125,8 @@ export async function collectStatus({ workRoot = '.', sources = {}, now = Date.n
   const activeIssues = issues.filter((issue) => issue.status === 'working' || (issue.metadata.labels.includes('rt:running') && !['waiting_person', 'waiting_external', 'blocked', 'out-of-scope'].includes(issue.status) && !issue.metadata.labels.some(label => ['rt:ask', 'rt:blocked'].includes(label))));
   const activeIssue = activeIssues[0] ?? null;
   const blockers = issues.filter((issue) => ['blocked', 'waiting_person', 'interrupted', 'out-of-scope'].includes(issue.status) || issue.metadata.labels.some((label) => ['rt:blocked', 'rt:ask'].includes(label))).map(({ id, status, waiting, metadata }) => ({ id, status: status ?? (metadata.labels.includes('rt:blocked') ? 'blocked' : 'waiting_person'), waiting }));
+  let actions = null;
+  try { actions = openActions(workRoot); } catch { actions = null; }
   const quotaWait = remoteData?.quotaWait ?? null;
   const queue = Array.isArray(remoteData?.queue) ? remoteData.queue.map(String) : null;
   const heartbeatTimes = issues.map((issue) => issue.heartbeat).filter(Boolean);
@@ -125,6 +137,7 @@ export async function collectStatus({ workRoot = '.', sources = {}, now = Date.n
     queue: { count: queue?.length ?? null, issueIds: queue },
     active: { issue: activeIssue?.id ?? null, issueIds: activeIssues.map(issue => issue.id), idle: activeIssue ? false : (remote.refreshed && local.available && local.complete ? true : null) },
     blockers,
+    actions,
     blockerCount: remote.refreshed && local.available && local.complete ? blockers.length : null,
     quotaWait,
     issues,

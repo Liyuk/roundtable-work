@@ -34,6 +34,8 @@ import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
 import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
+import { openActionJournal } from './lib/action-journal.mjs';
+import { applyActionReply } from './lib/action-replies.mjs';
 import { openTimers } from './lib/event-timers.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
@@ -1106,8 +1108,16 @@ async function main(argv) {
     // An inbox write from this process ends the inter-cycle wait early.
     const wake = createWakeSignal();
     const code = await runLoop({ pass: async ({ workers }) => {
-      await cycleSteps({ root: workspace, inbox: openInbox(workspace, { onWrite: () => wake.notify() }), timers: openTimers(workspace), reader,
-        dispatchLine: makeDispatchLine({ root: workspace, owner: ownerOf(args.repo) }) });
+      // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
+      const owner = ownerOf(args.repo);
+      const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
+      const journal = openActionJournal(workspace, { git: autoMerge?.git, github: shadow ? createShadowGitHub(writer) : writer });
+      const dispatchLine = makeDispatchLine({ root: workspace, owner });
+      await cycleSteps({ root: workspace, inbox, timers: openTimers(workspace), reader,
+        dispatchLine: async (batch) => {
+          for (const event of batch.events) if (event.kind === 'owner_comment') await applyActionReply({ root: workspace, journal, inbox, owner, event });
+          await dispatchLine(batch);
+        } });
       console.log(JSON.stringify(await pass(workers)));
       // End of each cycle: flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
       await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
