@@ -130,7 +130,7 @@ export async function runQueue({
   phaseTimeoutMs = 60 * 60_000, queueTimeoutMs = 10 * 60_000, graceMs = 5000,
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, repoRoot, workers = 2, baseBranch = 'main', autoMerge, observationClients, models = {}, routing,
-  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false,
+  escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -611,6 +611,10 @@ export async function runQueue({
         // Chosen before the phase begins: development is never handed to Chief, and a rework goes to the fixer role.
         const role = phase === 'developing' ? implementerRole({ routing, rework: (await store.load(id)).attempts.developer > 0 }) : undefined;
         if (role?.stop) return await finish('stop', role.stop, role.stop, 'stop');
+        if (phase === 'developing' && preDispatch) {
+          const check = await preDispatch({ item, state, worktree: item.worktree ?? repoRoot });
+          if (!check.ok) return await finish('stop', 'predispatch_failed', check.reason, 'stop');
+        }
         await store.beginPhase(id, phase);
         if (!(await refreshLock())) return lost();
         state = await store.load(id);
@@ -975,6 +979,12 @@ async function main(argv) {
   const handlerModule = await import(pathToFileURL(resolve(args.handler)).href);
   const handler = handlerModule.default;
   const escalationAdapter = handlerModule.escalationAdapter;
+  // The trusted handler builds the pre-dispatch preflight (it supplies `exec`); without it no implementer may start.
+  const preDispatch = handlerModule.preDispatch;
+  if (typeof preDispatch !== 'function') {
+    console.error('handler module must export preDispatch (the pre-dispatch preflight)');
+    return 2;
+  }
   const modelRouter = escalationAdapter ? createModelRouter(process.env) : undefined;
   const maxEscalationAttempts = escalationAdapter ? escalationAttemptBudget(process.env) : undefined;
   const autoMerge = args.providers ? createProductionAdapter((await import(pathToFileURL(resolve(args.providers)).href)).default) : handlerModule.autoMerge;
@@ -991,7 +1001,7 @@ async function main(argv) {
   }
   const writer = createGitHubWriter({ repo: args.repo });
   const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
-  const result = await runQueue({ workRoot: args['work-root'], queue, handler, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
+  const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers: args.workers === undefined ? 2 : Number(args.workers) } : {}) });
   if (args.github) {
     result.triage = queue.triage;
     if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });

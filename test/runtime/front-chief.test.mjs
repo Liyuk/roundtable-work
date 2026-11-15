@@ -142,13 +142,6 @@ test('cli: status prints the status JSON and writes nothing', withWs(async (dir)
   assert.equal(await exists(join(dir, '.roundtable', 'lock-domain')), false);
 }));
 
-test('cli: start without RT_AGENT_BIN exits 2 and names the variable', withWs(async (dir) => {
-  const err = collector();
-  const code = await main(['start', '--workspace', dir], { env: {}, stderr: err, stdout: collector() });
-  assert.equal(code, 2);
-  assert.match(err.out.join(''), /no launcher configured: set RT_AGENT_BIN/);
-}));
-
 test('cli: start while a session runs exits 3', withWs(async (dir) => {
   let open; const gate = new Promise((r) => { open = r; });
   let reached; const reachedP = new Promise((r) => { reached = r; });

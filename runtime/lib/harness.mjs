@@ -1,4 +1,9 @@
-import { ADAPTERS } from './agent-adapter.mjs';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { ADAPTERS, createAdapterLauncher } from './agent-adapter.mjs';
+import { ROLES } from './routing.mjs';
+
+export const HARNESS_CONFIG = fileURLToPath(new URL('../harness.config.json', import.meta.url));
 
 // One harness per agent runtime. Each declares what it can do and how it is invoked; `buildArgs` returns the process
 // arguments (or null when nothing is spawned). Existing ADAPTERS args are reused, so pi/codex invocations are unchanged.
@@ -14,4 +19,18 @@ export const HARNESSES = Object.freeze({
 export function selectHarness(name) {
   if (!Object.hasOwn(HARNESSES, name)) throw new Error(`unknown harness: ${name}`);
   return HARNESSES[name];
+}
+
+/** Reads the in-repo harness config. Every role's harness name must be a known harness; an unknown name throws. */
+export async function loadHarnessConfig(file = HARNESS_CONFIG, read = readFile) {
+  const config = JSON.parse(await read(file, 'utf8'));
+  for (const role of ROLES) selectHarness(config.roles[role]);
+  return config;
+}
+
+/** Launcher for the implementer role: its configured harness, and the model routed to that role. */
+export function implementerLaunch({ config, facts, command, spawnFn, env }) {
+  const role = config.implementerRole;
+  const launch = createAdapterLauncher({ adapter: selectHarness(config.roles[role]), command, spawnFn, env });
+  return { launch, model: facts.roles[role].model };
 }
