@@ -40,6 +40,8 @@ import { applyActionReply } from './lib/action-replies.mjs';
 import { recordOwnerEvent } from './lib/intervention-producers.mjs';
 import { openInterventions } from './lib/interventions.mjs';
 import { openTimers } from './lib/event-timers.mjs';
+import { ensureSelfReviewTimer, gatherInputs, runSelfJob } from './lib/self-review-filer.mjs';
+import { loadGoals } from './lib/goals.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
@@ -1098,6 +1100,12 @@ async function main(argv) {
   const writer = createGitHubWriter({ repo: args.repo });
   const outbox = args.loop ? openOutbox(workspace) : undefined;
   const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
+  // Daily self-review (RT-S8b) runs in GitHub loop mode only; the hygiene denylist is pinned by the operator through the environment.
+  const selfReview = args.loop && reader && {
+    goals: await loadGoals(),
+    hygiene: { denylistPath: process.env.RT_HYGIENE_DENYLIST, expectedSha256: process.env.RT_HYGIENE_DENYLIST_SHA256, repoRoot: resolve(args['repo-root'] ?? '.') },
+    client: { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: writer.createIssue, createLabel: writer.createLabel, addLabel: writer.addLabel, removeLabel: writer.removeLabel },
+  };
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers) => {
@@ -1122,11 +1130,16 @@ async function main(argv) {
       const ledger = openInterventions(workspace);
       const policy = { autonomy: (await loadAutonomy()).autonomy, journal, ledger };
       const dispatchLine = makeDispatchLine({ root: workspace, owner, policy });
-      await cycleSteps({ root: workspace, inbox, timers: openTimers(workspace), reader,
+      const timers = openTimers(workspace);
+      if (selfReview) ensureSelfReviewTimer(timers, selfReview.goals, Date.now());
+      await cycleSteps({ root: workspace, inbox, timers, reader,
         dispatchLine: async (batch) => {
           for (const event of batch.events) if (event.kind === 'owner_comment') {
             recordOwnerEvent({ ledger, event, state: await stateStore.load(String(batch.issue)), owner });
             await applyActionReply({ root: workspace, journal, inbox, owner, event });
+          }
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job) {
+            await runSelfJob({ root: workspace, now: Date.now(), event, goals: selfReview.goals, inputs: gatherInputs(workspace), client: selfReview.client, hygiene: selfReview.hygiene });
           }
           await dispatchLine(batch);
         } });
