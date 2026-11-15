@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startFrontChief, statusOf } from '../runtime/lib/front-chief.mjs';
 import { childEnv } from '../runtime/lib/agent-adapter.mjs';
+import { loadHarnessConfig } from '../runtime/lib/harness.mjs';
 import { createWriteProxy, runHostCommand, startWriteProxy } from '../runtime/lib/gh-write-proxy.mjs';
 
 const DEFAULT_ROLE_PROMPT = fileURLToPath(new URL('../.agents/skills/roundtable-work/prompts/roles/chief.md', import.meta.url));
@@ -37,6 +38,7 @@ export async function main(argv, deps = {}) {
     }
     if (command !== 'start') { stderr.write(USAGE); return 1; }
     if (!deps.launch && !env.RT_AGENT_BIN) { stderr.write('no launcher configured: set RT_AGENT_BIN\n'); return 2; }
+    await loadHarnessConfig(deps.harnessConfig, readFile); // fails closed on an unknown harness, before any spawn
     const socketDir = await mkdtemp(join(tmpdir(), 'rt-gh-'));
     const socketPath = join(socketDir, 'gh.sock');
     const proxy = await startWriteProxy({ socketPath, proxy: createWriteProxy({ repo: env.RT_GH_REPO, execute: (cmd) => (deps.execute ?? runHostCommand)({ ...cmd, cwd: workspace }) }) });
