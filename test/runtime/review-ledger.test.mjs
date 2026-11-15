@@ -100,7 +100,7 @@ test('readReviewConfig is off for a missing, unreadable, or malformed file and o
   assert.deepEqual(await readReviewConfig({ readFile: async () => JSON.stringify({ createFollowupIssues: true }) }), { createFollowupIssues: true });
 });
 
-test('non-blocking findings post one PR comment and no issues unless the switch is on', async () => {
+test('non-blocking findings post one PR comment and never file issues', async () => {
   const calls = [];
   const github = {
     createComment: async (pr, body) => { calls.push(['createComment', pr, body]); return { id: 7 }; },
@@ -118,7 +118,7 @@ test('non-blocking findings post one PR comment and no issues unless the switch 
 
   calls.length = 0;
   await reportReviewFindings({ github, pr: 12, findings, config: { createFollowupIssues: true } });
-  assert.deepEqual(calls.map(call => call[0]), ['createComment', 'createIssue', 'createIssue']);
+  assert.deepEqual(calls.map(call => call[0]), ['createComment']);
 });
 
 test('an owner waiver suppresses only the blocking finding with that id and keeps evidence rules', () => {
