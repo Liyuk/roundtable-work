@@ -1,0 +1,11 @@
+{
+  "roles": {
+    "chief": "pi",
+    "developer": "pi",
+    "fixer": "pi",
+    "reviewer": "pi",
+    "researcher": "pi",
+    "crosscheck": "pi"
+  },
+  "implementerRole": "developer"
+}
