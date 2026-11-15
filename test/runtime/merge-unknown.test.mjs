@@ -1,7 +1,7 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -16,7 +16,7 @@ const tmp = () => mkdtemp(join(process.cwd(), 'rt119-'));
 // Lock records live in the private anchor, never in the work root: keep the host's real anchor untouched.
 const ANCHOR = mkdtempSync(join(tmpdir(), 'rt119-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* leaving /tmp behind is harmless */ } });
+after(() => rm(ANCHOR, { recursive: true, force: true }));
 const exists = (path) => access(path).then(() => true, () => false);
 const PASSOUT = '审查结论：通过';
 const OBSERVED_SHA = 'a'.repeat(40);
@@ -392,8 +392,7 @@ test('--clear-main-pause exits 75 when another pass holds the lock and clears no
     assert.equal(JSON.parse(child.stdout).status, 'locked');
     assert.equal((await store.load('rt-main-monitor')).mainMonitor.pr, 90);
   } finally {
-    await holder.release();
-    await rm(root, { recursive: true, force: true });
+    try { await holder.release(); } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
 
