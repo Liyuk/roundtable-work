@@ -1,18 +1,17 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { selectIssues, createIntakeProvider } from '../../runtime/lib/intake.mjs';
 import { createGitHubReader } from '../../scripts/github-read.mjs';
 import { readQueue } from '../../runtime/lib/queue.mjs';
 import { runQueue } from './observation-fixture.mjs';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
-import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Locks live in the private anchor (RTW_STATE_DIR), never in the work root or the user's real state dir.
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-intake-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
+after(() => rm(ANCHOR, { recursive: true, force: true }));
 
 const admissibleBody = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/intake.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 20\nFiles: 2';
 const issue = (number, labels = ['type:feature'], extra = {}) => ({ number, title: `Issue ${number}`, state: 'OPEN', author: { login: 'owner' }, labels: labels.map(name => ({ name })), createdAt: '2025-01-01T00:00:00Z', ...extra, body: `${admissibleBody}\n${extra.body ?? ''}` });
