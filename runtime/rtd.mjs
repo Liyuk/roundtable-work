@@ -28,7 +28,10 @@ import { runStatus, RUNTIME_DEFAULTS } from './lib/status.mjs';
 import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib/routing.mjs';
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
-import { runLoop, loopWorkspace, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { openInbox } from './lib/event-inbox.mjs';
+import { openTimers } from './lib/event-timers.mjs';
+import { createWakeSignal } from './lib/event-wake.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Outcomes after which an issue is abandoned for good, so its worktree is removed (see `removeWorktree`). */
@@ -1044,7 +1047,8 @@ async function main(argv) {
     autoMerge.git = createShadowProvider(autoMerge.git, new Set());
   }
   const writer = createGitHubWriter({ repo: args.repo });
-  const queue = args.github ? createIntakeProvider(createGitHubReader({ repo: args.repo }), { includeRunning: true }) : args.queue;
+  const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
+  const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers) => {
     const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
@@ -1056,7 +1060,13 @@ async function main(argv) {
   };
   const baseWorkers = args.workers === undefined ? 2 : Number(args.workers);
   if (args.loop) {
-    const code = await runLoop({ pass: async ({ workers }) => { console.log(JSON.stringify(await pass(workers))); }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers });
+    // An inbox write from this process ends the inter-cycle wait early.
+    const wake = createWakeSignal();
+    const code = await runLoop({ pass: async ({ workers }) => {
+      await cycleSteps({ root: workspace, inbox: openInbox(workspace, { onWrite: () => wake.notify() }), timers: openTimers(workspace), reader,
+        dispatchLine: (batch) => console.error(JSON.stringify({ event: 'dispatch_line', issue: batch.issue, kinds: batch.events.map((e) => e.kind) })) });
+      console.log(JSON.stringify(await pass(workers)));
+    }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }
     return code;
