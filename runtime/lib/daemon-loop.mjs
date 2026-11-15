@@ -64,10 +64,12 @@ export function watchdogVerdict({ heartbeat, ledgerEntries, now, pollMs }) {
 }
 
 /**
- * Runs `pass({ workers })` once per cycle until `signal` aborts. Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass
- * does not settle within `cycleDeadlineMs`. A throwing pass writes a stopped heartbeat and rethrows.
+ * Runs `pass({ admit, workers })` once per cycle until `signal` aborts. Each cycle first runs `prune()`, then `budget()`;
+ * `admit` is false when the budget resolves false, and the pass still runs so the inbox and outbox work continue.
+ * Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass does not settle within `cycleDeadlineMs`. A throwing pass writes a
+ * stopped heartbeat and rethrows.
  */
-export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal, wake, sample = hostSample }) {
+export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWorkers, wall = Date.now, mono = () => performance.now(), sleep = defaultSleep, signal, wake, sample = hostSample, prune, budget }) {
   const ledger = createFreezeLedger({ store: fileLedgerStore(join(workRoot, LEDGER_PATH)) });
   const cap = createCapState(baseWorkers);
   const governor = createGovernor({ ...governorDefaults, max: baseWorkers });
@@ -103,7 +105,12 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
     const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(DEADLINE), cycleDeadlineMs); });
     let outcome;
     try {
-      outcome = await Promise.race([pass({ workers: () => Math.min(effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }), governorCap) }), deadline]);
+      const cycle = async () => {
+        if (prune) await prune();
+        const admit = !budget || (await budget());
+        return pass({ admit, workers: () => Math.min(effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }), governorCap) });
+      };
+      outcome = await Promise.race([cycle(), deadline]);
     } catch (error) {
       heartbeat('stopped', start, error);
       throw error;

@@ -1,0 +1,7 @@
+{
+  "tempAgeMinutes": 30,
+  "lockAgeMinutes": 120,
+  "throttleMinutes": 10,
+  "stateMaxBytes": 536870912,
+  "minFreeRatio": 0.05
+}

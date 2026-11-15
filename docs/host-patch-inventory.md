@@ -35,7 +35,7 @@ reference or reason, on a `not ported:` row that names no issue, a missing refer
 | series | Series key is the full tag minus its trailing letter; the series is waited on as a unit. | not ported: pending #310 |
 | utf8 | State readers decode with replacement and never throw on a truncated multi-byte sequence (covered by test/runtime/state.test.mjs and test/runtime/status.test.mjs); writers that truncate text cut on a code-point boundary. | `runtime/lib/ci-classifier.mjs` + `test/runtime/ci-classifier.test.mjs` :: truncation cuts on a code-point boundary, not inside a surrogate pair |
 | waitguard | Bounded wait with a cycle-gap WARN. | not ported: pending #333 [RT-O-3] |
-| tmpclean | Prune leaked test temp and lock directories. | not ported: test temp and lock-directory pruning is outside the runtime; see #320 |
+| tmpclean | Prune leaked test temp and lock directories. | `runtime/lib/prune.mjs` + `test/runtime/prune.test.mjs` :: RT-S6 prune removes only old, owned rt temp entries with no live pid and keeps the rest |
 | cirerun | Re-run only cancelled required CI, then hold. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: cancelled-only required CI requests one re-run and holds instead of failing into the fixer path |
 | ciwait | Only pending required CI is a resumable hold; every other not-green answer fails closed. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: only pending required CI is a resumable hold; every other not-green answer fails closed before squash |
 | mergelock | Only one holder at a time may own the merge lock. | `runtime/lib/lock.mjs` + `test/runtime/lock.test.mjs` :: lock: stale takeover is mutually exclusive across real processes: one winner per round, never two holders |
