@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { readFileSync, realpathSync } from 'node:fs';
+import { access, mkdir, readFile, rm, statfs, writeFile } from 'node:fs/promises';
+import { constants, readFileSync, realpathSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -20,7 +21,20 @@ const LAUNCHD_NOTES = [
   'Note: launchd does not load EnvironmentFile; add non-secret variables under EnvironmentVariables yourself.',
   'Note: the machine must not sleep while rtd runs (e.g. run caffeinate -i or set Energy settings).',
 ];
-const USAGE = 'usage: rtd install|uninstall [options]\n';
+const HARNESS_CONFIG = new URL('../runtime/harness.config.json', import.meta.url);
+// bin/ is launch-only and may not import runtime modules, so these mirror runtime/lib/harness.mjs and supervisor/heartbeat.mjs.
+const IN_PROCESS_HARNESSES = new Set(['host-agent']);
+const HEARTBEAT_PATH = '.roundtable/state/heartbeat.json';
+const USAGE = 'usage: rtd install|uninstall|doctor [options]\n';
+const HINTS = {
+  DOCTOR_GH_AUTH: 'Run `gh auth login` and grant the repo scope.',
+  DOCTOR_HARNESS_MISSING: 'Install the harness CLI on PATH and log in to it.',
+  DOCTOR_REPO_ACCESS: 'Sign in to gh with an account that can read the repo, or pass the right --repo.',
+  DOCTOR_STATE_NOT_WRITABLE: 'Make the workspace .roundtable/state directory writable by the rtd user.',
+  DOCTOR_DISK_LOW: 'Free disk space on the workspace filesystem, or lower --min-free-mb.',
+  DOCTOR_SERVICE_DOWN: 'Start the service: systemctl --user enable --now rtd.service (macOS: bootstrap the io.roundtable.rtd LaunchAgent).',
+  DOCTOR_HEARTBEAT_STALE: 'Check the rtd daemon is running and writing its heartbeat; restart it if it has stopped.',
+};
 
 export function renderUnits(o) {
   const subs = {
@@ -148,8 +162,100 @@ async function uninstall(unitDir, { stdout, stderr }) {
   return 0;
 }
 
-export async function main(argv, { platform, env, stdout, stderr }) {
+function defaultProbes({ workspace }, platform) {
+  return {
+    ghAuth: () => {
+      const r = spawnSync('gh', ['auth', 'status'], { encoding: 'utf8' });
+      const out = `${r.stdout}${r.stderr}`;
+      return r.status === 0 && (!/Token scopes:/.test(out) || /Token scopes:.*'repo'/.test(out));
+    },
+    harnesses: async () => {
+      const config = JSON.parse(await readFile(HARNESS_CONFIG, 'utf8'));
+      return [...new Set(Object.values(config.roles))].filter((n) => !IN_PROCESS_HARNESSES.has(n));
+    },
+    harness: (name) => spawnSync(name, ['--version'], { stdio: 'ignore' }).status === 0,
+    repoAccess: (repo) => spawnSync('gh', ['repo', 'view', ...(repo ? [repo] : [])], { cwd: workspace, stdio: 'ignore' }).status === 0,
+    stateWritable: (dir) => access(dir, constants.W_OK).then(() => true, () => false),
+    freeBytes: async (dir) => {
+      const s = await statfs(dir);
+      return s.bavail * s.bsize;
+    },
+    service: () => {
+      if (platform === 'linux') return spawnSync('systemctl', ['--user', 'is-active', '--quiet', 'rtd.service'], { stdio: 'ignore' }).status === 0;
+      if (platform !== 'darwin') return false;
+      const r = spawnSync('launchctl', ['print', `gui/${process.getuid()}/${LABEL}`], { encoding: 'utf8' });
+      return r.status === 0 && r.stdout.includes('state = running');
+    },
+    heartbeat: (ws) => readFile(join(ws, HEARTBEAT_PATH), 'utf8').catch(() => undefined),
+  };
+}
+
+const intArg = (value, fallback) => {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value)) throw new Error(`invalid number: ${value}`);
+  return Number(value);
+};
+
+const attempt = async (fn) => {
+  try {
+    return await fn();
+  } catch {
+    return undefined;
+  }
+};
+
+async function doctor(args, { platform, probes, now, cwd, stdout, stderr }) {
+  const options = {
+    json: { type: 'boolean' },
+    workspace: { type: 'string' },
+    repo: { type: 'string' },
+    'min-free-mb': { type: 'string' },
+    'max-heartbeat-age-ms': { type: 'string' },
+  };
+  let o;
+  try {
+    const v = parseArgs({ args, options, strict: true }).values;
+    o = {
+      json: v.json,
+      workspace: v.workspace ?? cwd,
+      repo: v.repo,
+      minFreeMb: intArg(v['min-free-mb'], 1024),
+      maxHeartbeatAgeMs: intArg(v['max-heartbeat-age-ms'], 120000),
+    };
+  } catch (err) {
+    stderr.write(`rtd doctor: ${err.message}\n${USAGE}`);
+    return 2;
+  }
+  const p = { ...defaultProbes(o, platform), ...probes };
+  const checks = [];
+  const check = (name, ok, code) => checks.push({ name, ok: !!ok, code: ok ? null : code, hint: ok ? null : HINTS[code] });
+
+  check('gh-auth', await attempt(() => p.ghAuth()), 'DOCTOR_GH_AUTH');
+  const names = await attempt(() => p.harnesses());
+  if (names === undefined) check('harnesses', false, 'DOCTOR_HARNESS_MISSING');
+  for (const name of names ?? []) check(`harness:${name}`, await attempt(() => p.harness(name)), 'DOCTOR_HARNESS_MISSING');
+  check('repo-access', await attempt(() => p.repoAccess(o.repo)), 'DOCTOR_REPO_ACCESS');
+  check('state-dir', await attempt(() => p.stateWritable(join(o.workspace, '.roundtable/state'))), 'DOCTOR_STATE_NOT_WRITABLE');
+  const free = await attempt(() => p.freeBytes(o.workspace));
+  check('disk', free >= o.minFreeMb * 1024 * 1024, 'DOCTOR_DISK_LOW');
+  check('service', await attempt(() => p.service()), 'DOCTOR_SERVICE_DOWN');
+  const writtenAt = await attempt(async () => JSON.parse(await p.heartbeat(o.workspace)).writtenAt);
+  check('heartbeat', typeof writtenAt === 'number' && now - writtenAt <= o.maxHeartbeatAgeMs, 'DOCTOR_HEARTBEAT_STALE');
+
+  const ok = checks.every((c) => c.ok);
+  if (o.json) {
+    stdout.write(`${JSON.stringify({ ok, checks }, null, 2)}\n`);
+  } else {
+    for (const c of checks) stdout.write(c.ok ? `PASS ${c.name}\n` : `FAIL ${c.name} [${c.code}] fix: ${c.hint}\n`);
+    const failed = checks.filter((c) => !c.ok).length;
+    stdout.write(failed ? `doctor: ${failed} of ${checks.length} checks failed\n` : `doctor: all ${checks.length} checks passed\n`);
+  }
+  return ok ? 0 : 1;
+}
+
+export async function main(argv, { platform, env, stdout, stderr, probes = {}, now = Date.now(), cwd = process.cwd() }) {
   const [sub, ...rest] = argv;
+  if (sub === 'doctor') return doctor(rest, { platform, probes, now, cwd, stdout, stderr });
   if (sub !== 'install' && sub !== 'uninstall') {
     stderr.write(USAGE);
     return 2;
