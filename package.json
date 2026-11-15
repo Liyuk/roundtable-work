@@ -1,6 +1,6 @@
 {
   "name": "roundtable-work",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "An agent-guided setup and operating model for autonomous collaborative work.",
   "license": "MIT",

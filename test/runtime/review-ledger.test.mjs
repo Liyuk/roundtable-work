@@ -137,3 +137,11 @@ test('without an owner waiver the blocking finding still rejects the review', ()
   assert.equal(call([finding('F1'), fixed('F2')]).verdict, '审查结论：打回');
   assert.equal(validateReviewLedger(ledger([finding('F1'), fixed('F2')]), { currentHeadSha: sha(4), frozen: freeze }).verdict, '审查结论：打回');
 });
+
+test('a rework that fixes the raised finding but breaks another acceptance item does not pass', () => {
+  const broken = { ...finding('F9'), id: 'F9', classification: 'in-scope miss', summary: 'Rework broke acceptance item 2', evidence: 'test/runtime/review-ledger.test.mjs — node --test → 1 failing: acceptance item 2' };
+  const noMustFix = { ...freeze, mustFixIds: ['F1'] };
+  const result = validateReviewLedger({ ...ledger([fixed('F1'), broken]), freeze: noMustFix }, { currentHeadSha: sha(4), frozen: noMustFix });
+  assert.notEqual(result.verdict, '审查结论：通过');
+  assert.equal(result.verdict, '审查结论：打回');
+});
