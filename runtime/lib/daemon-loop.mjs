@@ -4,9 +4,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { basename, dirname, join, resolve } from 'node:path';
 import { GAP_FACTOR, boundedWait, createCapState, createFreezeLedger, effectiveCap, recordCycleGap } from './liveness.mjs';
 import { HEARTBEAT_PATH, SCHEMA_VERSION, parseHeartbeat, writeHeartbeat } from '../supervisor/heartbeat.mjs';
-import { openTimers } from './event-timers.mjs';
 import { processPending } from './event-claim.mjs';
 import { produceEvents } from './daemon-events.mjs';
+import { recover } from './recovery.mjs';
+import { openOutbox } from './outbox.mjs';
 
 export const EXIT_CYCLE_DEADLINE = 77;
 export const DEFAULT_POLL_MS = 300_000;
@@ -113,5 +114,24 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
 export async function cycleSteps({ root, inbox, timers, reader, since, now = Date.now(), dispatchLine }) {
   timers.fire(now);
   if (reader) await produceEvents({ inbox, reader, since });
-  await processPending(root, (batch) => dispatchLine(batch));
+  await processPending(root, async (batch) => {
+    try {
+      await dispatchLine(batch);
+    } catch (error) {
+      applyRecovery(root, timers, batch, error, now);
+    }
+  });
+}
+
+/** Applies the recovery table to a failed line: a `wait` writes a due timer, any other action enqueues a stall-alert. */
+function applyRecovery(root, timers, batch, error, now) {
+  const cls = error.failureClass ?? 'unknown';
+  const result = recover({ class: cls, retryAfterMs: error.retryAfterMs }, { now });
+  if (result.action === 'wait') {
+    for (const e of batch.events) timers.once({ id: `recover:${cls}:${e.source_event_id}`, at: new Date(result.timer.at).toISOString(), event: { kind: e.kind, issue: e.issue, payload: e.payload } });
+    return;
+  }
+  const first = batch.events[0].source_event_id;
+  const issue = Number.isInteger(batch.issue) && batch.issue > 0 ? batch.issue : null;
+  openOutbox(root).enqueue({ id: `notice:stall-alert:${cls}:${first}`, kind: 'notification', issue, payload: { subtype: 'stall-alert', class: cls, action: result.action, spendsBudget: result.spendsBudget } });
 }
