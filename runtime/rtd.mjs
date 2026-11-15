@@ -15,6 +15,7 @@ import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.m
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
 import { createWorktreeManager, syncWithBase } from './lib/worktree.mjs';
+import { stackStatus } from './lib/merge-order.mjs';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, validateDecision } from './lib/decisions.mjs';
 import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
@@ -76,7 +77,7 @@ export function exitCodeFor(result) {
  * `recordArtifacts`, which persists them immediately so a crash cannot lose the record).
  * For auto-merge, `autoMerge.context({ item, state, result, signal })` supplies the PR number, head, tree,
  * boolean highRisk and changedFiles. `autoMerge.gates` and `autoMerge.github` provide injected gate and
- * GitHub operations; `autoMerge.github.getPullRequest` must return { state, draft, head, mergeable, files },
+ * GitHub operations; `autoMerge.github.getPullRequest` must return { state, draft, head, mergeable, files, body },
  * where files is the pull request's changed paths (the merge entry point re-derives the safety-file set
  * from it and fails closed when it is missing), and `state: 'merged'`/`merged: true` plus an optional
  * `mergeCommit` SHA lets the monitor resolve a merge whose outcome was unknown. Gate records are persisted in the issue state; the merge
@@ -725,11 +726,15 @@ export async function runQueue({
             if (phase !== 'finalizing' || !autoMerge || (result?.decisionFile ?? result?.decision) !== undefined || classify({ ...result, stage: STAGE[phase] }).class !== 'ok') return result;
             const executeMerge = async () => {
               if (await readMonitor()) throw new Error('Main is paused');
+              let context = await autoMerge.context({ item, state, result, signal });
+              // A stacked pull request waits until every upstream merged, on every merge path; then its base is retargeted before the catch-up.
+              const stack = await stackStatus(autoMerge.github, context.pr);
+              if (stack.stacked && !stack.ready) return { ...result, mergeHold: { gate: 'stack', reason: `pull request #${context.pr} waits for its upstream pull requests to merge` } };
               if (baseSync && item.worktree) {
-                const sync = await syncWithBase({ path: item.worktree, id, base: baseBranch });
-                if (sync.stop) throw new Error(`base sync ${sync.stop}: merging ${baseBranch} into the issue branch failed; nothing pushed`);
+                const sync = await syncWithBase({ path: item.worktree, id, base: baseBranch, ...(stack.stacked ? { github: autoMerge.github, pr: context.pr } : {}) });
+                if (sync.stop) return { ...result, retryableGateFailure: true, retryFinding: { reason: `base sync ${sync.stop}`, fix: `merge origin/${baseBranch} into the issue branch, resolve the conflict, and push` }, exitCode: 1, output: `base sync ${sync.stop}: merging ${baseBranch} into the issue branch failed; nothing pushed` };
+                context = await autoMerge.context({ item, state, result, signal }); // the catch-up moved the head
               }
-              const context = await autoMerge.context({ item, state, result, signal });
               if (!validContext(context)) throw new Error('Incomplete merge context');
               // Whether the provider's squashMerge already resolved. Everything before it stays fail-closed;
               // everything after it is bookkeeping, and must never turn a real merge into a finalize failure.
