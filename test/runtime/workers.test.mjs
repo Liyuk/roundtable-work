@@ -175,3 +175,19 @@ test('existing detached issue worktree is reattached to and reused on the expect
     assert.equal(currentBranch.stdout.trim(), 'rt/94-pi');
   } finally { await rm(base, { recursive: true, force: true }); }
 });
+
+test('worker cap may be a function evaluated each scheduling pass', async () => {
+  const root = await temp();
+  try {
+    let active = 0, peak = 0, calls = 0;
+    const issues = ['1', '2', '3', '4'].map((id) => ({ id, title: `[RT${id}] work`, series: `s${id}`, dependencies: [] }));
+    const result = await runWorkers({ issues, workRoot: root, workers: () => { calls++; return 1; }, run: async () => {
+      active++; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+    } });
+    assert.equal(peak, 1);
+    assert.ok(calls >= 4);
+    assert.equal(result.completed.length, 4);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

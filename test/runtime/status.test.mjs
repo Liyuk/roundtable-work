@@ -255,6 +255,20 @@ test('corrupt newest state does not claim a complete idle snapshot', async (t) =
   assert.equal(snapshot.issues.find(i => i.id === '2').status, 'blocked');
 });
 
+test('status readers decode truncated or invalid UTF-8 with replacement and never throw', async (t) => {
+  const root = await mkdtemp(join(process.cwd(), 'rt-status-utf8-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'state'));
+  const pausedWith = (category) => Buffer.concat([
+    Buffer.from('{"status":"waiting_person","pause":{"kind":"ask","category":"'), category, Buffer.from('"}}'),
+  ]);
+  await writeFile(join(root, 'state', '5.json'), pausedWith(Buffer.from('€').subarray(0, 2)));
+  await writeFile(join(root, 'state', '6.json'), pausedWith(Buffer.from([0xff, 0x41])));
+  const snapshot = await collectStatus({ workRoot: root, sources: { github: async () => ({ issues: [], queue: [] }) } });
+  assert.match(snapshot.issues.find((issue) => issue.id === '5').waiting.conclusion, /\uFFFD/);
+  assert.equal(snapshot.issues.find((issue) => issue.id === '6').waiting.conclusion, '\uFFFDA');
+});
+
 test('gate summaries ignore fields that the runtime never persists', async () => {
   const snapshot = await collectStatus({ sources: { github: async () => ({ issues: [], queue: [] }), local: async () => ({ issues: [{ id: '1', gateRecord: { passed: ['gate0'], gate1: { result: 'blocked', scope: 'invented', blockReason: 'private' } }, lastEvent: { type: 'finalize_hold', detail: 'gate1: private reason' }, status: 'waiting_external' }] }) } });
   assert.deepEqual(snapshot.issues[0].gates.gate, { result: 'passed', scope: null, blockReason: null });
