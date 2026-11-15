@@ -53,6 +53,11 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
       if (!Array.isArray(result) || result.length >= 1000) throw new TypeError('Issue list is invalid or may be truncated');
       return result;
     },
+    async listClosedIssues(options) {
+      const result = await run(['issue', 'list', ...repository, '--state', 'closed', '--limit', '200', '--json', 'number,title,body,state,closedAt'], options);
+      if (!Array.isArray(result)) throw new TypeError('Invalid closed issue list');
+      return result;
+    },
     async getIssue(number, options) {
       if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Invalid issue number');
       return run(['issue', 'view', String(number), ...repository, '--json', 'state,labels'], options);

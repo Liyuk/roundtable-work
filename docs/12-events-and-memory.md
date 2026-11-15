@@ -2,6 +2,8 @@
 
 Status: candidate design. Any webhook, queue, storage, or wake-up mechanism must be provided by the chosen host or by a later implementation; this repository currently contains no receiving service.
 
+Pointer (2026-11-15): the inbox, claim, timer and outbox libraries now exist under `runtime/lib/` but are not yet wired into the daemon; see [Architecture](architecture.md) for current status and the wiring plan. There is still no HTTP receiving service.
+
 ## How the outside world gets involved
 
 The user can keep refining the goal through conversation, and can also configure sources such as GitHub, other systems' webhooks, and timer events. Each source first verifies the sender and scope through its adapter, then translates the input into a unified event: `source / source_event_id / event_type / actor / resource / occurred_at / received_at / payload_ref / trust / correlation`. A reference to the raw input and a receipt record are stored, and events are de-duplicated by source and event ID; retries and out-of-order delivery must be visible.
