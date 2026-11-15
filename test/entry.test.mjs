@@ -84,14 +84,20 @@ test('preview-site.mjs starts its server through a symlink', async (t) => {
   const child = spawn(process.execPath, [join(dir, 'repo', 'scripts', 'preview-site.mjs')], {
     cwd: dir, env: { ...process.env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  t.after(() => child.kill());
-  const out = await new Promise((resolve, reject) => {
-    let buf = '';
-    const timer = setTimeout(() => reject(new Error(`no output in time: ${buf}`)), 20_000);
-    child.stdout.on('data', (d) => { buf += d; if (/Previewing/.test(buf)) { clearTimeout(timer); resolve(buf); } });
-    child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`exited ${code} before listening: ${buf}`)); });
-  });
-  assert.match(out, /Previewing site\/ at http:\/\/[^/\s]+:\d+\//);
+  try {
+    const out = await new Promise((resolve, reject) => {
+      let buf = '';
+      const timer = setTimeout(() => reject(new Error(`no output in time: ${buf}`)), 20_000);
+      child.stdout.on('data', (d) => { buf += d; if (/Previewing/.test(buf)) { clearTimeout(timer); resolve(buf); } });
+      child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`exited ${code} before listening: ${buf}`)); });
+    });
+    assert.match(out, /Previewing site\/ at http:\/\/[^/\s]+:\d+\//);
+  } finally {
+    // Stop the server and wait for it to exit so links(t) is never removed while it runs.
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise((resolve) => { child.once('exit', resolve); child.kill(); });
+    }
+  }
 });
 
 test('importing the scripts does not run their main()', () => {
