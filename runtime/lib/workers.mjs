@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { acquireLock } from './lock.mjs';
 import { assertSafeId, createConfinement } from './paths.mjs';
 import { dependencies as dependenciesFromBody } from './intake.mjs';
+import { lockKeysOf, parseTouchSet } from './touch-set.mjs';
 
 const seriesOf = (issue) => issue.series ?? /^\[([^\]]+)\]/.exec(issue.title ?? '')?.[1]?.toLowerCase() ?? null;
 const depsOf = (issue) => new Set([...(issue.dependencies ?? issue.dependsOn ?? []), ...dependenciesFromBody(issue.body ?? '')].map(String));
@@ -10,7 +12,10 @@ function conflicts(a, b) {
   if (a.id === b.id) return true;
   const sa = seriesOf(a), sb = seriesOf(b);
   if (sa && sb && sa.toLowerCase() === sb.toLowerCase()) return true;
-  return depsOf(a).has(String(b.id)) || depsOf(b).has(String(a.id));
+  if (depsOf(a).has(String(b.id)) || depsOf(b).has(String(a.id))) return true;
+  const ta = parseTouchSet(a.body ?? ''), tb = parseTouchSet(b.body ?? '');
+  // Same key set as the launch-time touch locks, so no two in-process runs ever contend for one lock key.
+  return !ta || !tb || lockKeysOf(ta).some((key) => lockKeysOf(tb).includes(key));
 }
 
 /** Run eligible issues with cross-process per-issue locks and in-process series/dependency exclusion. */
@@ -33,10 +38,11 @@ export async function runWorkers({ issues, workRoot, repoRoot, workers = 2, run,
       }
       const controller = new AbortController();
       let renewal = null, lockLost = false;
+      const touchLocks = [];
       const timer = setInterval(() => {
         if (renewal || lockLost) return;
-        renewal = lock.refresh().then((ok) => {
-          if (!ok) { lockLost = true; controller.abort(new Error('issue lock lost')); }
+        renewal = Promise.all([lock, ...touchLocks].map((handle) => handle.refresh())).then((results) => {
+          if (!results.every(Boolean)) { lockLost = true; controller.abort(new Error('issue lock lost')); }
         }, (error) => {
           lockLost = true;
           controller.abort(error);
@@ -44,6 +50,14 @@ export async function runWorkers({ issues, workRoot, repoRoot, workers = 2, run,
       }, Math.max(1, Math.floor(lockTtlMs / 3)));
       timer.unref();
       try {
+        for (const key of lockKeysOf(parseTouchSet(issue.body ?? '') ?? [])) {
+          const touch = await acquireLock({ lockPath: join(lockRoot, `touch-${createHash('sha256').update(key).digest('hex')}.lock.d`), repoRoot: repoRoot ?? confinement.root, owner: `worker-${process.pid}-${id}`, now, ttlMs: lockTtlMs });
+          if (!touch.acquired) {
+            const item = { id, reason: 'touch_set_locked', holder: touch.holder };
+            skipped.push(item); await onSkip(item); return;
+          }
+          touchLocks.push(touch);
+        }
         if (!(await prepare(issue))) return;
         const worktree = worktreeManager ? await worktreeManager.create(id) : undefined;
         await run(issue, { id, lock, workRoot: confinement.root, worktree: worktree?.path, existingWorktree: worktree?.existing ?? false, signal: controller.signal });
@@ -52,6 +66,7 @@ export async function runWorkers({ issues, workRoot, repoRoot, workers = 2, run,
       } finally {
         clearInterval(timer);
         await renewal;
+        await Promise.all(touchLocks.map((touch) => touch.release().catch(() => false)));
         await lock.release().catch(() => false);
       }
     })().catch((error) => { failed.push({ id, error }); }).finally(() => active.delete(id));
