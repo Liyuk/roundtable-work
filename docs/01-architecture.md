@@ -2,6 +2,8 @@
 
 Status: design draft · 2026-11-10. All Roundtable Work capabilities described are proposals and do not mean they are implemented.
 
+The canonical target architecture for the 7x24 loop, with per-module implementation status, is [Architecture](architecture.md).
+
 ## Goals and Product Boundary
 
 A person sets a continuing goal, for example "maintain a GitHub project, prioritizing fixes for issues that block users", and the team, within its authorization and budget, understands the current state, finds the next step, dispatches execution, verifies, and keeps delivering on its own. The user can correct course, pause, or revoke authorization at any time. After finishing a ticket, the Chief goes on to check whether the larger goal still has suitable work, and does not stop just because the model ended a turn.
