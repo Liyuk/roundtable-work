@@ -48,6 +48,13 @@ test('runtime code never shells out or touches the network', async () => {
       assert.doesNotMatch(text, /\bgh\s+(issue|pr|api|repo|release|label)\b/, file);
       continue;
     }
+    if (file === 'runtime/lib/webhook-listener.mjs') {
+      // The optional loopback webhook listener: node:http only, bound by the caller to 127.0.0.1; no outbound network, no subprocess, no gh.
+      assert.match(text, /import \{ [^}]*createServer[^}]* \} from 'node:http'/);
+      assert.doesNotMatch(text, /node:(https|net|dgram|tls)\b|\bfetch\(|child_process|\bexec\(/, file);
+      assert.doesNotMatch(text, /\bgh\s+(issue|pr|api|repo|release|label)\b/, file);
+      continue;
+    }
     if (file === 'runtime/lib/worktree.mjs' || file === 'runtime/lib/accept.mjs' || file === 'runtime/lib/reviewer-session.mjs') {
       // The worktree lifecycle, the Gate 0 composition layer and the separate-process reviewer are the subprocess integrations; keep them argument-based and local.
       assert.match(text, /node:child_process/);
