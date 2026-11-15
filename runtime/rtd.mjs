@@ -29,6 +29,7 @@ import { loadRouting, routingFacts, renderRolePrompt, RoutingError } from './lib
 import { createShadowGitHub, createShadowProvider, writeShadowCycle } from './lib/shadow.mjs';
 import { implementerRole, chiefAuthored } from './lib/rework.mjs';
 import { runLoop, loopWorkspace, cycleSteps, EXIT_CYCLE_DEADLINE, DEFAULT_POLL_MS } from './lib/daemon-loop.mjs';
+import { makeDispatchLine, ownerOf } from './lib/daemon-cards.mjs';
 import { openInbox } from './lib/event-inbox.mjs';
 import { openTimers } from './lib/event-timers.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
@@ -1064,7 +1065,7 @@ async function main(argv) {
     const wake = createWakeSignal();
     const code = await runLoop({ pass: async ({ workers }) => {
       await cycleSteps({ root: workspace, inbox: openInbox(workspace, { onWrite: () => wake.notify() }), timers: openTimers(workspace), reader,
-        dispatchLine: (batch) => console.error(JSON.stringify({ event: 'dispatch_line', issue: batch.issue, kinds: batch.events.map((e) => e.kind) })) });
+        dispatchLine: makeDispatchLine({ root: workspace, owner: ownerOf(args.repo) }) });
       console.log(JSON.stringify(await pass(workers)));
     }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
