@@ -40,6 +40,7 @@ import { openTimers } from './lib/event-timers.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
+import { runChiefCli } from './lib/chief-session.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /** Outcomes after which an issue is abandoned for good, so its worktree is removed (see `removeWorktree`). */
@@ -987,6 +988,7 @@ function withTimeout(ms, onTimeout) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'chief') return runChiefCli(argv.slice(1));
   if (argv[0] === 'metrics') {
     console.log(await runMetrics({ argv: argv.slice(1) }));
     return 0;
