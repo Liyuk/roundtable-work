@@ -14,6 +14,7 @@ const usage = `Usage: node scripts/install.mjs --target <workspace> [--harness c
 
 Installs the Roundtable Work skill into a workspace for the chosen harnesses and
 creates .roundtable/team.md and policy.md from templates when they are missing.
+  --routing     routing table JSON; writes .roundtable/harness-candidates.json (per-role candidates)
   --harness   claude -> .claude/skills + .claude/agents/rt-*.md; codex -> .agents/skills (default: both)
   --dry-run   print the plan without writing
   --update    refresh skill files and rt-* subagents that differ from this version
@@ -51,7 +52,7 @@ async function planFile(from, to, { update, owned }) {
   return { op: 'skip', to, reason: owned ? 'differs; rerun with --update to refresh' : 'user-owned; not overwritten' };
 }
 
-export async function plan({ target, harnesses, update }) {
+export async function plan({ target, harnesses, update, candidates }) {
   const actions = [];
   const version = await skillVersion(skillSource);
   const sourceReal = await realpath(skillSource);
@@ -91,6 +92,7 @@ export async function plan({ target, harnesses, update }) {
   const head = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout?.trim() ?? '';
   const sourceCommit = /^[0-9a-f]{40,64}$/.test(head) ? head : null;
   const record = { schemaVersion: 1, skillVersion: version, harnesses: allHarnesses, source: root, sourceCommit, installedAt: new Date().toISOString() };
+  if (candidates) actions.push({ op: 'write', to: candidates.file, content: `${JSON.stringify(candidates.table, null, 2)}\n` });
   actions.push({ op: 'write', to: recordPath, content: `${JSON.stringify(record, null, 2)}\n` });
   return { version, actions };
 }
@@ -117,6 +119,7 @@ async function main() {
       'dry-run': { type: 'boolean', default: false },
       update: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
+      routing: { type: 'string' },
       help: { type: 'boolean', default: false },
     },
   });
@@ -131,7 +134,17 @@ async function main() {
   const unknown = harnesses.filter((h) => !harnessDirs[h]);
   if (unknown.length || !harnesses.length) throw new Error(`unknown harness: ${unknown.join(', ') || '(none)'}; use claude and/or codex`);
 
-  const { version, actions } = await plan({ target, harnesses, update: values.update });
+  let candidates;
+  if (values.routing) {
+    // Loaded lazily: the runtime is only needed for candidate generation, and the installer may run without it.
+    const { applyDeny, buildCandidates, CANDIDATES_FILE, HARNESS_CONFIG, loadHarnessConfig, validateCandidates } = await import('../runtime/lib/harness.mjs');
+    const { loadRouting } = await import('../runtime/lib/routing.mjs');
+    const config = await loadHarnessConfig(HARNESS_CONFIG);
+    const routing = await loadRouting(resolve(values.routing));
+    const table = { version: 1, roles: applyDeny(buildCandidates({ config, routing, now: Date.now() }), config.deny) };
+    candidates = { file: join(target, CANDIDATES_FILE), table: validateCandidates(table, { routing, deny: config.deny }) };
+  }
+  const { version, actions } = await plan({ target, harnesses, update: values.update, candidates });
   const dryRun = values['dry-run'];
   if (!dryRun) await apply(actions);
   const summary = actions.reduce((acc, a) => ({ ...acc, [a.op]: (acc[a.op] ?? 0) + 1 }), {});

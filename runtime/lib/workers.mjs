@@ -56,10 +56,11 @@ const dropTouch = (hold) => queued(hold.id, async () => {
   await hold.lock.release().catch(() => false);
 });
 
-/** Run eligible issues with cross-process per-issue locks and in-process series/dependency/touch-set exclusion. */
+/** Run eligible issues with cross-process per-issue locks and in-process series/dependency/touch-set exclusion. `workers` may be a number or a () => number evaluated each pass. */
 export async function runWorkers({ issues, workRoot, repoRoot, workers = 2, run, now = Date.now, lockTtlMs = 60_000, worktreeManager, prepare = async () => true, shouldStop = () => false, onSkip = () => {}, onSerialize = () => {} }) {
   if (!Array.isArray(issues) || typeof run !== 'function') throw new TypeError('issues and run are required');
-  if (!Number.isSafeInteger(workers) || workers < 1) throw new TypeError('workers must be a positive integer');
+  if (typeof workers !== 'function' && (!Number.isSafeInteger(workers) || workers < 1)) throw new TypeError('workers must be a positive integer or a function returning one');
+  const limit = typeof workers === 'function' ? workers : () => workers;
   const confinement = await createConfinement(workRoot);
   const lockRoot = await confinement.resolve('locks');
   await mkdir(lockRoot, { recursive: true, mode: 0o700 });
@@ -114,7 +115,8 @@ export async function runWorkers({ issues, workRoot, repoRoot, workers = 2, run,
   while (pending.length || active.size) {
     let started = false;
     if (shouldStop()) pending.length = 0;
-    for (let i = 0; i < pending.length && active.size < workers;) {
+    const cap = limit();
+    for (let i = 0; i < pending.length && active.size < cap;) {
       const issue = pending[i];
       const blocker = [...active.values()].map(({ issue: other }) => ({ other, reason: serializationReason(issue, other) })).find(({ reason }) => reason);
       if (blocker) {
@@ -134,7 +136,7 @@ export async function runWorkers({ issues, workRoot, repoRoot, workers = 2, run,
       }
       continue;
     }
-    if (!started || active.size >= workers) await Promise.race([...active.values()].map(({ promise }) => promise));
+    if (!started || active.size >= cap) await Promise.race([...active.values()].map(({ promise }) => promise));
   }
   return { completed, skipped, failed };
 }

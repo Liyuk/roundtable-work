@@ -93,3 +93,9 @@ test('public draft flow rejects classifications other than platform-specific', a
     assert.equal(writes, 0);
   }
 });
+
+test('truncation cuts on a code-point boundary, not inside a surrogate pair', () => {
+  const [result] = classifyCiFixtures(observationsFor('a'.repeat(159) + '😀' + 'x'));
+  assert.equal(result.signature, 'a'.repeat(159) + '😀');
+  assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result.signature), false);
+});
