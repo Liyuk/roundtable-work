@@ -33,4 +33,4 @@ Run one low-risk, locally verifiable small goal: Chief creates ticket → delega
 
 ## 5. Handoff to User
 
-Report: installation location, configuration files, enabled roles and permissions, actually verified capabilities and evidence, unsupported or unverified capabilities, how to pause and revoke (delete skill directory and `.roundtable/` to uninstall), next steps. Mark checks that were not run as “未运行” (not run).
+Report: installation location, configuration files, enabled roles and permissions, actually verified capabilities and evidence, unsupported or unverified capabilities, how to pause and revoke (delete skill directory and `.roundtable/` to uninstall), next steps. Mark checks that were not run as “not run”.
