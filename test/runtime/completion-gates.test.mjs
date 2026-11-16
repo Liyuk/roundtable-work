@@ -26,7 +26,7 @@ ${upsertPrRecord('', buildPrRecord({ issue: '53', head: 'a'.repeat(40), tree: 't
     }, github,
   };
   try {
-    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, models: { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' }, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' }) });
+    const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, models: { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' }, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' }) });
     return { result, calls };
   } finally { await rm(root, { recursive: true, force: true }); }
 }
@@ -51,7 +51,7 @@ test('finalizing decisions are applied before any auto-merge work', async () => 
     const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
     let contextCalls = 0;
     try {
-      const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge: { async context() { contextCalls++; throw new Error('unexpected merge'); } }, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', ...(phase === 'finalizing' ? decision : {}) }) });
+      const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge: { async context() { contextCalls++; throw new Error('unexpected merge'); } }, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok', ...(phase === 'finalizing' ? decision : {}) }) });
       assert.equal(result.outcomes[0].status, 'queued');
       assert.equal(contextCalls, 0);
     } finally { await rm(root, { recursive: true, force: true }); }

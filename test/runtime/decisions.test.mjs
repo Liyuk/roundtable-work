@@ -61,7 +61,7 @@ test('a do outcome survives the current wake and the next daemon pass resumes fr
   const handler = async ({ phase }) => {
     phases.push(phase);
     if (phase === 'finalizing' && first) { first = false; return { exitCode: 0, decision: { decision: 'do', reason: 'continue' } }; }
-    if (phase === 'reviewing') return { exitCode: 0, output: '审查结论：通过' };
+    if (phase === 'reviewing') return { exitCode: 0, output: 'Verdict: pass' };
     return { exitCode: 0, output: 'ok' };
   };
   const firstPass = await runQueue({ workRoot: root, queue: ['17'], handler });
@@ -77,7 +77,7 @@ test('daemon parses and applies a valid decision file from the finalizing result
   const handler = async ({ phase }) => {
     phases.push(phase);
     if (phase === 'finalizing') return { exitCode: 0, decisionFile: 'DECISION=do\nContinue the task' };
-    if (phase === 'reviewing') return { exitCode: 0, output: '审查结论：通过' };
+    if (phase === 'reviewing') return { exitCode: 0, output: 'Verdict: pass' };
     return { exitCode: 0, output: 'ok' };
   };
   const result = await runQueue({ workRoot: root, queue: ['18'], handler });
@@ -90,7 +90,7 @@ test('daemon parses and applies a valid decision file from the finalizing result
 test('daemon rejects an invalid decision file without applying it', async () => fixture(async root => {
   const handler = async ({ phase }) => phase === 'finalizing'
     ? { exitCode: 0, decisionFile: 'DECISION=ask\nmerge\nMay I?' }
-    : { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' };
+    : { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' };
   await assert.rejects(runQueue({ workRoot: root, queue: ['19'], handler }), /ask category must be scope, credentials, destructive, or direction/);
   const state = await createStateStore({ workRoot: root }).then(store => store.load('19'));
   assert.notEqual(state.status, 'waiting_person');

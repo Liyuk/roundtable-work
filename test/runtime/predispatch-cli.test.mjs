@@ -25,7 +25,7 @@ import { join } from 'node:path';
 ${OBSERVATION}
 export default async function handler({ phase }) {
   writeFileSync(join(process.env.RT_TEST_ROOT, 'called-' + phase), '1');
-  return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' };
+  return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' };
 }
 ${preDispatch}
 `;

@@ -27,7 +27,7 @@ test('daemon retries a persisted disputed decision on a later invocation', async
   const workTypes = [];
   const handler = async ({ phase, state }) => phase === 'finalizing'
     ? { exitCode: 0, ...(state.pendingDecision ? { decision: { decision: 'ask', category: 'direction', question: 'Changed output' } } : { decision: question }) }
-    : { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' };
+    : { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' };
   const modelRouter = type => { workTypes.push(type); return 'configured-escalation-model'; };
   const failed = await runQueue({ workRoot: root, queue: ['70'], handler, modelRouter });
   assert.equal(failed.outcomes[0].status, 'waiting_external');
@@ -67,7 +67,7 @@ export const escalationAdapter = async ({ decision, model, attempt }) => {
 };
 export default async ({ phase }) => phase === 'finalizing'
   ? { exitCode: 0, decision: ${JSON.stringify(question)} }
-  : { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' };
+  : { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' };
 export async function preDispatch() { return { ok: true }; }
 `);
   const resultPath = join(root, 'adapter-result.json');

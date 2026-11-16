@@ -20,7 +20,7 @@ process.env.RTW_STATE_DIR = ANCHOR;
 process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/shadow.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
-const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' });
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'rt-shadow-'));

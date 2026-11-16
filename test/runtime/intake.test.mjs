@@ -164,7 +164,7 @@ test('runQueue selects tracker fixtures after dependencies close', async () => {
   try {
     let dependency = 'OPEN';
     const provider = createIntakeProvider({ getOwner: async () => 'owner', listIssues: async () => [issue(10, ['type:bug'], { body: 'Depends on #11' })], getIssue: async () => ({ state: dependency }) });
-    const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+    const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' });
     assert.deepEqual((await runQueue({ workRoot: root, queue: provider, handler })).outcomes, []);
     dependency = 'CLOSED';
     assert.deepEqual((await runQueue({ workRoot: root, queue: provider, handler })).outcomes.map(({ id, status }) => [id, status]), [['10', 'done']]);

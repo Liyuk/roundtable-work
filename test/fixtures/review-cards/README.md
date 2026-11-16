@@ -1,7 +1,7 @@
 # Review card replay fixtures
 
-Synthetic reviewer delivery cards for issue #173. Every card starts with the first-line verdict
-`审查结论：打回` and embeds its review ledger as a fenced `json` block. No card contains host, path, or
+Synthetic reviewer delivery cards for issue #173. Every card starts with a legacy Chinese reject verdict
+as its first line and embeds its review ledger as a fenced `json` block. No card contains host, path, or
 personal data from a real session.
 
 `test/runtime/review-card-replay.test.mjs` extracts the ledger `findings` from each card, replays the

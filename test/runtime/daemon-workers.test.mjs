@@ -22,7 +22,7 @@ async function fixture() {
   git('init', '-b', 'main'); await writeFile(join(repo, 'file'), 'fixture'); git('add', 'file'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture');
   return { root, repo, workRoot };
 }
-const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' });
 const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/daemon-workers.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 function clientFor(issue) {
   const events = [];
@@ -218,7 +218,7 @@ test('daemon reads decompose drafts from the worker worktree, not the repository
     };
     await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue: [issue], handler: async ({ phase, item }) => {
       if (phase === 'developing') await writeFile(join(item.worktree, 'child.json'), JSON.stringify({ title: 'Worktree child', body: 'Work' }));
-      return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', ...(phase === 'finalizing' ? { decision: { decision: 'decompose', drafts: ['child.json'] } } : {}) };
+      return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok', ...(phase === 'finalizing' ? { decision: { decision: 'decompose', drafts: ['child.json'] } } : {}) };
     } });
     assert.deepEqual(created, ['[50-1] Worktree child']);
   } finally { await rm(root, { recursive: true, force: true }); }

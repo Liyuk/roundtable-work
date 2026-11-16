@@ -224,7 +224,7 @@ ${body('92', REVERT_SHA, 'reverttree')}`, files: ['x'] }; },
     gates: { async gate0() { calls.push('gate0'); return true; }, async reviewer({ head }) { calls.push('reviewer'); return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
     observation: observationProvider(),
   };
-  const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+  const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' });
   try {
     const autoMerge = createProductionAdapter(providers);
     await runQueue({ workRoot: root, queue: ['53'], handler, autoMerge });
@@ -247,7 +247,7 @@ import { fileURLToPath } from 'node:url';
 async function cliFixture(root, status, revertGreen = true) {
   const log = join(root, 'calls.jsonl');
   await writeFile(join(root, 'queue.json'), JSON.stringify(['53', '54']));
-  await writeFile(join(root, 'handler.mjs'), `export default async ({phase}) => ({exitCode:0, output:phase === 'reviewing' ? '审查结论：通过' : 'ok'});
+  await writeFile(join(root, 'handler.mjs'), `export default async ({phase}) => ({exitCode:0, output:phase === 'reviewing' ? 'Verdict: pass' : 'ok'});
 export async function preDispatch() { return { ok: true }; }`);
   await writeFile(join(root, 'providers.mjs'), `
 import { appendFile } from 'node:fs/promises';
@@ -364,7 +364,7 @@ ${body(issue, REVERT_SHA, 'tree')}`, files: ['x'] }; },
     gates: { async gate0(input) { issue = input.issue; return issue === '53' || gatePass; }, async reviewer({ head }) { return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
     observation: observationProvider(),
   });
-  const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+  const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' });
   try {
     await runQueue({ workRoot: root, queue: ['53'], handler, autoMerge });
     assert.deepEqual(calls, [90]);

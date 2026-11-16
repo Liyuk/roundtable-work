@@ -21,7 +21,7 @@ import { detectStalls } from '../../runtime/lib/stall.mjs';
 const RTD = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const tmp = () => mkdtemp(join(tmpdir(), 'rt-recovery-'));
 const exists = (p) => access(p).then(() => true, () => false);
-const PASS = '审查结论：通过\nok';
+const PASS = 'Verdict: pass\nok';
 // Runtime lock records live in the private anchor (RTW_STATE_DIR, inherited by every child process), never in
 // the work root: `.roundtable/state/rtd.lock.d` is only the caller-side path whose last component names the lock.
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-recovery-anchor-'));
@@ -80,7 +80,7 @@ export default async function handler({ item, phase }) {
     }
     if (phase === 'testing') process.exit(137);
   }
-  return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' };
+  return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass\\nok' : 'ok' };
 }
 export async function preDispatch() { return { ok: true }; }
 `;
@@ -311,7 +311,7 @@ test('developer failures and valid rejections do consume the developer budget, t
     const files = await writeFixtures(root, '9');
     const handler = async ({ phase }) => phase === 'developing'
       ? { exitCode: 0, output: 'ok', artifacts: files }
-      : phase === 'testing' ? { exitCode: 0 } : { exitCode: 0, output: '审查结论：打回\nfix it' };
+      : phase === 'testing' ? { exitCode: 0 } : { exitCode: 0, output: 'Verdict: reject\nfix it' };
     const r = await runQueue({ workRoot: root, queue: ['9'], handler, maxDeveloperAttempts: 2 });
     assert.equal(r.outcomes[0].status, 'stop');
     assert.equal(r.outcomes[0].reason, 'developer_budget_exhausted');
@@ -411,7 +411,7 @@ test('developer retry: counter and checkpoint reset are one durable write; a cra
     };
     syncBuiltinESMExports();
     const handler = async ({ phase }) => phase === 'developing' ? { exitCode: 0, output: 'ok' }
-      : phase === 'testing' ? { exitCode: 0 } : { exitCode: 0, output: '审查结论：打回\nfix it' };
+      : phase === 'testing' ? { exitCode: 0 } : { exitCode: 0, output: 'Verdict: reject\nfix it' };
     await assert.rejects(runQueue({ workRoot: root, queue: ['49'], handler, now: () => clock.t }), /simulated crash/);
     fsp.rename = realRename;
     syncBuiltinESMExports();
@@ -455,7 +455,7 @@ for (const failedPhase of ['developing', 'reviewing']) {
       };
       syncBuiltinESMExports();
       const handler = async ({ phase }) => phase === failedPhase
-        ? failedPhase === 'reviewing' ? { exitCode: 0, output: '审查结论：打回\nfix it' } : { exitCode: 1 }
+        ? failedPhase === 'reviewing' ? { exitCode: 0, output: 'Verdict: reject\nfix it' } : { exitCode: 1 }
         : { exitCode: 0, output: 'ok' };
       await assert.rejects(runQueue({ workRoot: root, queue: ['66'], handler, now: () => clock.t, maxDeveloperAttempts: 1 }), /simulated crash/);
       fsp.rename = realRename;

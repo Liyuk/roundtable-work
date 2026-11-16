@@ -9,7 +9,7 @@ import { runGates } from '../../runtime/lib/gates.mjs';
 import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
-const PASS = '审查结论：通过';
+const PASS = 'Verdict: pass';
 const SAFETY = '.github/workflows/check.yml';
 const BASE_SHA = 'a'.repeat(40);
 const REVERT_SHA = 'b'.repeat(40);

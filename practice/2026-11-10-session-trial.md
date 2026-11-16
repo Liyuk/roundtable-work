@@ -6,9 +6,9 @@ Date: 2026-11-10. Goal: verify whether the current harness can support task disp
 
 1. The main session, acting as Chief, used the current harness's `collaboration.spawn_agent` to create `practice_developer` and handed over task RTW-DEMO-1: write a temporary file with a goal, three acceptance conditions, and one risk. To test rework, the first draft deliberately contained only two conditions.
 2. The developer reported actually creating `/tmp/rtw-demo/brief.md` and checking it; the Chief used `collaboration.spawn_agent` to create an independent `practice_reviewer`, providing the original goal and the file location.
-3. The reviewer actually read the shared instructions, the reviewer role, and the file, found that the file had two acceptance conditions where three were required, and concluded with a send-back verdict (`打回`).
+3. The reviewer actually read the shared instructions, the reviewer role, and the file, found that the file had two acceptance conditions where three were required, and concluded with a reject verdict (`Verdict: reject`).
 4. The Chief used `collaboration.followup_task` to send the defect back to the original developer; the developer added the third condition and read it back to check.
-5. The Chief used `collaboration.followup_task` to have the original reviewer re-review; the reviewer reported a pass (`通过`) after reading, confirming the goal, the three acceptance conditions, and one risk. The Chief separately read the final file to check.
+5. The Chief used `collaboration.followup_task` to have the original reviewer re-review; the reviewer reported a pass (`Verdict: pass`) after reading, confirming the goal, the three acceptance conditions, and one risk. The Chief separately read the final file to check.
 
 ## Conclusions and boundaries
 

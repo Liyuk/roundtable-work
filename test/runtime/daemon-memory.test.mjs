@@ -87,7 +87,7 @@ test('reflectOnce calls the provider once per event id and writes one layer-2 ro
   });
 });
 
-const passing = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
+const passing = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' });
 
 test('runQueue reflects once on done, on a fix round and on a finalize failure', async () => {
   const cases = [

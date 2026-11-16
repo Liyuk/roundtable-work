@@ -20,7 +20,7 @@ const scratch = join(process.cwd(), '.roundtable/scratch/55-r2-wire/tmp');
 const tmp = async () => { await mkdir(scratch, { recursive: true }); return mkdtemp(join(scratch, 'case-')); };
 const exists = (path) => access(path).then(() => true, () => false);
 const MODELS = { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' };
-const PASS = '审查结论：通过';
+const PASS = 'Verdict: pass';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/rtd-cleanup.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 

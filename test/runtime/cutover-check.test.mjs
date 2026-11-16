@@ -233,7 +233,7 @@ test('CLI on the repository inventory: the rows that name no resolution fail the
 // rtd fixtures: the same shape as test/runtime/cutover.test.mjs, so a shadow run is a real pass.
 const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/cutover-check.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
-const PASS = '审查结论：通过';
+const PASS = 'Verdict: pass';
 const SHA = 'a'.repeat(40);
 const READS = ['repo view', 'issue list', 'issue view', 'pr list'];
 
