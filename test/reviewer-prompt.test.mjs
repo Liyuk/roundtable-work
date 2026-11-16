@@ -9,31 +9,31 @@ const CARD_FIELDS = [
   'Status',
   'Executor / Reviewer',
   'Conclusion and scope of completion (verify each acceptance criterion)',
-  '产物 (Artifacts), changes or PR links / reviewed version or HEAD',
+  'Artifacts, changes or PR links / reviewed version or HEAD',
   'Actually run checks',
   'Checks not run and why',
-  '未完成项 (Incomplete items), risks and unknown external side effects',
-  '需要人或 Chief 决定 (Items that require a human or Chief decision)',
+  'Incomplete items, risks and unknown external side effects',
+  'Items that require a human or Chief decision',
   'Recommended next steps',
 ];
 
-const validVerdictCard = `审查结论：打回
+const validVerdictCard = `Verdict: reject
 - Ticket / assignment / attempt / target version: #176 / review / 1 / abc123
-- Status: 部分完成
+- Status: partially complete
 - Executor / Reviewer: developer / reviewer
 - Conclusion and scope of completion (verify each acceptance criterion):
   - F1: The regression fixture did not reject reordered card fields.
   - The rationale names the decisive acceptance criterion.
-- 产物 (Artifacts), changes or PR links / reviewed version or HEAD: test/reviewer-prompt.test.mjs / abc123
+- Artifacts, changes or PR links / reviewed version or HEAD: test/reviewer-prompt.test.mjs / abc123
 - Actually run checks: npm test — exit 1
 - Checks not run and why: none
-- 未完成项 (Incomplete items), risks and unknown external side effects: format test is missing
-- 需要人或 Chief 决定 (Items that require a human or Chief decision): none
+- Incomplete items, risks and unknown external side effects: format test is missing
+- Items that require a human or Chief decision: none
 - Recommended next steps: fix the fixture and rerun checks`;
 
 function hasValidVerdictCardFormat(card) {
   const lines = card.split(/\r?\n/);
-  if (!/^审查结论：(通过|打回|阻塞)$/.test(lines[0])) return false;
+  if (!/^(Verdict: (pass|reject|block)|审查结论：(通过|打回|阻塞))$/i.test(lines[0])) return false;
   const fieldLines = lines.filter((line) => line.startsWith('- '));
   const headings = fieldLines.map((line) => line.slice(2, line.indexOf(':')));
   if (!fieldLines.every((line) => line.includes(':')) || !deepEqual(headings, CARD_FIELDS)) return false;
@@ -64,14 +64,27 @@ test('reviewer prompt uses the required check order and concise rationale', () =
   assert.match(prompt, /length and polish are not merits/i);
   assert.match(prompt, /at most 6 lines/i);
   assert.match(prompt, /decisive criterion/i);
-  assert.match(prompt, /审查结论：通过 \| 打回 \| 阻塞[^\n]*first line/);
+  assert.match(prompt, /Verdict: pass \| reject \| block[^\n]*first line/);
+});
+
+test('reviewer prompt writers emit only the English verdict line, legacy Chinese line is alias-only', () => {
+  assert.doesNotMatch(prompt, /write `审查结论/);
+  assert.match(prompt, /legacy Chinese first line[^\n]*accepted as an alias/i);
+});
+
+test('English verdict line is accepted by the card validator', () => {
+  assert.equal(hasValidVerdictCardFormat(validVerdictCard), true);
+  assert.equal(hasValidVerdictCardFormat(validVerdictCard.replace(/^Verdict: reject/, 'Verdict: pass')), true);
+});
+
+test('legacy Chinese first line is still accepted by the card validator as an alias', () => {
+  assert.equal(hasValidVerdictCardFormat(validVerdictCard.replace(/^Verdict: reject/, '审查结论：打回')), true);
 });
 
 test('review verdict cards keep the template field order and rationale within six lines', () => {
-  assert.equal(hasValidVerdictCardFormat(validVerdictCard), true);
   assert.equal(hasValidVerdictCardFormat(validVerdictCard.replace(
-    '- Status: 部分完成\n- Executor / Reviewer: developer / reviewer',
-    '- Executor / Reviewer: developer / reviewer\n- Status: 部分完成'
+    '- Status: partially complete\n- Executor / Reviewer: developer / reviewer',
+    '- Executor / Reviewer: developer / reviewer\n- Status: partially complete'
   )), false, 'reordered headings are rejected');
   const sevenReasons = validVerdictCard.replace(
     '  - The rationale names the decisive acceptance criterion.',
