@@ -149,7 +149,7 @@ def run_ci(d, sha, branch, event):
 def ci_conclusion(sha, d, branch):
     f = faults()
     for fl in f.get("ci_flake", []):   # first run on a matching branch fails, rerun passes
-        if re.search(fl["branch"], branch) and not fl.get("_fired_" + sha[:7]):
+        if re.search(fl["branch"], branch):
             key = "flake:" + branch
             if key not in d.setdefault("fired", []):
                 d["fired"].append(key); return "failure"
@@ -226,6 +226,8 @@ def cmd_issue(sub, argv):
             print(url("issues", int(n)) + "#issuecomment-%d" % len(it["comments"])); return
         if sub in ("close", "reopen"):
             it["state"] = "CLOSED" if sub == "close" else "OPEN"; it["closedAt"] = now() if sub == "close" else None
+            reason = (one(opt, "--reason", "-r") or "completed").replace(" ", "_").upper()
+            it["stateReason"] = reason if sub == "close" else None
             c = one(opt, "--comment", "-c")
             if c: it["comments"].append({"author": ACTOR, "body": c, "createdAt": now()})
             d["events"].append({"at": now(), "kind": "issue-" + sub, "n": int(n), "by": "loop"}); return
@@ -374,6 +376,10 @@ def main(argv):
         with open(LOG, "a") as f: f.write(json.dumps({"at": now(), "cwd": os.getcwd(), "argv": argv}) + "\n")
     if not argv: die("fakegh: no command")
     top, sub, rest = argv[0], (argv[1] if len(argv) > 1 else ""), argv[2:]
+    for i, a in enumerate(argv):   # refuse any other repository: a call aimed at a real repo must fail, not be answered
+        r = argv[i + 1] if a in ("-R", "--repo") and i + 1 < len(argv) else (a.split("=", 1)[1] if a.startswith("--repo=") else None)
+        if r is not None and r != SLUG:
+            die("fakegh: repository %s is not the sandbox (%s)" % (r, SLUG), 4)
     if top == "auth": print("Logged in to github.com as %s (bench)" % ACTOR); return
     if top == "repo" and sub == "view":
         _, opt = parse(rest, VAL); emit({"nameWithOwner": SLUG, "defaultBranchRef": {"name": "main"}, "url": "https://github.com/" + SLUG}, opt); return
