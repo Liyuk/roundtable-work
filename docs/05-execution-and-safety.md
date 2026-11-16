@@ -12,7 +12,7 @@ Chief → create Assignment → role claims the ticket → choose an available r
       → read structured conclusion and verification evidence → submit for review/rework → deliver
 ```
 
-The minimal conclusion includes status (`完成` (complete) / `失败` (failed) / `阻塞` (blocked) / `部分完成` (partially complete) / `结果未知` (result unknown)), key points, changes, artifacts, check commands and their exit statuses, unfinished items, and next steps. Full logs remain available for inspection, and the Chief reads the summary by default; when a runner cannot provide a structured conclusion, mark it incomplete. The system should produce evidence from actual process exits and tool results, and must not trust the model's report alone.
+The minimal conclusion includes status (`complete` / `failed` / `blocked` / `partially complete` / `result unknown`), key points, changes, artifacts, check commands and their exit statuses, unfinished items, and next steps. Full logs remain available for inspection, and the Chief reads the summary by default; when a runner cannot provide a structured conclusion, mark it incomplete. The system should produce evidence from actual process exits and tool results, and must not trust the model's report alone.
 
 Fallback is triggered only for predefined provider unavailability or recoverable faults, recording the original model, the error, the substitute model, and the attempt ID; before a new attempt picks up, first verify external side effects. If a high-risk review requires a designated model, it must not be silently downgraded. Output format, cost, and model capability vary by CLI/version, so setup must probe them in practice.
 

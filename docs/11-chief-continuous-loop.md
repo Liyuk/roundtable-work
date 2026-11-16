@@ -1,6 +1,6 @@
 # Chief: the loop of working continuously around a goal
 
-Status: user intent and candidate design · 2026-11-10. What the user refers to is **Chief**. Chief is the role that takes on observation, judgment, decision-making, communication, delegation, memory recall and continued progress; the host is the runtime environment that provides capabilities such as sessions, timing, processes and communication. In a concrete implementation the two can be in the same system, and Chief should not be reduced to a shell that only forwards messages.
+Status: user intent and candidate design, 2026-11-10. What the user refers to is **Chief**. Chief is the role that takes on observation, judgment, decision-making, communication, delegation, memory recall and continued progress; the host is the runtime environment that provides capabilities such as sessions, timing, processes and communication. In a concrete implementation the two can be in the same system, and Chief should not be reduced to a shell that only forwards messages.
 
 ## How the person and Chief divide the work
 

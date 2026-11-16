@@ -33,7 +33,7 @@ User gives a goal / later additions
 
 Chief takes on proactive observation, communication, recall, and task and organizational judgment; the host provides sessions, events, message delivery, processes and tool access. The two can be implemented in the same system, but a piece of work can have only one scheduling authority.
 
-For example: after a developer completes a feature, the host receives the actual process exit or completion event, and hands the result to Chief or, as preconfigured, sends it directly for review; when the reviewer returns `打回` (sent back), the card returns to the original author; after review `通过` (passes), Chief re-examines the original goal and the to-do items, and decides whether to continue with the next one or to wait. If the host cannot automatically wake Chief after it goes idle, the "continue" in the prompt will not take effect by itself, and setup must flag the gap.
+For example: after a developer completes a feature, the host receives the actual process exit or completion event, and hands the result to Chief or, as preconfigured, sends it directly for review; when the reviewer returns `reject` (sent back), the card returns to the original author; after review `pass` (passes), Chief re-examines the original goal and the to-do items, and decides whether to continue with the next one or to wait. If the host cannot automatically wake Chief after it goes idle, the "continue" in the prompt will not take effect by itself, and setup must flag the gap.
 
 ## How Chief decides to hire, stand by or shrink
 

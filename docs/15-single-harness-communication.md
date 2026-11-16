@@ -16,7 +16,7 @@ When the same host can handle dispatching, sending messages, waiting, and collec
 
 ### Minimal messaging convention
 
-A dispatch carries the task ID, goal version, the executor, goal/acceptance criteria, workspace, permission boundary, and the place to return results; a result carries status, artifacts, evidence, unfinished items, and next step. The Chief judges whether something was created, sent, and completed by what the host actually returns; sent does not mean read, and a reply does not mean acceptance. If the host cannot prove an event, mark it unknown (`未知`) rather than forging it from a prompt.
+A dispatch carries the task ID, goal version, the executor, goal/acceptance criteria, workspace, permission boundary, and the place to return results; a result carries status, artifacts, evidence, unfinished items, and next step. The Chief judges whether something was created, sent, and completed by what the host actually returns; sent does not mean read, and a reply does not mean acceptance. If the host cannot prove an event, mark it unknown (`unknown`) rather than forging it from a prompt.
 
 When the user follows up or changes the goal, the Chief updates the version and relays it to the affected sessions through the messaging/follow-up-task capability the host actually has available at the moment; if it does not support relaying during a run, record it as pending, inject it the next time that is possible, or stop first. You cannot assume that the message was read or that the old execution stopped immediately. When several people edit files at the same time, the workspaces and write boundaries must be kept distinct.
 
