@@ -277,6 +277,48 @@ Each stage is measured from the ledger, the freeze ledger, GitHub and `goals.jso
 
 **What stays with the owner by design.** Security-sensitive host changes are owner actions forever, and the loop never automates them: rebooting the host; proxy, SSH, firewall or network configuration; installing system packages or binaries; creating OS users, tokens or credentials; deleting data (state, worktrees, branches, history); stopping or reconfiguring other services on the host; installing or enabling units; `--live` cutover and rollback. They are recorded with category `owner-only`, which is a closed list in RT-S1. They are excluded from MTBI and from the exit count, and listed separately in the digest. Any other owner action is a counted intervention.
 
+## (h) Patrol, watchdog, and handoff
+
+On main today, the patrol runs as an in-daemon timer and the watchdog is a report-only script that can restart a unit when told to. Nothing here is installed or live, and the external assistant stays in place until the handoff below.
+
+**Patrol checklist.** `runtime/lib/patrol.mjs` has detectors P2–P9; the code has no P1.
+
+| Row | Trigger | Action |
+| --- | --- | --- |
+| P2 | a `working` item with no state change for more than 90 min | `observe` on the first stale observation, `requeue` on the second consecutive one, `block` if it was already requeued |
+| P3 | the same error fingerprint 3 or more times in the last 6 h | `pause_claims_file_self_issue` |
+| P4 | main CI is red | `pause_claims`, or `revert_candidate` when the loop made the merge |
+| P5 | leak-check hits in public text | `redact_candidate`; content is never echoed, only location and kind |
+| P6 | an `rt:ask` or `rt:blocked` item with a default available | `retry_decider` while attempts are below 3, then `ask_policy_candidate` |
+| P7 | an open issue or PR whose verified done evidence holds | `close_candidate` |
+| P8 | an open PR with passed gates, green CI, and a policy that allows merge | `merge_candidate` |
+| P9 | a lock or temp file not touched for more than 30 min | `prune_candidate` |
+
+**Routing** (`runPatrol` in `runtime/lib/patrol-timer.mjs`). `observe` writes to the event log only. `pause_claims` and `pause_claims_file_self_issue` go to the `pause-queue` actuator only when an actuator is injected. Every other action becomes an owner-only outbox notice and an `owner-only` ledger entry. No action merges, closes or reverts. `runtime/rtd.mjs` injects no actuator, so every non-observe finding is an owner-only notice. The detector inputs are empty (`EMPTY_PATROL_INPUTS`), so the running daemon produces no finding yet.
+
+**Patrol timer.** `patrol:periodic` is a recurring timer that `ensurePatrolTimer` registers once in `--loop` mode. It is an in-daemon timer, not a systemd or cron unit, so it needs no install. The default cadence is 30 min. `RT_PATROL_MS` overrides it with a positive integer in milliseconds; any other value is an error.
+
+**STOP.** While `.roundtable/state/STOP` exists, each patrol cycle writes one line with `outcome: skipped-stop` to `.roundtable/state/patrol.jsonl` and runs no detector and no action. The watchdog does not restart either.
+
+**Watchdog** (`scripts/rtd-watchdog.mjs`). Report-only by default: it prints one JSON line and writes nothing. With `--restart --unit <unit>.service` it may run `systemctl --user restart <unit>`.
+
+- At most 3 restarts in a rolling hour, recorded in `.roundtable/state/watchdog-restarts.jsonl`. A fresh heartbeat resets the count.
+- It skips with `skipped: stop` when STOP exists, and with `skipped: own-freeze` when the watchdog itself was frozen.
+- At the cap it enqueues one alert and writes one ledger entry with reason `restart-exhausted`, then waits for the window to roll over.
+- Each restart is one `self` ledger entry with category `liveness`.
+
+**Owner steps.** The watchdog timer and the user units under `deploy/systemd/user/` are templates. The owner installs them and enables lingering for the user. This section installs nothing.
+
+**Handoff.** The owner makes the external assistant read-only by recording one ledger entry with the CLI. The owner runs this command; the Chief and the loop never run it.
+
+```sh
+scripts/rt-intervention.mjs add --workspace <workspace> --category owner-only --ref none --source owner --internalized yes --key handoff --reason "handoff: external assistant read-only; 72 h clock starts"
+```
+
+The entry's `at` is the handoff timestamp. The category is `owner-only`, so the entry is not a counted intervention. The planned RT-S12 step then removes the external assistant's actuator and write access (`runtime/defaults/observer.json`); that switch is not live.
+
+**72 h clock (#414).** Let `t_handoff` be the `at` of the handoff entry and `T` the check time. The clock window is `W = [max(T − 72 h, t_handoff), T]`. Without a handoff entry the clock has not started, and the checker reports that. The final exit criterion in (g) is evaluated over this `W`.
+
 ## Weak-model constraints
 
 | Constraint | Mechanism |
