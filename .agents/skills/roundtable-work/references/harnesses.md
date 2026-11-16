@@ -59,7 +59,7 @@ Gate 1 review runs the reviewer as a separate OS process.
 
 - The command is `RT_REVIEWER_COMMAND`, default `pi -p`. It is split on whitespace and spawned without a shell. The prompt is the last argument, and `--model <model>` is added when a model is routed.
 - The reviewer runs read-only. `buildReviewerPrompt` tells it not to run tests and not to modify files. It judges the recorded Gate 0 summary, which is the test evidence.
-- The verdict is the first line of the reply, exactly `Verdict: pass`, `Verdict: reject`, or `Verdict: block`. The English form is the only writer form. These tokens are machine contract strings and must not be changed. The legacy Chinese first line is still accepted as an alias. Any other first line is treated as blocked.
+- The verdict is the first line of the reply, exactly `审查结论：通过`, `审查结论：打回`, or `审查结论：阻塞` (pass, reject, or block). These tokens are machine contract strings and must not be translated. Any other first line is treated as blocked.
 
 Degraded path:
 
@@ -72,7 +72,7 @@ Read-only sandbox guidance:
 
 - If the reviewer's sandbox is read-only, do not force tests inside it, and do not stall waiting for a writable sandbox.
 - Rely on the recorded Gate 0 summary (test evidence), and still give a verdict on the first line, using the exact tokens above.
-- Do not end the review silently. If the evidence is insufficient to judge, the verdict is `Verdict: block` with the reason in the rationale.
+- Do not end the review silently. If the evidence is insufficient to judge, the verdict is `审查结论：阻塞` with the reason in the rationale.
 
 ## Host Capability Mapping
 
@@ -96,7 +96,7 @@ When the harness has both application-level sessions (visible to the user, indep
 Write one capability line in the continuation record or ticket during the first turn, for example:
 
 ```text
-Host: Claude Code | sub-session: listed, not verified (Agent) | follow-up: listed, not verified (SendMessage) | wake-up after turn: not verified | evidence: session tool list
+Host: Claude Code · sub-session: listed, not verified (Agent) · follow-up: listed, not verified (SendMessage) · wake-up after turn: not verified · evidence: session tool list
 ```
 
 For each capability not personally invoked, write "listed but not verified". Do not write "supported" just because a document or this table names a tool.
