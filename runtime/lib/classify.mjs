@@ -17,9 +17,9 @@ export const CLASSES = Object.freeze([
   'finalize_failure',
 ]);
 
-// First-line verdict contract: `审查结论：通过 | 打回 | 阻塞`. The regex only captures the word;
-// parseVerdict (lib/verdict.mjs) does the actual interpretation.
-const VERDICT_LINE = /^审查结论[：:]\s*(\S+)\s*$/;
+// First-line verdict contract: `Verdict: pass | reject | block` (the legacy Chinese label is an alias).
+// The regex only captures the word; parseVerdict (lib/verdict.mjs) does the actual interpretation.
+const VERDICT_LINE = /^(?:Verdict|审查结论)\s*[:：]\s*(\S+)\s*$/i;
 
 function result(cls, decision, extra = {}) {
   // Every class preserves artifacts; only developer-side failures and valid rejections spend a developer retry.

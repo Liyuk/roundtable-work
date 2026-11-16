@@ -1,5 +1,5 @@
 // Machine-readable merge record for a loop PR. Pure: no fs, no network, no clock.
-export const GATE1_VERDICT = '审查结论：通过';
+export const GATE1_VERDICT = 'Verdict: pass';
 const GATES = ['gate0', 'gate1', 'gate2', 'ci'];
 const BLOCK = /```rt-record\n[\s\S]*?\n```/g;
 const isText = (value) => typeof value === 'string' && value.length > 0;

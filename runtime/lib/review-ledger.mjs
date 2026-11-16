@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 
-const VERDICTS = Object.freeze({ pass: '审查结论：通过', reject: '审查结论：打回', block: '审查结论：阻塞' });
+// Recorded values map to the frozen states passed / rejected / blocked (lib/verdict.mjs); writers emit the English line.
+const VERDICTS = Object.freeze({ pass: 'Verdict: pass', reject: 'Verdict: reject', block: 'Verdict: block' });
 const CLASSES = ['blocking', 'in-scope miss', 'out-of-scope follow-up'];
 const STATUSES = ['open', 'fixed', 'follow-up'];
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];

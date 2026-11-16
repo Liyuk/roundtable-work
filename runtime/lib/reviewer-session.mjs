@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process';
 import { parseVerdict } from '../../lib/verdict.mjs';
 import { childEnv } from './agent-adapter.mjs';
 
-// First-line verdict contract: `审查结论：通过 | 打回 | 阻塞`. Anything else is blocked.
-const VERDICT_LINE = /^审查结论[：:]\s*(\S+)\s*$/;
+// First-line verdict contract: `Verdict: pass | reject | block` (the legacy Chinese label is an alias). Anything else is blocked.
+const VERDICT_LINE = /^(?:Verdict|审查结论)\s*[:：]\s*(\S+)\s*$/i;
 const STATUS = { passed: 'pass', rejected: 'reject', blocked: 'blocked' };
 
 const statusOf = (text) => {
@@ -16,7 +16,7 @@ export function buildReviewerPrompt({ head, gate0Summary }) {
   return [
     `Review the change at head ${head}. Read-only review: do not run tests and do not modify files.`,
     `Recorded Gate 0 summary (the test evidence to rely on):\n${gate0Summary}`,
-    'Reply with the verdict on the first line exactly as `审查结论：通过` or `审查结论：打回` or `审查结论：阻塞`, then your rationale.',
+    'Reply with the verdict on the first line exactly as `Verdict: pass` or `Verdict: reject` or `Verdict: block`, then your rationale.',
   ].join('\n\n');
 }
 

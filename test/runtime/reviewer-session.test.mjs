@@ -8,22 +8,22 @@ import { runGates } from '../../runtime/lib/gates.mjs';
 
 const GATE0 = 'Gate 0 passed: 412 tests, 0 failures on head h1';
 
-async function fakePi(dir, verdict) {
+async function fakePi(dir, firstLine) {
   const file = join(dir, 'fake-pi');
   await writeFile(file, `#!/bin/sh
 echo $$ > "$RT_FAKE_PID_FILE"
 printf '%s' "$@" > "$RT_FAKE_ARGS_FILE"
-printf '%s\\n' '审查结论：${verdict}'
+printf '%s\\n' '${firstLine}'
 echo 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.'
 `);
   await chmod(file, 0o755);
   return file;
 }
 
-async function withFake(verdict, fn) {
+async function withFake(firstLine, fn) {
   const dir = await mkdtemp(join(tmpdir(), 'rt244-reviewer-'));
   try {
-    const command = await fakePi(dir, verdict);
+    const command = await fakePi(dir, firstLine);
     const env = { ...process.env, RT_REVIEWER_COMMAND: command, RT_FAKE_PID_FILE: join(dir, 'pid'), RT_FAKE_ARGS_FILE: join(dir, 'args') };
     await fn({ env, dir });
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -32,12 +32,12 @@ async function withFake(verdict, fn) {
 test('the reviewer prompt carries the recorded Gate 0 summary and forbids running tests', () => {
   const prompt = buildReviewerPrompt({ head: 'h1', gate0Summary: GATE0 });
   assert.match(prompt, /Gate 0 passed: 412 tests, 0 failures on head h1/);
-  assert.match(prompt, /审查结论：通过.*审查结论：打回.*审查结论：阻塞/s);
+  assert.match(prompt, /Verdict: pass.*Verdict: reject.*Verdict: block/s);
   assert.match(prompt, /do not run tests/i);
 });
 
 test('the separate reviewer runs in another OS process and its verdict is an independent Gate 1 pass', async () => {
-  await withFake('通过', async ({ env, dir }) => {
+  await withFake('Verdict: pass', async ({ env, dir }) => {
     const result = await runSeparateReviewer({ head: 'h1', gate0Summary: GATE0, env });
     const childPid = Number(await readFile(join(dir, 'pid'), 'utf8'));
     assert.notEqual(result.pid, process.pid);
@@ -49,21 +49,27 @@ test('the separate reviewer runs in another OS process and its verdict is an ind
 });
 
 test('a rejected verdict from the separate reviewer is not a pass', async () => {
-  await withFake('打回', async ({ env }) => {
+  await withFake('Verdict: reject', async ({ env }) => {
     const result = await runSeparateReviewer({ head: 'h1', gate0Summary: GATE0, env });
     assert.equal(result.status, 'reject');
   });
 });
 
+test('the legacy Chinese first line is still accepted as a pass alias', async () => {
+  await withFake('审查结论：通过', async ({ env }) => {
+    assert.equal((await runSeparateReviewer({ head: 'h1', gate0Summary: GATE0, env })).status, 'pass');
+  });
+});
+
 test('a separate reviewer without a verdict line is blocked, not passed', async () => {
-  await withFake('nonsense', async ({ env }) => {
+  await withFake('Verdict: maybe', async ({ env }) => {
     const result = await runSeparateReviewer({ head: 'h1', gate0Summary: GATE0, env });
     assert.equal(result.status, 'blocked');
   });
 });
 
 test('the independent reviewer pass is accepted by runGates as Gate 1', async () => {
-  await withFake('通过', async ({ env }) => {
+  await withFake('Verdict: pass', async ({ env }) => {
     const records = new Map();
     const result = await runGates({
       issue: '244', head: 'h1', tree: 't1', changedFiles: [], models: { reviewer: 'pi' },
