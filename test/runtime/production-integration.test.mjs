@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProductionAdapter } from '../../runtime/lib/production.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 test('production adapter rejects missing providers with a concrete diagnostic', () => {
   assert.throws(() => createProductionAdapter({}), /provider.*required/i);
@@ -26,6 +27,8 @@ const RATIONALE = 'Reviewed the diff against the acceptance criteria and found n
 
 const BASE_SHA = 'a'.repeat(40);
 const REVERT_SHA = 'b'.repeat(40);
+const body = (issue, head, tree) => upsertPrRecord('', buildPrRecord({ issue, head, tree, passed: ['gate0', 'gate1', 'ci'] }));
+const RECORD_URL = new URL('../../runtime/lib/pr-record.mjs', import.meta.url).href;
 function observationProvider() {
   let sha = BASE_SHA;
   return { expectedSha({ expectedSha }) { sha = expectedSha ?? BASE_SHA; return sha; },
@@ -205,7 +208,9 @@ test('production adapter triggers recovery after red main and holds later work',
   const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
   const calls = [];
   const github = {
-    async setBase() {}, async getPullRequest(pr) { return { body: pr === 90 ? 'Closes #53' : 'Closes #92', state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
+    async setBase() {}, async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, body: pr === 90 ? `Closes #53
+${body('53', BASE_SHA, 'tree')}` : `Closes #92
+${body('92', REVERT_SHA, 'reverttree')}`, files: ['x'] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr, options) { calls.push(['merge', pr, options]); return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
@@ -246,14 +251,16 @@ async function cliFixture(root, status, revertGreen = true) {
 export async function preDispatch() { return { ok: true }; }`);
   await writeFile(join(root, 'providers.mjs'), `
 import { appendFile } from 'node:fs/promises';
+import { buildPrRecord, upsertPrRecord } from ${JSON.stringify(RECORD_URL)};
+let issue = '53';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 const log = async (...v) => appendFile(${JSON.stringify(log)}, JSON.stringify(v)+'\\n');
 export default {
  context: { async get({recovery}) { return recovery ? {pr:91,head:'${REVERT_SHA}',tree:'reverttree',highRisk:false,changedFiles:['x']} : {pr:90,head:'${BASE_SHA}',tree:'tree',highRisk:false,changedFiles:['x']}; } },
- gates: { async gate0() { await log('gate0'); return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head,rationale:RATIONALE}; }, async crossCheck() { return true; } },
+ gates: { async gate0(input) { await log('gate0'); issue = input.issue; return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head,rationale:RATIONALE}; }, async crossCheck() { return true; } },
  git: { async createRevert() { await log('revert'); return {sha:'1234567'}; } },
  github: {
-  async setBase() {}, async getPullRequest(pr) { return { body: pr === 90 ? 'Closes #53 Closes #54' : 'Closes #92', state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
+  async setBase() {}, async getPullRequest(pr) { return { body: (pr === 90 ? 'Closes #53 Closes #54 ' : 'Closes #92 ') + upsertPrRecord('', buildPrRecord({issue, head: pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}', tree: pr === 90 ? 'tree' : 'reverttree', passed: ['gate0', 'gate1', 'ci'], rounds: { gate1: { role: 'reviewer', harness: 'test', model: 'test-reviewer' } }})), state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
   async requiredGreen(pr) { return pr === 90 || ${revertGreen}; },
   async squashMerge(pr,options) { await log('squash',pr,options); return {mergeCommit:pr === 90 ? 'abcdef0123456789' : '1111111111111111'}; },
   async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
@@ -338,10 +345,13 @@ test('pending main and failed revert gate hold tracker claims across passes', as
   let main = 'pending';
   let mainHead = 'abcdef0123456789';
   let gatePass = true;
+  let issue = '53';
   const calls = [];
   const pause = { value: null, async get() { return this.value; }, async put(value) { this.value = structuredClone(value); } };
   const github = {
-    async setBase() {}, async getPullRequest(pr) { return { body: pr === 90 ? 'Closes #53' : 'Closes #92', state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, files: ['x'] }; },
+    async setBase() {}, async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, body: pr === 90 ? `Closes #53
+${body(issue, BASE_SHA, 'tree')}` : `Closes #92
+${body(issue, REVERT_SHA, 'tree')}`, files: ['x'] }; },
     async requiredGreen() { return true; }, async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
     async squashMerge(pr) { calls.push(pr); return { mergeCommit: 'abcdef0123456789' }; },
     async mainStatus() { return { head: mainHead, status: main }; },
@@ -351,7 +361,7 @@ test('pending main and failed revert gate hold tracker claims across passes', as
   const autoMerge = createProductionAdapter({ pause, github,
     git: { async createRevert() { return { sha: '1234567' }; } },
     context: { async get({ recovery }) { return { pr: recovery ? 91 : 90, head: recovery ? REVERT_SHA : BASE_SHA, tree: 'tree', highRisk: false, changedFiles: ['x'] }; } },
-    gates: { async gate0({ issue }) { return issue === '53' || gatePass; }, async reviewer({ head }) { return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
+    gates: { async gate0(input) { issue = input.issue; return issue === '53' || gatePass; }, async reviewer({ head }) { return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
     observation: observationProvider(),
   });
   const handler = async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });

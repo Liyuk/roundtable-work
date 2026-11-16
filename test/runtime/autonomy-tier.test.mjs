@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { autonomyTier, loadAutonomy } from '../../runtime/lib/autonomy.mjs';
 import { createMergeEntryPoint, ApprovalRequired } from '../../runtime/lib/merge.mjs';
 import { mergeRisk } from '../../runtime/lib/merge-risk.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 // Seams: loadAutonomy({ defaultsPath, hostPath }), autonomyTier(action, autonomy), and createMergeEntryPoint with tierOf.
 // Host files live in a temp dir; the real home is never read.
@@ -145,8 +146,9 @@ test('pinned: revert false is approve-first irreversible', () => {
 });
 
 // Merge entry point with tierOf: same fake GitHub shape as test/runtime/gates.test.mjs.
+const RECORD_BODY = upsertPrRecord('', buildPrRecord({ issue: '380', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'] }));
 function livePullRequest(files) {
-  return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files };
+  return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files, body: RECORD_BODY };
 }
 
 function mergeFixture({ tierOf, files = ['runtime/lib/x.mjs'], persisted } = {}) {

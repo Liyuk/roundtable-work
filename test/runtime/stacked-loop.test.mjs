@@ -6,6 +6,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runQueue } from './observation-fixture.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 // Locks live in a private anchor, never in the work root (same arrangement as daemon-workers.test.mjs).
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-anchor-'));
@@ -73,7 +74,7 @@ function world(worktree, { ci = true } = {}) {
       crossCheck: async () => true,
     },
     github: {
-      getPullRequest: async () => ({ body: 'Closes #53', state: 'open', draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
+      getPullRequest: async () => ({ body: upsertPrRecord('Closes #53', buildPrRecord({ issue: '53', head: head(), tree: 'tree1', passed: ['gate0', 'gate1', 'ci'] })), state: 'open', draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
       requiredGreen: async () => (state.ci === true ? true : { green: false, status: state.ci }),
       squashMerge: async (_pr, options) => { squashes.push(options); return { mergeCommit: 'abcdef0123456789' }; },
       addLabel: async () => {},
@@ -103,7 +104,11 @@ function stacked(w, upstream) {
   const live = github.getPullRequest;
   const setBases = [];
   github.setBase = async (pr, base) => { setBases.push([pr, base]); };
-  github.getPullRequest = async (n) => (n === 89 ? { state: upstream } : { ...(await live(n)), body: 'Stacked on #89\nCloses #53' });
+  github.getPullRequest = async (n) => {
+    if (n === 89) return { state: upstream };
+    const pr = await live(n);
+    return { ...pr, body: `Stacked on #89\n${pr.body}` };
+  };
   return { setBases };
 }
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runQueue } from './observation-fixture.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 async function runCase(failure) {
   const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
@@ -11,7 +12,8 @@ async function runCase(failure) {
   const github = {
     async addLabel(_pr, label) { calls.push(label); },
     async recordedEscalationApproval() { return null; },
-    async getPullRequest() { calls.push('pr'); return { body: 'Closes #53', state: 'open', draft: false, mergeable: true, head: 'a'.repeat(40), files: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
+    async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, mergeable: true, head: 'a'.repeat(40), body: `Closes #53
+${upsertPrRecord('', buildPrRecord({ issue: '53', head: 'a'.repeat(40), tree: 'tree', passed: ['gate0', 'gate1', 'gate2', 'ci'] }))}`, files: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
     async requiredGreen() { calls.push('ci'); ciCalls++; if (failure === 'ci-error') throw new Error('offline'); if (failure === 'pending') return { green: false, status: 'pending' }; return !(failure === 'ci' || (failure === 'recheck' && ciCalls === 2)); },
     async squashMerge(_pr, options) { calls.push(['squash', options]); },
   };

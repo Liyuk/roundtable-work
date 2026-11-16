@@ -19,6 +19,7 @@ import { stackStatus } from './lib/merge-order.mjs';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, validateDecision } from './lib/decisions.mjs';
 import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
+import { loadUsageLedger } from './lib/usage-ledger.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
@@ -58,6 +59,20 @@ import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDiges
 import { runChiefCli } from './lib/chief-session.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
+/**
+ * PR body client for the merge entry point. Live: the write goes to the provider and the re-read is a provider read.
+ * Shadow (the wrapper is marked `shadow`): the write stays a recorded no-op, and the re-read sees the body the merge
+ * wrote, so shadow decides on what live would have persisted. Every read is still a real read, as in live.
+ */
+function pullRequestBodyClient(client) {
+  if (!client?.updatePullRequestBody) return undefined;
+  if (!client.shadow) return { read: (pr) => client.getPullRequestBody(pr), write: (pr, body) => client.updatePullRequestBody(pr, body) };
+  const written = new Map();
+  return {
+    read: async (pr) => { const body = await client.getPullRequestBody(pr); return written.get(pr) ?? body; },
+    write: async (pr, body) => { written.set(pr, body); await client.updatePullRequestBody(pr, body); },
+  };
+}
 /** Outcomes after which an issue is abandoned for good, so its worktree is removed (see `removeWorktree`). */
 const ABANDONED = new Set(['stop', 'out-of-scope', 'cancelled']);
 /** Passes after which an unresolved pre-merge marker is reported even when it is younger than `mergeUnknownTimeoutMs`. */
@@ -496,7 +511,7 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks });
+        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks, pullRequestBody: pullRequestBodyClient(githubClient) });
         // The revert PR body is host-written; red-main recovery must not be blocked by the loop-PR `Closes #N` link check.
         const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing, requireClosesLink: false });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
@@ -833,7 +848,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode, localChecks });
+              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode, localChecks, pullRequestBody: pullRequestBodyClient(githubClient) });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
@@ -842,7 +857,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, usageRows: (await loadUsageLedger(workRoot, id)).rows, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;

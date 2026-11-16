@@ -6,6 +6,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const RTD = join(ROOT, 'runtime/rtd.mjs');
@@ -19,7 +20,8 @@ const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 const PASS = '审查结论：通过';
 const SHA = 'a'.repeat(40);
-const READS = ['repo view', 'issue list', 'issue view', 'pr list'];
+const BODY = upsertPrRecord('', buildPrRecord({ issue: '21', head: SHA, tree: 'tree1', passed: ['gate0', 'gate1', 'gate2', 'ci'], rounds: { gate1: { role: 'reviewer', harness: 'test', model: 'test-reviewer' }, gate2: { role: 'crosscheck', harness: 'test', model: 'test-crosscheck' } } }));
+const READS = ['repo view', 'issue list', 'issue view', 'pr list', 'pr view'];
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'rt-cutover-'));
@@ -34,7 +36,7 @@ async function fixture() {
 // Fake gh: answers the reads with one admissible, unclaimed issue; accepts writes; records every invocation.
 async function fakeGh({ bin, ghLog }) {
   const issue = { id: '21', number: 21, state: 'OPEN', author: { login: 'owner' }, title: '[A] cutover', body: ADMISSIBLE, createdAt: '2020-01-01', labels: [{ name: 'type:feature' }], comments: [] };
-  const answers = { 'repo view': { owner: { login: 'owner' } }, 'issue list': [issue], 'issue view': { comments: [], state: 'OPEN', labels: [] }, 'pr list': [], 'issue edit': '', 'issue comment': '' };
+  const answers = { 'repo view': { owner: { login: 'owner' } }, 'issue list': [issue], 'issue view': { comments: [], state: 'OPEN', labels: [] }, 'pr list': [], 'pr view': { body: BODY }, 'pr edit': '', 'issue edit': '', 'issue comment': '' };
   await writeFile(join(bin, 'gh'), `#!${process.execPath}
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
@@ -53,6 +55,7 @@ async function fakeProviders({ root, providerLog }) {
   await writeFile(providers, `import { appendFileSync } from 'node:fs';
 const log = (entry) => appendFileSync(${JSON.stringify(providerLog)}, JSON.stringify(entry) + '\\n');
 const SHA = ${JSON.stringify(SHA)};
+const BODY = ${JSON.stringify(BODY)};
 const stub = () => { throw new Error('not reached in the cutover fixture'); };
 export default {
   context: { async get() { return { pr: 90, head: SHA, tree: 'tree1', highRisk: true, changedFiles: ['runtime/rtd.mjs'] }; } },
@@ -62,7 +65,7 @@ export default {
     async crossCheck() { log('gate2'); return true; },
   },
   github: {
-    async setBase() {}, async getPullRequest() { return { state: 'open', body: 'Closes #21', draft: false, mergeable: true, head: SHA, files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }; },
+    async setBase() {}, async getPullRequest() { return { state: 'open', draft: false, mergeable: true, head: SHA, body: 'Closes #21 ' + BODY, files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr) { log(['squash', pr]); return { mergeCommit: 'abcdef0123456789' }; },
     async addLabel() {}, async recordedEscalationApproval() { return null; }, async createComment() {},
