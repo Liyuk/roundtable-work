@@ -16,6 +16,7 @@ import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const WATCHDOG = join(ROOT, 'scripts/rtd-watchdog.mjs');
 const WALL = Date.parse('2026-11-15T12:00:00Z');
+const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
 const POLL = 1000;
 const JOURNAL = '.roundtable/state/watchdog-restarts.jsonl';
 const LEDGER = '.roundtable/state/freeze-ledger.jsonl';
@@ -133,10 +134,12 @@ test('the restart window rolls: restarts older than an hour no longer count', as
 test('--alert-issue posts an outbox alert once as a marked comment; without it the alert is only enqueued', async (t) => {
   t.mock.method(Date, 'now', () => WALL);
   const ws = await workspace(t); await beat(ws, WALL - 10_000);
+  t.mock.method(Date, 'now', () => WALL); // the alert day comes from Date.now() when not restarting
+  const day = dayOf(WALL);
   const missing = { requireTools: ['gh'], lookup: () => false, clock: () => sample(WALL) };
   const { posted, writer } = fakeWriter();
   const quiet = await watchdog({ workspace: ws, pollMs: POLL, ...missing });
-  assert.deepEqual(quiet.alerts, ['notice:tool-missing:gh:2026-11-15']);
+  assert.deepEqual(quiet.alerts, [`notice:tool-missing:gh:${day}`]);
   assert.deepEqual(posted, []);
   assert.equal(openOutbox(ws).pending().length, 1);
 
@@ -146,13 +149,14 @@ test('--alert-issue posts an outbox alert once as a marked comment; without it t
   assert.equal(second.exit, 4);
   assert.equal(posted.length, 1);
   assert.equal(posted[0][0], 420);
-  assert.match(posted[0][1], /^<!-- rt:outbox notice:tool-missing:gh:2026-11-15 -->\n/);
+  assert.match(posted[0][1], new RegExp(`^<!-- rt:outbox notice:tool-missing:gh:${day} -->\n`));
   assert.equal(openOutbox(ws).pending().length, 0);
 });
 
 test('--require-tools with a missing tool exits 4 as tool-missing and enqueues one alert per tool per UTC day', async (t) => {
   const ws = await workspace(t);
   const lookup = (tool) => tool === 'git';
+  const nextDay = dayOf(WALL + 86_400_000);
   const now = t.mock.method(Date, 'now', () => WALL);
   const run = (ms) => { now.mock.mockImplementation(() => WALL + ms); return watchdog({ workspace: ws, pollMs: POLL, requireTools: ['gh', 'git'], lookup }); };
   const r = await run(0);
@@ -160,8 +164,8 @@ test('--require-tools with a missing tool exits 4 as tool-missing and enqueues o
   assert.equal(r.reason, 'tool-missing');
   assert.deepEqual(r.missing, ['gh']);
   assert.deepEqual((await run(60_000)).alerts, undefined);
-  assert.deepEqual((await run(86_400_000)).alerts, ['notice:tool-missing:gh:2026-11-16']);
-  assert.deepEqual(openOutbox(ws).items().map((i) => i.id), ['notice:tool-missing:gh:2026-11-15', 'notice:tool-missing:gh:2026-11-16']);
+  assert.deepEqual((await run(86_400_000)).alerts, [`notice:tool-missing:gh:${nextDay}`]);
+  assert.deepEqual(openOutbox(ws).items().map((i) => i.id), [`notice:tool-missing:gh:${dayOf(WALL)}`, `notice:tool-missing:gh:${nextDay}`]);
 });
 
 test('user unit templates: placeholders only, restart policy, start limits, kill mode and timer cadence', () => {
