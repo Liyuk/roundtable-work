@@ -66,6 +66,16 @@ test('failing smoke suite refuses, removes the new version dir, and keeps active
   assert.equal(readFileSync(join(releases, 'active'), 'utf8'), 'aaa1111\n');
 });
 
+test('failing smoke on the already-active version keeps its live directory and active pointer', async () => {
+  const { releases, cfg } = sandbox({ smoke: 'node -e "process.exit(1)"', fetch: () => 'aaa1111' });
+  mkdirSync(join(releases, 'aaa1111'));
+  writeFileSync(join(releases, 'aaa1111', 'marker'), 'live');
+  writeFileSync(join(releases, 'active'), 'aaa1111\n');
+  await assert.rejects(deploy(cfg), /smoke suite failed/);
+  assert.equal(readFileSync(join(releases, 'aaa1111', 'marker'), 'utf8'), 'live');
+  assert.ok(readFileSync(join(releases, 'active'), 'utf8').includes('aaa1111'));
+});
+
 test('fresh heartbeat keeps the new version and records previous', async () => {
   const { releases, cfg } = sandbox();
   mkdirSync(join(releases, 'aaa1111'));

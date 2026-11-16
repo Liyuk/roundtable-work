@@ -43,10 +43,11 @@ export async function deploy(cfg) {
   if (!ciGreen(execSync(ci, { encoding: 'utf8' }))) throw new Error('refused: main CI is not green');
   const version = fetch();
   const dir = join(releases, version);
+  const created = !existsSync(dir);
   mkdirSync(dir, { recursive: true });
   extract(version, dir);
   if (spawnSync(smoke, { shell: true, cwd: dir, stdio: 'inherit' }).status !== 0) {
-    rmSync(dir, { recursive: true, force: true });
+    if (created) rmSync(dir, { recursive: true, force: true });
     throw new Error('refused: smoke suite failed');
   }
   const previous = readVersion(join(releases, 'active'));
