@@ -216,7 +216,7 @@ export async function runQueue({
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
-  candidates, probe, probeIntervalMs,
+  candidates, probe, probeIntervalMs, claimHold = false,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -628,6 +628,7 @@ export async function runQueue({
             if (ABANDONED.has(state.status)) await removeWorktree(item.id);
             skipped.push({ id: item.id, reason: 'terminal' }); return false;
           }
+          if (claimHold && !ledgerEntry(state, 'claim')) { skipped.push({ id: item.id, reason: 'resource_hold' }); return false; }
           const claim = await coordinator.tick([item]);
           if (!claim.claimed && !claim.resumed) { skipped.push(...claim.skipped); return false; }
           return true;
@@ -1202,8 +1203,8 @@ async function main(argv) {
   };
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
-  const pass = async (workers) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+  const pass = async (workers, claimHold) => {
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, claimHold, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
@@ -1217,7 +1218,7 @@ async function main(argv) {
     // An inbox write from this process ends the inter-cycle wait early.
     const wake = createWakeSignal();
     const governor = createResourceGovernor({ root: workspace });
-    const code = await runLoop({ pass: async ({ workers, admit }) => {
+    const code = await runLoop({ pass: async ({ workers, admit, claimHold }) => {
       // Owner replies (/rt confirm|rollback|amend) are applied to the action journal before the line's batch runs.
       const owner = ownerOf(args.repo);
       const inbox = openInbox(workspace, { onWrite: () => wake.notify() });
@@ -1249,7 +1250,7 @@ async function main(argv) {
         } });
       await sweepAskTimeouts({ root: workspace, policy });
       // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
-      if (admit) console.log(JSON.stringify(await pass(workers)));
+      if (admit) console.log(JSON.stringify(await pass(workers, claimHold)));
       // End of each cycle: raise anomaly alerts, then flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
       if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
       await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
