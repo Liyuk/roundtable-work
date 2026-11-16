@@ -79,7 +79,7 @@ These steps are implemented in the experimental runtime (below). They run only w
 ## Architecture
 
 - **Gate 0** (`runtime/lib/accept.mjs`, `runtime/lib/gate-exec.mjs`): the diff policy, the hygiene scan, and test execution in a sandbox. Any rejection or block fails the gate.
-- **Gate 1** (`runtime/lib/reviewer-session.mjs`, `runtime/lib/gates.mjs`): the reviewer runs as a separate OS process (default `pi -p`, set with `RT_REVIEWER_COMMAND`). Its first line must be the verdict `审查结论：通过 | 打回 | 阻塞`; any other first line is blocked. A single-session review never passes Gate 1.
+- **Gate 1** (`runtime/lib/reviewer-session.mjs`, `runtime/lib/gates.mjs`): the reviewer runs as a separate OS process (default `pi -p`, set with `RT_REVIEWER_COMMAND`). Its first line must be the verdict `Verdict: pass | reject | block`; any other first line is blocked. A single-session review never passes Gate 1.
 - **Gate 2** (`runtime/lib/gate2-triggers.mjs`): a cross-check for high-risk work and for diffs that trigger it. A disagreement goes to the escalation adapter, not back to the developer.
 - **State machine** (`runtime/lib/state.mjs`, `runtime/rtd.mjs`): each issue moves through the phases `developing → testing → reviewing → finalizing`. A wake ends in a recorded status such as `waiting_external`, `waiting_person`, or `done`. The `finalizing` phase is never silently re-run after a crash.
 - **Auto-claim and recovery** (`runtime/lib/claim.mjs`): a claim is the `rt:running` label plus the `<!-- rt:claim -->` marker, guarded by a per-issue lock with a time-to-live. Stale claims are recovered.
