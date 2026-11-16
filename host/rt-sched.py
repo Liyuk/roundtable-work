@@ -861,12 +861,16 @@ class Sched:
             mark = os.path.join(rr, latest.get("headSha", "")[:7] or "none")
             if not os.path.exists(mark) and latest.get("databaseId"):
                 open(mark, "w").write(time.strftime("%F %T %Z") + "\n")
+                rid = str(latest["databaseId"])
                 try:
-                    subprocess.run(["gh", "run", "rerun", str(latest["databaseId"]), "--failed", "-R", self.repo],
-                                   stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
-                    self.log("main CI red at %s: re-ran failed jobs once (run %s) to rule out a flake" % (latest.get("headSha", "")[:7], latest["databaseId"]))
+                    r = subprocess.run([GH, "run", "rerun", rid, "--failed", "-R", self.repo],
+                                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                    if r.returncode == 0:
+                        self.log("main CI red at %s: re-ran failed jobs once (run %s) to rule out a flake" % (latest.get("headSha", "")[:7], rid))
+                    else:
+                        self.log("WARN main CI rerun of run %s failed (rc=%s): %s" % (rid, r.returncode, r.stderr.strip()[:200]))
                 except Exception as e:
-                    self.log("WARN main CI rerun failed: %s" % e)
+                    self.log("WARN main CI rerun of run %s failed: %s" % (rid, e))
         if not self.main_red:
             if os.path.exists(flag):
                 self.log("main CI is green again (%s); merges and claims resume" % latest.get("headSha", "")[:7])

@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const docPath = 'docs/host-patch-inventory.md';
 const TAG_CLASSES = ['codex', 'escalate', 'limit', 'limitmain', 'budget', 'nofunds', 'routing', 'allpi', 'luna', 'w6', 'migrate',
   'author', 'ac', 'gate', 'lenient', 'review / reviewer', 'skills', 'followup', 'blockedrtm', 'series', 'utf8', 'waitguard',
-  'tmpclean', 'cirerun', 'ciwait', 'mergelock', 'nopr-close', 'recordretry', 'safetyfmt', 'subretry', 'syncbudget', 'trim',
+  'tmpclean', 'cirerun', 'mainrerun', 'ciwait', 'mergelock', 'nopr-close', 'recordretry', 'safetyfmt', 'subretry', 'syncbudget', 'trim',
   'dated snapshots 20261112/20261113'];
 const REASON = /^(?:superseded by |not needed after cutover: )\S/;
 const NOT_PORTED = /^not ported: \S/;
