@@ -41,6 +41,13 @@ test('red-line ask older than 24h stays suspended and never becomes default-answ
   assert.equal(result.ledger, null);
 });
 
+test('goal-change ask (scopeKind scope-change) older than 24h stays suspended', () => {
+  const goal = issue({ ask: { category: 'scope-tuning', scopeKind: 'scope-change', recommendation: 'option-b', openedAt: NOW - 25 * HOUR } });
+  const result = reconcile(goal, null, main(), local());
+  assert.equal(result.action, 'wait');
+  assert.equal(result.ledger, null);
+});
+
 test('non-red-line ask under 24h waits for the timeout', () => {
   const young = issue({ ask: { category: 'scope-tuning', recommendation: 'option-b', openedAt: NOW - 23 * HOUR } });
   assert.equal(reconcile(young, null, main(), local()).action, 'wait');

@@ -17,9 +17,9 @@ function candidate(issue, pr, main, { now, terminalAt }) {
   if (pr && !pr.merged && pr.mergeReady) return result('merge', 'PR approved and checks green');
   if (main.ciStatus === 'red' && main.rerunAttempts === 0) return result('rerun-main-once', 'main CI red at head, first attempt');
   if (issue.ask) {
-    const { category, recommendation, openedAt } = issue.ask;
+    const { category, scopeKind, recommendation, openedAt } = issue.ask;
     if (now - openedAt <= ASK_TIMEOUT_MS) return result('wait', 'ask pending under 24h');
-    if (RED_LINE.has(category)) return result('wait', `red-line ask suspended: ${category}`);
+    if (RED_LINE.has(category) || scopeKind === 'scope-change') return result('wait', `red-line ask suspended: ${category}`);
     if (recommendation) return result('default-answer', 'non-red-line ask timed out with recommendation');
     return result('wait', 'ask timed out without recommendation');
   }
