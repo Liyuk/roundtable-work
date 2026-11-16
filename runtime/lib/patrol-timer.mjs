@@ -61,6 +61,6 @@ export async function runPatrol({ root, now, inputs = EMPTY_PATROL_INPUTS, outbo
       outbox.enqueue({ id: `patrol:owner:${f.signature}:${f.action}`, kind: 'notification', issue: null, payload: { subtype: 'patrol-owner-only', row: f.row, action: f.action } });
       log({ kind: 'action', row: f.row, signature: f.signature, action: f.action, outcome });
     }
-    ledger.append({ at, category: route === 'actuator' ? 'liveness' : 'owner-only', ref: 'rt:patrol', reason: `patrol ${f.row} finding ${f.action}: ${route}`, internalized: 'no', source: 'self' }, { key: `${f.signature}|${f.action}` });
+    ledger.append({ at, category: route === 'actuator' ? 'liveness' : 'owner-only', ref: 'rt:patrol', reason: `patrol ${f.row} finding ${f.action}: ${route}`, internalized: 'no', source: 'self' }, { key: `${at}|${f.signature}|${f.action}` });
   }
 }

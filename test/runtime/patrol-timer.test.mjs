@@ -110,3 +110,14 @@ test('observe-only findings are logged but write no intervention and no action',
   assert.deepEqual(actuator.calls, []);
   assert.deepEqual(openInterventions(root).entries().entries, []);
 }));
+
+test('a persistent finding acted on in later cycles writes one self entry per cycle', () => withRoot(async (root) => {
+  const actuator = fakeActuator();
+  const outbox = openOutbox(root);
+  await runPatrol({ root, now: T0, inputs: red(false), outbox, actuator });
+  await runPatrol({ root, now: T0 + 30 * MIN, inputs: red(false), outbox, actuator });
+  assert.equal(actuator.calls.length, 2);
+  const selfEntries = openInterventions(root).entries().entries.filter((iv) => iv.source === 'self');
+  assert.deepEqual(selfEntries.map((iv) => [iv.source, iv.category, iv.ref]), [['self', 'liveness', 'rt:patrol'], ['self', 'liveness', 'rt:patrol']]);
+  assert.deepEqual(selfEntries.map((iv) => iv.at), [new Date(T0).toISOString(), new Date(T0 + 30 * MIN).toISOString()]);
+}));
