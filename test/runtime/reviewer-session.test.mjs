@@ -90,7 +90,7 @@ test('the independent reviewer pass is accepted by runGates as Gate 1', async ()
 test('single-session review is marked not independent and never passes Gate 1', async () => {
   const result = await reviewInSession({ head: 'h1', gate0Summary: GATE0, review: async (prompt) => {
     assert.match(prompt, /Gate 0 passed: 412 tests/);
-    return '审查结论：通过';
+    return 'Verdict: pass';
   } });
   assert.equal(result.independent, false);
   assert.equal(result.note, 'not independent');

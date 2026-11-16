@@ -13,7 +13,7 @@ test('each failure class is produced by its own trigger and the classes are dist
     developer_failure: classify({ stage: 'developer', exitCode: 2 }),
     test_failure: classify({ stage: 'test', exitCode: 1 }),
     reviewer_unavailable: reviewer({ exitCode: 1 }),
-    review_rejected: reviewer({ output: '审查结论：打回\nneeds work' }),
+    review_rejected: reviewer({ output: 'Verdict: reject\nneeds work' }),
     human_block: classify({ stage: 'developer', exitCode: 0, output: 'x', humanBlock: true }),
     scope_mismatch: classify({ stage: 'developer', exitCode: 0, output: 'x', scopeMismatch: true }),
   };
@@ -36,7 +36,7 @@ test('reviewer unavailable: nonzero exit, timeout and empty output; never spends
 });
 
 test('an unparseable reviewer reply is reviewer-unavailable, not a rejection', () => {
-  for (const output of ['looks good to me', '审查结论：maybe', '审查结论：']) {
+  for (const output of ['looks good to me', 'Verdict: maybe', 'Verdict:', '审查结论：maybe', '审查结论：']) {
     const r = reviewer({ output });
     assert.equal(r.class, 'reviewer_unavailable', output);
     assert.equal(r.reason, 'unparseable_verdict');
@@ -89,7 +89,7 @@ test('a failed or timed-out finalize step is its own class: asks a person and ne
 });
 
 test('a rejected verdict whose blocking findings lack evidence is malformed and retries the reviewer', () => {
-  const rej = (findings) => reviewer({ output: '审查结论：打回\nneeds work', findings });
+  const rej = (findings) => reviewer({ output: 'Verdict: reject\nneeds work', findings });
   const reason = 'unevidenced_blocking_findings';
   for (const findings of [
     [{ classification: 'blocking', evidence: '' }],
@@ -104,12 +104,12 @@ test('a rejected verdict whose blocking findings lack evidence is malformed and 
 });
 
 test('a rejection with evidence on every blocking or in-scope finding stays a review rejection', () => {
-  const rej = (findings) => reviewer({ output: '审查结论：打回', findings });
+  const rej = (findings) => reviewer({ output: 'Verdict: reject', findings });
   const evidence = 'runtime/lib/classify.mjs:74 — node --test test/runtime/classify.test.mjs → 1 failing';
   assert.equal(rej([{ classification: 'blocking', evidence }]).class, 'review_rejected');
   assert.equal(rej([{ classification: 'in-scope miss', evidence }, { classification: 'out-of-scope follow-up' }]).class, 'review_rejected');
   assert.equal(rej([]).class, 'review_rejected');
-  assert.equal(reviewer({ output: '审查结论：打回' }).class, 'review_rejected', 'absent findings keeps the old behavior');
-  assert.equal(reviewer({ output: '审查结论：通过', findings: [{ classification: 'blocking' }] }).class, 'review_passed', 'a pass is never malformed by the evidence rule');
-  assert.equal(reviewer({ output: '审查结论：阻塞', findings: [{ classification: 'blocking' }] }).class, 'human_block');
+  assert.equal(reviewer({ output: 'Verdict: reject' }).class, 'review_rejected', 'absent findings keeps the old behavior');
+  assert.equal(reviewer({ output: 'Verdict: pass', findings: [{ classification: 'blocking' }] }).class, 'review_passed', 'a pass is never malformed by the evidence rule');
+  assert.equal(reviewer({ output: 'Verdict: block', findings: [{ classification: 'blocking' }] }).class, 'human_block');
 });
