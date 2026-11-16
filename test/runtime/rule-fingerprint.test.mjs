@@ -11,7 +11,7 @@ const files = [
   '.agents/skills/roundtable-work/prompts/roles/reviewer.md',
   '.roundtable/policy.md',
 ];
-const PASS = 'Verdict: pass\nok';
+const PASS = '审查结论：通过\nok';
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'rt-rules-'));
@@ -50,7 +50,7 @@ test('a rejected re-evaluation is not retried again under the same fingerprint',
   let reviews = 0;
   try {
     const handler = async ({ phase }) => {
-      if (phase === 'reviewing') { reviews++; return { exitCode: 0, output: 'Verdict: reject\nissue', ruleRelated: true }; }
+      if (phase === 'reviewing') { reviews++; return { exitCode: 0, output: '审查结论：打回\nissue', ruleRelated: true }; }
       return { exitCode: 0, output: 'ok' };
     };
     const result = await runQueue({ workRoot: root, queue: ['1'], handler, maxDeveloperAttempts: 1 });
@@ -73,7 +73,7 @@ test('rule fingerprint reads repoRoot and re-evaluates an explicitly rule-relate
       await writeFile(join(repoRoot, file), file);
     }
     const handler = async ({ phase }) => {
-      if (phase === 'reviewing') { reviews++; return { exitCode: 0, output: 'Verdict: reject\nissue', ruleRelated: true }; }
+      if (phase === 'reviewing') { reviews++; return { exitCode: 0, output: '审查结论：打回\nissue', ruleRelated: true }; }
       return { exitCode: 0, output: 'ok' };
     };
     await runQueue({ workRoot: root, repoRoot, queue: ['1'], handler, maxDeveloperAttempts: 1 });

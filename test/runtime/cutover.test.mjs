@@ -18,7 +18,7 @@ process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }
 
 const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/cutover.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
-const PASS = 'Verdict: pass';
+const PASS = '审查结论：通过';
 const SHA = 'a'.repeat(40);
 const BODY = upsertPrRecord('', buildPrRecord({ issue: '21', head: SHA, tree: 'tree1', passed: ['gate0', 'gate1', 'gate2', 'ci'], rounds: { gate1: { role: 'reviewer', harness: 'test', model: 'test-reviewer' }, gate2: { role: 'crosscheck', harness: 'test', model: 'test-crosscheck' } } }));
 const READS = ['repo view', 'issue list', 'issue view', 'pr list', 'pr view'];

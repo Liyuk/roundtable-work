@@ -12,7 +12,7 @@ const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-quota-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
 process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
 
-const PASS = 'Verdict: pass\nok';
+const PASS = '审查结论：通过\nok';
 async function withRoot(fn) {
   const root = await mkdtemp(join(tmpdir(), 'rt-quota-'));
   try { await fn(root); } finally { await rm(root, { recursive: true, force: true }); }

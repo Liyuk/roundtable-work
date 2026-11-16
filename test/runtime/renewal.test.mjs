@@ -23,7 +23,7 @@ const epochsIn = (root) => readdirSync(lockDirOf(root)).map((n) => /^epoch-(\d+)
 const plantEpoch = (root, rec) => writeFileSync(join(lockDirOf(root), `epoch-${Math.max(0, ...epochsIn(root)) + 1}`), JSON.stringify(rec));
 const topHolder = (root) => JSON.parse(readFileSync(join(lockDirOf(root), `epoch-${Math.max(...epochsIn(root))}`), 'utf8'));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const PASS = 'Verdict: pass\nok';
+const PASS = '审查结论：通过\nok';
 
 // Generous margins: the lease is 2000 ms; the quiet handler runs 6000 ms (3x the lease).
 const TTL = 2000;
@@ -120,7 +120,7 @@ export default async function ({ phase }) {
     const next = Math.max(0, ...readdirSync(dir).map((n) => /^epoch-(\\d+)$/.exec(n)?.[1]).filter(Boolean).map(Number)) + 1;
     writeFileSync(join(dir, 'epoch-' + next), JSON.stringify({ owner: 'thief', pid: process.pid, token: 't', acquiredAt: Date.now(), expiresAt: Date.now() + 60000 }));
   }
-  return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass\\nok' : 'ok' };
+  return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\\nok' : 'ok' };
 }
 export async function preDispatch() { return { ok: true }; }
 `);

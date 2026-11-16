@@ -171,7 +171,7 @@ test('early phases advance without evidence that does not yet exist', async () =
       async review() { return current === 'developing' || current === 'testing' ? null : { sha, conclusion: 'approved' }; },
     } });
     const result = await runQueue({ workRoot: root, queue: ['109'], observationClients: c,
-      handler: async ({ phase }) => { current = phase; phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok', expectedSha: sha }; } });
+      handler: async ({ phase }) => { current = phase; phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', expectedSha: sha }; } });
     assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
     assert.equal(result.outcomes[0].status, 'done');
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -232,7 +232,7 @@ test('dirty worktree permits development stages but blocks final completion', as
     const phases = [];
     const c = clients({ worktree: { async inspect() { return { dirty: true }; } } });
     const result = await runQueue({ workRoot: root, queue: ['109'], observationClients: c,
-      handler: async ({ phase }) => { phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok', expectedSha: sha }; } });
+      handler: async ({ phase }) => { phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok', expectedSha: sha }; } });
     assert.deepEqual(phases, ['developing', 'testing', 'reviewing', 'finalizing']);
     assert.equal(result.outcomes[0].status, 'waiting_external');
     assert.ok(result.outcomes[0].observation.mismatches.some((m) => m.reason === 'worktree_dirty'));

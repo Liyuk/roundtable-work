@@ -56,7 +56,7 @@ test('a rejected verdict from the separate reviewer is not a pass', async () => 
 });
 
 test('the legacy Chinese first line is still accepted as a pass alias', async () => {
-  await withFake('Verdict: pass', async ({ env }) => {
+  await withFake('审查结论：通过', async ({ env }) => {
     assert.equal((await runSeparateReviewer({ head: 'h1', gate0Summary: GATE0, env })).status, 'pass');
   });
 });

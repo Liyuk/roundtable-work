@@ -16,7 +16,7 @@ process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }
 const scratch = join(process.cwd(), '.roundtable/scratch/86-fix2/tmp');
 const tmp = async () => { await mkdir(scratch, { recursive: true }); return mkdtemp(join(scratch, 'case-')); };
 const MODELS = { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' };
-const PASS = 'Verdict: pass';
+const PASS = '审查结论：通过';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/rtd-cleanup.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 

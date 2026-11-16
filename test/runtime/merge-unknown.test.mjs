@@ -19,7 +19,7 @@ const ANCHOR = mkdtempSync(join(tmpdir(), 'rt119-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
 after(() => rm(ANCHOR, { recursive: true, force: true }));
 const exists = (path) => access(path).then(() => true, () => false);
-const PASSOUT = 'Verdict: pass';
+const PASSOUT = '审查结论：通过';
 const OBSERVED_SHA = 'a'.repeat(40);
 const prBody = (issue) => upsertPrRecord('', buildPrRecord({ issue, head: OBSERVED_SHA, tree: 'tree', passed: ['gate0', 'gate1', 'ci'] }));
 const REVERT_BODY = upsertPrRecord('', buildPrRecord({ issue: '92', head: 'reverthead', tree: 'reverttree', passed: ['gate0', 'gate1', 'ci'] }));

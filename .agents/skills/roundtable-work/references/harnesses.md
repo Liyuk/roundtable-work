@@ -72,7 +72,7 @@ Read-only sandbox guidance:
 
 - If the reviewer's sandbox is read-only, do not force tests inside it, and do not stall waiting for a writable sandbox.
 - Rely on the recorded Gate 0 summary (test evidence), and still give a verdict on the first line, using the exact tokens above.
-- Do not end the review silently. If the evidence is insufficient to judge, the verdict is `Verdict: block` with the reason in the rationale.
+- Do not end the review silently. If the evidence is insufficient to judge, the verdict is `Verdict: block` with the reason in the rationale. The legacy alias `审查结论：阻塞` is still parsed as block but must not be written.
 
 ## Host Capability Mapping
 

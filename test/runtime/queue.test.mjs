@@ -19,7 +19,7 @@ const tmp = () => mkdtemp(join(tmpdir(), 'rt-queue-'));
 const rtd = fileURLToPath(new URL('../../runtime/rtd.mjs', import.meta.url));
 const okHandler = (calls = []) => async ({ item, phase }) => {
   calls.push(`${item.id}:${phase}`);
-  return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass\nlooks fine' : 'ok' };
+  return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过\nlooks fine' : 'ok' };
 };
 
 test('readQueue orders by priority, then input order, and drops duplicate ids', async () => {
@@ -88,7 +88,7 @@ test('CLI reads a confined queue and creates state in the work root', async () =
     await writeFile(join(root, 'handler.mjs'), `
       const sha = 'a'.repeat(40);
       export const observationClients = { expectedSha: () => sha, issue: { get: async () => ({ state: 'open', labels: ['rt:running'] }) }, worktree: { inspect: async () => ({ dirty: false }) }, git: { head: async () => sha, commit: async () => ({ sha }) }, evidence: { checks: async () => ({ sha, conclusion: 'success' }), review: async () => ({ sha, conclusion: 'approved' }) } };
-      export default async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' });
+      export default async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' });
       export async function preDispatch() { return { ok: true }; }`);
     const child = spawnSync(process.execPath, [rtd, '--work-root', root, '--queue', 'queue.json', '--routing', fileURLToPath(new URL('./routing-fixture.json', import.meta.url)), '--handler', join(root, 'handler.mjs')], { encoding: 'utf8' });
     assert.equal(child.status, 0, child.stderr);

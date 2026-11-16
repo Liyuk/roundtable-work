@@ -92,7 +92,7 @@ test('degraded path: a missing reviewer binary falls back to a single-session re
   const env = { ...process.env, RT_REVIEWER_COMMAND: join(dir, 'no-such-reviewer') };
   const result = await runSeparateReviewer({
     head: 'h1', gate0Summary: GATE0, env,
-    review: async () => 'Verdict: pass',
+    review: async () => '审查结论：通过',
   });
   assert.deepEqual({ status: result.status, independent: result.independent }, { status: 'pass', independent: false });
 }));
@@ -105,7 +105,7 @@ test('a degraded single-session pass is never a Gate 1 pass', withDir(async (dir
     state: { async get(id) { return records.get(id); }, async put(id, value) { records.set(id, structuredClone(value)); } },
     gates: {
       async gate0() { return { passed: true }; },
-      reviewer: ({ head }) => runSeparateReviewer({ head, gate0Summary: GATE0, env, review: async () => 'Verdict: pass' }),
+      reviewer: ({ head }) => runSeparateReviewer({ head, gate0Summary: GATE0, env, review: async () => '审查结论：通过' }),
     },
     ci: { async requiredGreen() { return { green: true }; } },
     merge: { async squash() { throw new Error('must not merge'); } },

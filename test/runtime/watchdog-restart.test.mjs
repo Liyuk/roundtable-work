@@ -210,7 +210,7 @@ test('restart-and-adopt: a lease left by an unclean stop is adopted after its TT
 
   const phases = [];
   const result = await runQueue({ workRoot, repoRoot: repo, githubClient: client, queue, now: () => 1_000_000,
-    handler: async ({ phase }) => { phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' }; } });
+    handler: async ({ phase }) => { phases.push(phase); return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' }; } });
   assert.deepEqual(phases, ['testing', 'reviewing', 'finalizing'], 'developing is not redone');
   assert.equal(result.outcomes[0].status, 'done');
   assert.deepEqual(events, []);
