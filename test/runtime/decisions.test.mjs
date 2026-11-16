@@ -153,6 +153,51 @@ test('escalation that recovers after two failed calls is used without a fallback
   assert.equal(tracker.events.some(([type]) => type === 'createComment'), false);
 }));
 
+test('gate disagreement retries, ignores do/continue answers, and fails closed without a false-positive override', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const decision = { decision: 'ask', category: 'gate-disagreement', question: 'Gate finding is disputed.' };
+  const answers = [new Error('down'), null, { decision: 'do', reason: 'False positive.' }, { decision: 'continue', reason: 'False positive.' }];
+  const calls = [];
+  const result = await applyDecision({ decision, issue: { number: 48 }, store, client: tracker, retryDelaysMs: [0, 0, 0],
+    escalationAdapter: async ({ attempt }) => { calls.push(attempt); const answer = answers.shift(); if (answer instanceof Error) throw answer; return answer; }, modelRouter: () => 'escalation' });
+  assert.deepEqual(result, { status: 'waiting_external', decision: 'wait', escalation: 'fail-closed' });
+  assert.deepEqual(calls, [1, 1, 1, 1]);
+  const state = await store.load('48');
+  assert.equal(state.status, 'waiting_external');
+  assert.equal(state.pendingDecision, undefined);
+  assert.equal(state.lastEvent.type, 'gate_disagreement_fail_closed');
+  assert.equal(state.lastEvent.detail, 'VERDICT: real. Fix the gate finding; do not override as a false positive.');
+  assert.deepEqual(tracker.events, []);
+}));
+
+test('gate disagreement uses a valid owner ask answer from the escalation adapter', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const decision = { decision: 'ask', category: 'gate-disagreement', question: 'Gate finding is disputed.' };
+  const answers = [null, { decision: 'ask', category: 'scope', question: 'Which module owns the fix?' }];
+  const result = await applyDecision({ decision, issue: { number: 49 }, store, client: tracker, retryDelaysMs: [0, 0, 0],
+    escalationAdapter: async () => answers.shift(), modelRouter: () => 'escalation' });
+  assert.equal(result.status, 'waiting_person');
+  assert.equal(tracker.events[0][2], '<!-- rt:ask -->\nDECISION=ask\nscope\nWhich module owns the fix?');
+  assert.equal((await store.load('49')).pendingDecision, undefined);
+}));
+
+test('applyDecision accepts a gate-disagreement ask without throwing and never queues it without an answer', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  const result = await applyDecision({ decision: { decision: 'ask', category: 'gate-disagreement', question: 'Disputed.' }, issue: { number: 50 }, store, client: tracker });
+  assert.equal(result.status, 'waiting_external');
+  assert.notEqual((await store.load('50')).status, 'queued');
+}));
+
+test('safety-merge disagreement is held and never escalated to a continue', async () => fixture(async root => {
+  const store = await createStateStore({ workRoot: root }); const tracker = client();
+  let calls = 0;
+  const result = await applyDecision({ decision: { decision: 'ask', category: 'safety-merge', question: 'Merge safety file?' }, issue: { number: 51 }, store, client: tracker,
+    escalationAdapter: async () => { calls++; return { decision: 'continue', reason: 'auto' }; }, modelRouter: () => 'escalation', retryDelaysMs: [0, 0, 0] });
+  assert.equal(result.status, 'waiting_person');
+  assert.equal(calls, 0);
+  assert.notEqual((await store.load('51')).status, 'queued');
+}));
+
 test('credentials and destructive asks never reach the escalation adapter', async () => fixture(async root => {
   for (const category of ['credentials', 'destructive']) {
     const store = await createStateStore({ workRoot: root }); const tracker = client();

@@ -4,15 +4,20 @@ import { decomposeTriggers, issueSignals } from './decompose-triggers.mjs';
 
 const ASK_CATEGORIES = Object.freeze(['scope', 'credentials', 'destructive', 'direction']);
 const DECISION_TYPES = Object.freeze(['do', 'continue', 'ask', 'out-of-scope', 'decompose', 'done']);
+// Internal escalation kinds (gate findings), never part of the decision-file contract. safety-merge is held, never escalated.
+const ESCALATED_CATEGORIES = Object.freeze(['scope', 'direction', 'gate-disagreement']);
+const INTERNAL_CATEGORIES = Object.freeze([...ASK_CATEGORIES, 'gate-disagreement', 'safety-merge']);
+const GATE_ANSWERS = Object.freeze(['ask', 'out-of-scope', 'decompose']);
+const GATE_FAIL_CLOSED = 'VERDICT: real. Fix the gate finding; do not override as a false positive.';
 
 /** Validate the machine-readable end-of-turn decision before changing durable or tracker state. */
-export function validateDecision(value) {
+export function validateDecision(value, categories = ASK_CATEGORIES) {
   if (!plain(value) || !DECISION_TYPES.includes(value.decision)) throw new TypeError('decision must be do, continue, ask, out-of-scope, or decompose');
   const allowed = value.decision === 'ask' ? ['decision', 'category', 'question']
     : value.decision === 'decompose' ? ['decision', 'drafts'] : ['decision', 'reason'];
   if (Object.keys(value).some(key => !allowed.includes(key))) throw new TypeError('decision has unexpected fields');
   if (value.decision === 'ask') {
-    if (!ASK_CATEGORIES.includes(value.category)) throw new TypeError('ask category must be scope, credentials, destructive, or direction');
+    if (!categories.includes(value.category)) throw new TypeError('ask category must be scope, credentials, destructive, or direction');
     if (!nonEmpty(value.question)) throw new TypeError('ask question is required');
   } else if (value.decision === 'decompose') {
     if (!Array.isArray(value.drafts) || value.drafts.length === 0 || value.drafts.length > 20 || value.drafts.some(path => typeof path !== 'string' || !path.trim())) throw new TypeError('decompose drafts must be a non-empty array of at most 20 relative paths');
@@ -37,7 +42,7 @@ export function parseDecisionFile(source) {
 /** Apply one validated decision using durable state and the caller's injected tracker client. */
 export async function applyDecision({ decision: raw, issue, store, client, repoRoot, now = Date.now,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, retryDelayMs, retryDelaysMs = [5000, 15000, 45000] }) {
-  let decision = typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw);
+  let decision = typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw, INTERNAL_CATEGORIES);
   const number = issue?.number ?? issue?.id;
   if (!Number.isSafeInteger(Number(number)) || Number(number) < 1) throw new TypeError('issue number is required');
   if (!store || typeof store.update !== 'function') throw new TypeError('state store is required');
@@ -47,7 +52,7 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
   if (!queueNext && decision.decision !== 'ask' && (!client || typeof client.createComment !== 'function' || typeof client.addLabel !== 'function' || typeof client.removeLabel !== 'function')) throw new TypeError('injected tracker client is required');
   const id = String(number);
 
-  if (decision.decision === 'ask' && ['scope', 'direction'].includes(decision.category)) {
+  if (decision.decision === 'ask' && ESCALATED_CATEGORIES.includes(decision.category)) {
     if (!Number.isSafeInteger(maxEscalationAttempts) || maxEscalationAttempts < 1) throw new TypeError('maxEscalationAttempts must be a positive integer');
     const pending = (await store.load(id)).pendingDecision;
     const attempts = pending?.decision?.decision === 'ask' ? pending.attempts : 0;
@@ -68,7 +73,16 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
       const attempt = attempts + 1;
       await store.update(id, state => { state.pendingDecision = { decision, attempts: attempt }; });
       if (typeof modelRouter !== 'function') return await waitForRetry('model router is required for escalation');
-      const resolved = await callEscalation({ escalationAdapter, decision, issue, model: modelRouter('escalation'), attempt, retryDelaysMs });
+      const gate = decision.category === 'gate-disagreement';
+      const resolved = await callEscalation({ escalationAdapter, decision, issue, model: modelRouter('escalation'), attempt, retryDelaysMs, gate });
+      if (resolved === null && gate) {
+        // A gate finding is never overridden: without a valid non-override answer it stays blocked.
+        await store.update(id, state => {
+          state.status = 'waiting_external'; state.pendingDecision = undefined;
+          state.lastEvent = { type: 'gate_disagreement_fail_closed', at: now(), detail: GATE_FAIL_CLOSED };
+        });
+        return { status: 'waiting_external', decision: 'wait', escalation: 'fail-closed' };
+      }
       if (resolved === null) {
         // No valid answer after every try: default-approve, so the owner is not interrupted by an unanswered escalation.
         await store.update(id, state => {
@@ -127,11 +141,15 @@ export async function applyDecision({ decision: raw, issue, store, client, repoR
 }
 
 /** One call plus one retry per delay; a missing, throwing, or invalid answer is retried. Returns null when none is valid. */
-async function callEscalation({ escalationAdapter, decision, issue, model, attempt, retryDelaysMs }) {
+async function callEscalation({ escalationAdapter, decision, issue, model, attempt, retryDelaysMs, gate }) {
   for (let retry = 0; ; retry++) {
     try {
       const resolved = await escalationAdapter({ decision, issue, model, attempt });
-      if (resolved !== null && resolved !== undefined) return validateDecision(resolved);
+      if (resolved !== null && resolved !== undefined) {
+        const answer = validateDecision(resolved);
+        // A gate finding accepts only a non-override answer; do/continue/done count as no answer.
+        if (!gate || GATE_ANSWERS.includes(answer.decision)) return answer;
+      }
     } catch {
       // Treated as no answer; retried below.
     }
