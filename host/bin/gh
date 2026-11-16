@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Guard wrapper for gh used by the unattended pi agents: read-only + PR create/edit + comments only.
+# Comments written through this guard get a `<!-- rt:chief -->` marker first line so the scheduler
+# never mistakes an agent comment (same GitHub account as the owner) for an owner reply.
+# Label changes, issue creation/closing and `pr ready` are done by the host worker with the real gh, not here.
+REAL="${RT_GH_REAL:-/usr/bin/gh}"
+a="$1 $2"
+case "$a" in
+  "issue view"|"issue list"|"pr view"|"pr list"|"pr diff"|"pr checks"|"pr create"|"pr edit"|"run list"|"run view"|"auth status"|"repo view") exec "$REAL" "$@";;
+  "issue comment"|"pr comment")
+    marker='<!-- rt:chief -->'
+    args=("$@"); out=(); tmps=(); i=0
+    while [ "$i" -lt "${#args[@]}" ]; do
+      x="${args[$i]}"
+      case "$x" in
+        --body|-b) out+=("$x" "$marker"$'\n'"${args[$((i+1))]-}"); i=$((i+2)); continue;;
+        --body=*)  out+=("--body=$marker"$'\n'"${x#--body=}");;
+        --body-file|-F|--body-file=*)
+          if [[ "$x" == --body-file=* ]]; then f="${x#--body-file=}"; flag="--body-file"; step=1
+          else f="${args[$((i+1))]-}"; flag="$x"; step=2; fi
+          t=$(mktemp); tmps+=("$t")
+          { echo "$marker"; if [ "$f" = "-" ]; then cat; else cat "$f"; fi; } >"$t"
+          out+=("$flag" "$t"); i=$((i+step)); continue;;
+        *) out+=("$x");;
+      esac
+      i=$((i+1))
+    done
+    "$REAL" "${out[@]}"; rc=$?
+    [ "${#tmps[@]}" -gt 0 ] && rm -f "${tmps[@]}"
+    exit $rc;;
+esac
+echo "gh guard: '$a' is not allowed in unattended mode (no merge/close/delete/label/api/secret/workflow ops)" >&2
+exit 3

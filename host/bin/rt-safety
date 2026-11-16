@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""rt-safety [files...]   (or file names on stdin, one per line)
+Prints the changed files that are 'safety files' (guards, hooks, limits, policy, CI workflows, check script).
+Exit 1 if any matched (merge needs the Opus APPROVE-MERGE gate), 0 if none.
+"""
+import re
+import sys
+
+PATTERNS = [
+    r"(^|/)\.githooks/",
+    r"(^|/)pre-push($|[^/]*$)",
+    r"(^|/)bin/gh$",
+    r"limits",              # limits.json, host limits, budget limits
+    r"policy",              # policy.md, policy files anywhere
+    r"(^|/)runtime/lib/guard",
+    r"(^|/)\.github/workflows/",
+    r"(^|/)scripts/check\.mjs$",
+]
+RX = [re.compile(p, re.I) for p in PATTERNS]
+
+
+def matches(path):
+    return any(rx.search(path) for rx in RX)
+
+
+if __name__ == "__main__":
+    names = sys.argv[1:] or [l.rstrip("\n") for l in sys.stdin]
+    hit = [n for n in names if n.strip() and matches(n.strip())]
+    for h in hit:
+        print(h)
+    sys.exit(1 if hit else 0)

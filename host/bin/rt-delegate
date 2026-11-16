@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# rt-delegate <role> <card-file> [workdir]
+# Starts ONE independent agent session (separate process, never the Chief's session) as a Roundtable executor,
+# through bin/rt-agent (harness from RT_HARNESS: codex|pi; model per role from config.env).
+# role: developer|fixer|reviewer|researcher. Prints the executor's final reply (delivery card).
+# Gate 1 first-line contract (case-insensitive): Verdict: pass | reject | block
+# Legacy first line still accepted by the parser: 审查结论：通过 | 打回 | 阻塞
+set -uo pipefail
+RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Parse reviewer output on stdin. Prints the internal reviews.log value:
+#   pass | fail | blocked | unavailable
+# Maps Verdict: pass -> pass, reject -> fail, block -> blocked (and the same for legacy Chinese).
+rt_parse_verdict() {
+  local raw token val
+  raw=$(grep -v '^\[rt-delegate\]' | head -n 8)
+  token=$(printf '%s\n' "$raw" | grep -im1 -oE 'Verdict[：:][[:space:]]*(pass|reject|block|fail|blocked)|审查结论[：:][[:space:]]*(通过|打回|阻塞)' | head -1)
+  val=$(printf '%s' "$token" | sed -E 's/.*(Verdict|审查结论)[：:][[:space:]]*//I')
+  val=$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$val" in
+    pass|通过) echo pass;;
+    reject|fail|打回) echo fail;;
+    block|blocked|阻塞) echo blocked;;
+    *) echo unavailable;;
+  esac
+}
+
+if [ "${1:-}" = --parse-verdict ]; then
+  rt_parse_verdict
+  exit 0
+fi
+
+role="${1:?role}"; card="${2:?card file}"; wd="${3:-$PWD}"
+case "$role" in developer|fixer|reviewer|researcher) ;; *) echo "rt-delegate: bad role $role" >&2; exit 2;; esac
+[ -f "$card" ] || { echo "rt-delegate: card not found: $card" >&2; exit 2; }
+set -a; . "$RT_HOME/config.env"; set +a   # single source of truth for harness + models
+AGENT="$RT_HOME/bin/rt-agent"
+HARNESS=$("$AGENT" --harness); MODEL=$("$AGENT" --model "$role")
+TMO="${RT_DELEGATE_TIMEOUT:-1500}"
+skill="$wd/.agents/skills/roundtable-work"
+ts=$(date +%Y%m%d-%H%M%S)
+logdir="$RT_HOME/logs/delegate"; mkdir -p "$logdir"
+log="$logdir/$(basename "$wd")-$role-$ts.log"
+echo "[rt-delegate] $(date -Is) role=$role wd=$wd card=$card harness=$HARNESS model=$MODEL log=$log" >&2
+cd "$wd" || exit 2
+focus=""
+if [ "$role" = reviewer ]; then
+  # Gate 2 (cross-check) is a separate session that focuses on security. When both gates run on the same model,
+  # Gate 1 must not duplicate it: it judges the acceptance criteria and functional correctness.
+  focus="
+Review focus (Gate 1, owner 2026-11-12 acceptance-criteria-first): review scope = the acceptance criteria in the original issue text + whether this change itself is correct. Check every acceptance criterion (give evidence for each: file:line, or the check command and its exit code), and confirm that tests/checks pass and that tests were not removed or weakened.
+Decision rule: if every acceptance criterion is met and tests pass → Verdict: pass (\"pass, no blockers\" is a legitimate conclusion, not a sign you skipped the review). Only two cases may reject: (a) an acceptance criterion is unmet; (b) this change has a high-risk defect (safety, data loss, or a clearly wrong result) and you can write a concrete trigger (input / call order / command → what goes wrong).
+Style, hardening, edge cases, readability, doc wording, \"a more complete approach\", and tests or defensive checks the acceptance criteria did not require, belong only in a trailing \"Notes (non-blocking)\" section of the delivery card. They are not reject reasons, and you must not suggest opening a new issue. Security and privacy are Gate 2's job; do not turn this review into a security audit. Do not modify any file in the worktree (read-only checks and tests are allowed)."
+fi
+if [ "$HARNESS" = pi ] && { [ "$role" = developer ] || [ "$role" = fixer ]; }; then
+  # owner 2026-11-12: pi/deepseek sessions over-produce defensive code
+  focus="
+Code style (owner 2026-11-12, applies when harness=pi): write the simplest code that meets the acceptance criteria; fewer lines are better. Do not write speculative guards, duplicate checks, extra try/catch, or fallbacks for states that cannot happen, and do not add defensive checks that the acceptance criteria or failing tests did not require. Keep security-related input validation on a real trust boundary."
+fi
+# owner 2026-11-12: use the installed engineering skills (Matt Pocock set) as working method, any harness
+SK="$HOME/.pi/agent/skills"
+case "$role" in
+  developer) [ -f "$SK/tdd/SKILL.md" ] && focus="$focus
+Working method: before you start, read $SK/tdd/SKILL.md and $SK/implement/SKILL.md, and follow that method (first write a failing test that embodies the acceptance criteria, then write the least code that makes it pass). If that conflicts with the assignment card or the acceptance criteria, the assignment card wins.";;
+  fixer) [ -f "$SK/diagnosing-bugs/SKILL.md" ] && focus="$focus
+Working method: before you start, read $SK/diagnosing-bugs/SKILL.md, and follow that diagnosis loop: reproduce, find the root cause, then make the smallest fix and add a regression test. If that conflicts with the assignment card, the assignment card wins.";;
+esac
+tree_before=""; [ "$role" = reviewer ] && tree_before=$("$RT_HOME/bin/rt-tree" "$wd" 2>/dev/null)
+printf '%s' "You are the $role of Roundtable Work (executor mode, independent session), not the Chief. Do not dispatch further work, and do not git commit / push / open a PR. Workspace: $wd. Complete the work from the assignment card below, and in your final reply output only the delivery card (for a reviewer, the first line must be Verdict: pass or Verdict: reject or Verdict: block).$focus
+
+$(cat "$card")" | timeout --kill-after=30 "$TMO" "$AGENT" "$role" "$wd" "$log" \
+    --system "$skill/prompts/shared.md" --system "$skill/prompts/roles/$role.md" 2>>"$log.agent"
+rc=$?
+echo "[rt-delegate] exit=$rc" >>"$log"
+if [ "$role" = reviewer ]; then
+  # Record the verdict against the reviewed content (tree id) so Gate 1 can prove "reviewed on the current head".
+  # Format: ts <TAB> tree <TAB> head <TAB> pass|fail|blocked|unavailable <TAB> model
+  vv=unavailable
+  if [ "$rc" -eq 0 ] && [ -s "$log" ]; then
+    vv=$(rt_parse_verdict <"$log")
+  fi
+  tree_after=$("$RT_HOME/bin/rt-tree" "$wd" 2>/dev/null)
+  if [ "$tree_before" != "$tree_after" ]; then   # the reviewer changed the content it reviewed: the verdict does not count
+    echo "[rt-delegate] reviewer changed the worktree during review; verdict discarded (fail closed)" >>"$log"
+    vv=unavailable
+  fi
+  mkdir -p "$wd/.roundtable/state"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -Is)" "$tree_after" "$(git -C "$wd" rev-parse HEAD 2>/dev/null)" "$vv" "$HARNESS:$MODEL" >>"$wd/.roundtable/state/reviews.log"
+fi
+cat "$log"
+[ -s "$log" ] || echo "[rt-delegate] EMPTY OUTPUT (transport failure, not a verdict)"
+exit $rc

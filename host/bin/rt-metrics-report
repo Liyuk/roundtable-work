@@ -1,0 +1,244 @@
+#!/usr/bin/python3
+"""Print a compact markdown summary of ~/rt-loop/state/metrics/daily.jsonl
+by phase and by ISO week (America/Los_Angeles). For the self-iteration case study.
+
+Zero-LLM. Read-only.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from collections import defaultdict
+from datetime import date, datetime
+from pathlib import Path
+from typing import Optional
+from zoneinfo import ZoneInfo
+
+PST = ZoneInfo("America/Los_Angeles")
+HOME = Path(os.environ.get("HOME") or os.path.expanduser("~"))
+RT_HOME = Path(os.environ.get("RT_HOME") or (HOME / "rt-loop")).resolve()
+DAILY = Path(os.environ.get("RT_METRICS_DAILY") or (RT_HOME / "state" / "metrics" / "daily.jsonl"))
+PHASES = RT_HOME / "state" / "metrics" / "phases.tsv"
+
+
+def load_daily() -> list[dict]:
+    if not DAILY.is_file():
+        sys.stderr.write(f"rt-metrics-report: {DAILY} not found; run rt-metrics first\n")
+        sys.exit(2)
+    rows = []
+    for line in DAILY.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    rows.sort(key=lambda r: r.get("date") or "")
+    return rows
+
+
+def iso_week(d: str) -> str:
+    dt = date.fromisoformat(d)
+    y, w, _ = dt.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def mean(vals: list[float]) -> Optional[float]:
+    return (sum(vals) / len(vals)) if vals else None
+
+
+def weighted_rate(rows: list[dict]) -> Optional[float]:
+    yes = sum(r.get("first_pass_n") or 0 for r in rows)
+    no = sum(r.get("rework_n") or 0 for r in rows)
+    if yes + no == 0:
+        return None
+    return yes / (yes + no)
+
+
+def wmean(rows: list[dict], value_key: str, weight_key: str) -> Optional[float]:
+    num = 0.0
+    den = 0.0
+    for r in rows:
+        v, w = r.get(value_key), r.get(weight_key)
+        if v is None or not w:
+            continue
+        num += float(v) * float(w)
+        den += float(w)
+    return (num / den) if den else None
+
+
+def fmt(v, digits=2, pct=False) -> str:
+    if v is None:
+        return "—"
+    if pct:
+        return f"{v * 100:.{digits}f}%"
+    if isinstance(v, float):
+        return f"{v:.{digits}f}"
+    return str(v)
+
+
+def aggregate(rows: list[dict], label: str) -> dict:
+    n = len(rows)
+    days_with_loop = sum(1 for r in rows if (r.get("loop_uptime_hours") or 0) > 0)
+    prs = sum(r.get("prs_merged") or 0 for r in rows)
+    opened = sum(r.get("issues_opened") or 0 for r in rows)
+    closed = sum(r.get("issues_closed") or 0 for r in rows)
+    inter = sum(r.get("interventions_supervisor_total") or 0 for r in rows)
+    pullins = sum(r.get("interventions_owner_pullins") or 0 for r in rows)
+    stall = sum(r.get("stall_minutes") or 0 for r in rows)
+    freeze = sum(r.get("box_freeze_minutes") or 0 for r in rows)
+    uptime = sum(r.get("loop_uptime_hours") or 0 for r in rows)
+    gaps = [r.get("unsupervised_gap_max_hours") for r in rows if r.get("unsupervised_gap_max_hours") is not None]
+    streak = [r.get("unsupervised_streak_end_of_day_hours") for r in rows if r.get("unsupervised_streak_end_of_day_hours") is not None]
+    return {
+        "label": label,
+        "days": n,
+        "days_with_loop": days_with_loop,
+        "issues_opened": opened,
+        "issues_closed": closed,
+        "prs_merged": prs,
+        "prs_per_day": (prs / n) if n else None,
+        "claim_to_merge_h_median": wmean(rows, "claim_to_merge_hours_median", "claim_to_merge_n"),
+        "pr_open_to_merge_h_median": wmean(rows, "pr_open_to_merge_hours_median", "pr_open_to_merge_n"),
+        "first_pass_rate": weighted_rate(rows),
+        "first_pass_n": sum(r.get("first_pass_n") or 0 for r in rows),
+        "rework_n": sum(r.get("rework_n") or 0 for r in rows),
+        "unknown_n": sum(r.get("first_pass_unknown_n") or 0 for r in rows),
+        "interventions": inter,
+        "interventions_per_day": (inter / n) if n else None,
+        "owner_pullins": pullins,
+        "gap_max_h": max(gaps) if gaps else None,
+        "streak_max_h": max(streak) if streak else None,
+        "loop_uptime_h": uptime,
+        "stall_min": stall,
+        "freeze_min": freeze,
+        "util": wmean(rows, "worker_util_avg_busy_slots", "loop_uptime_hours"),
+        "ask_entered": sum(r.get("ask_entered") or 0 for r in rows),
+        "blocked_entered": sum(r.get("blocked_entered") or 0 for r in rows),
+        "parked_entered": sum(r.get("parked_entered") or 0 for r in rows),
+        "opened_loop": sum(r.get("issues_opened_loop") or 0 for r in rows),
+        "opened_self": sum(r.get("issues_opened_source_self") or 0 for r in rows),
+        "opened_owner": sum(r.get("issues_opened_owner_supervisor") or 0 for r in rows),
+    }
+
+
+def table(rows: list[dict], title: str) -> str:
+    cols = [
+        ("label", "period", "s"),
+        ("days", "days", "d"),
+        ("prs_merged", "PRs merged", "d"),
+        ("prs_per_day", "PRs/day", "f2"),
+        ("claim_to_merge_h_median", "median claim→merge (h)", "f2"),
+        ("first_pass_rate", "first-pass", "pct"),
+        ("interventions_per_day", "interv./day", "f2"),
+        ("gap_max_h", "longest unsup. gap (h)", "f2"),
+        ("loop_uptime_h", "loop uptime (h)", "f1"),
+        ("stall_min", "stalled (min)", "f0"),
+        ("util", "avg busy slots", "f2"),
+        ("ask_entered", "rt:ask in", "d"),
+        ("blocked_entered", "rt:blocked in", "d"),
+        ("parked_entered", "parked in", "d"),
+    ]
+    lines = [f"## {title}", ""]
+    header = "| " + " | ".join(c[1] for c in cols) + " |"
+    sep = "| " + " | ".join("---" for _ in cols) + " |"
+    lines += [header, sep]
+    for r in rows:
+        cells = []
+        for key, _title, typ in cols:
+            v = r.get(key)
+            if typ == "s":
+                cells.append(str(v or ""))
+            elif typ == "d":
+                cells.append(str(int(v or 0)))
+            elif typ == "pct":
+                cells.append(fmt(v, 1, pct=True))
+            elif typ == "f0":
+                cells.append(fmt(v, 0))
+            elif typ == "f1":
+                cells.append(fmt(v, 1))
+            else:
+                cells.append(fmt(v, 2))
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    rows = load_daily()
+    now = datetime.now(PST).strftime("%Y-%m-%d %H:%M %Z")
+    first, last = rows[0]["date"], rows[-1]["date"]
+    print(f"# Roundtable self-iteration metrics")
+    print()
+    print(f"Source: `{DAILY}`  ")
+    print(f"Days: {first} → {last} America/Los_Angeles ({len(rows)} days)  ")
+    print(f"Generated: {now}")
+    print()
+    print("Units: hours (h) and minutes are in Pacific time dates. First-pass rate is")
+    print("the share of merged PRs with a `<!-- rt:gates -->` comment and no Gate 0/1/2")
+    print("`fail` verdict; PRs with no gates comment are excluded (see unknown count).")
+    print("Parked minutes are issue-minutes in `rt:hold` + `rt:deferred` (several issues can overlap). Supervisor interventions")
+    print("are `interventions.tsv` rows plus GitHub comments ending with `— 鹿目圆`.")
+    print()
+
+    by_phase: dict[str, list[dict]] = defaultdict(list)
+    by_week: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_phase[r.get("phase") or "unknown"].append(r)
+        by_week[iso_week(r["date"])].append(r)
+
+    # keep phase order as first appearance
+    phase_order = []
+    for r in rows:
+        p = r.get("phase") or "unknown"
+        if p not in phase_order:
+            phase_order.append(p)
+    phase_aggs = [aggregate(by_phase[p], p) for p in phase_order]
+    phase_aggs.append(aggregate(rows, "all"))
+    print(table(phase_aggs, "By phase"))
+
+    week_aggs = [aggregate(by_week[w], w) for w in sorted(by_week)]
+    week_aggs.append(aggregate(rows, "all"))
+    print(table(week_aggs, "By ISO week (America/Los_Angeles)"))
+
+    print("## Issue openings (all days)")
+    print()
+    o_owner = sum(r.get("issues_opened_owner_supervisor") or 0 for r in rows)
+    o_loop = sum(r.get("issues_opened_loop") or 0 for r in rows)
+    o_self = sum(r.get("issues_opened_source_self") or 0 for r in rows)
+    o_all = sum(r.get("issues_opened") or 0 for r in rows)
+    print(f"- opened: {o_all}  (owner/supervisor {o_owner}, loop {o_loop}, of which `rt:self` {o_self})")
+    print(f"- closed: {sum(r.get('issues_closed') or 0 for r in rows)}")
+    print(f"- first-pass evidence: {sum(r.get('first_pass_n') or 0 for r in rows)} pass, "
+          f"{sum(r.get('rework_n') or 0 for r in rows)} rework, "
+          f"{sum(r.get('first_pass_unknown_n') or 0 for r in rows)} unknown (no gates comment)")
+    print(f"- owner pull-ins (comments without the signature and without an `<!-- rt:` / runner marker): "
+          f"{sum(r.get('interventions_owner_pullins') or 0 for r in rows)}")
+    print("  Note: the `— 鹿目圆` signature convention started 2026-11-15; earlier pull-in")
+    print("  counts mix owner comments with unsigned supervisor comments.")
+    print()
+
+    # nulls
+    print("## Null / missing metrics")
+    print()
+    token_notes = []
+    for r in rows:
+        n = r.get("tokens_note")
+        if n and n not in token_notes:
+            token_notes.append(n)
+    if token_notes:
+        for n in token_notes:
+            print(f"- tokens_per_merged_pr: {n}")
+    else:
+        print("- tokens_per_merged_pr: values present")
+    print()
+    print(
+        "Date-only rows in interventions.tsv (no clock time) count toward "
+        "interventions/day but are not given a fake noon timestamp, so they "
+        "do not invent a 24h unsupervised gap. `unsupervised_gap_precision` "
+        "is `timestamp`, `date-only`, or `none`. Partial day (still in "
+        "progress) is marked on today's row in daily.jsonl (`partial: true`)."
+    )
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

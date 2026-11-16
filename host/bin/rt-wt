@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# rt-wt <n> [base-branch]   Ensure the worker worktree $RT_HOME/wt/<n> (branch rt/<n>-pi). Never deletes anything.
+#   - existing worktree: reused as is
+#   - local branch exists: attached; origin branch exists: created from it; otherwise from origin/<base|main>
+# Prints the worktree path. Exit 1 on failure (message on stderr).
+set -uo pipefail
+n="${1:?issue number}"; base="${2:-main}"
+RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REPO_DIR="${RT_REPO_DIR:-$HOME/roundtable-work}"
+BRANCH="rt/$n-pi"; WT="$RT_HOME/wt/$n"
+if [ ! -d "$WT" ]; then
+  git -C "$REPO_DIR" rev-parse -q --verify "refs/remotes/origin/$base" >/dev/null || { echo "base branch origin/$base not found" >&2; exit 1; }
+  if git -C "$REPO_DIR" rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; then
+    git -C "$REPO_DIR" worktree add -q "$WT" "$BRANCH" || exit 1
+  elif git -C "$REPO_DIR" rev-parse -q --verify "refs/remotes/origin/$BRANCH" >/dev/null; then
+    git -C "$REPO_DIR" worktree add -q "$WT" -b "$BRANCH" "origin/$BRANCH" || exit 1
+  else
+    git -C "$REPO_DIR" worktree add -q "$WT" -b "$BRANCH" "origin/$base" || exit 1
+  fi
+  (cd "$WT" && node scripts/install.mjs --target . --harness codex >/dev/null && mkdir -p .roundtable/state .roundtable/tickets .roundtable/scratch) \
+    || { echo "install failed" >&2; exit 1; }
+fi
+mkdir -p "$WT/.roundtable/state" "$WT/.roundtable/tickets" "$WT/.roundtable/scratch"
+echo "$WT"

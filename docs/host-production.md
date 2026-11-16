@@ -20,4 +20,7 @@ Run `./host/deploy --dry-run` to print the steps without changing anything. A re
 
 ## Status
 
-Import of the live loop scripts, prompts, policy and fake-gh/fake-model harness into `host/` is pending (owner action); until then `host/` contains only the deploy tool and its tests.
+- The import is done: the live-loop snapshot is at `host/` (scheduler `rt-sched.py`, worker `rt-work.sh`, helpers `bin/*`, `policy.md`, `status.sh`, `start-box.sh`). It is a snapshot, not yet re-synced with the live copy.
+- `npm test` runs `host/test/smoke.test.mjs` with fake `gh`, `pi` and `codex` on PATH, a sandbox config from `config.env.example`, and no network. It covers the `rt-sched --dry-run --once` read-only check, `rt-agent --check`, the `rt-gate0 --scan-text` pass and fail cases, `status.sh` on an empty state, and one reviewer call through the fake `pi`.
+- Gate 0 privacy scan (`host/bin/rt-gate0 --scan-text`) passes on every file under `host/` except `host/releases/`.
+- Leftovers, not translated (this is an import; the I18N series owns it): the Chinese text in `host/README-v2.md` and some script strings.

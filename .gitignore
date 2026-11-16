@@ -6,4 +6,9 @@ node_modules/
 .roundtable/state/rtd.lock.d/
 .roundtable/
 host/releases/
+host/config.env
+host/state/
+host/logs/
+host/locks/
+host/status.tsv
 /.claude/agents/rt-*.md

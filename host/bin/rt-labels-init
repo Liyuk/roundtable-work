@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# rt-labels-init [-n]   Create the labels rt-loop v2 needs. Idempotent: existing labels are skipped
+# (never `--force`). -n = list what would be created, change nothing.
+# Writes to GitHub (label create) — run it once by hand when deploying; the loop never runs it itself.
+set -uo pipefail
+RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+. "$RT_HOME/config.env" 2>/dev/null
+REPO="${RT_REPO:-Liyuk/roundtable-work}"; GH="${RT_GH_REAL:-/usr/bin/gh}"
+dry=0; [ "${1:-}" = "-n" ] && dry=1
+LABELS='type:feature|1D76DB|New feature work
+type:bug|D73A4A|Bug fix (scheduled first)
+priority:p0|B60205|Highest priority
+priority:p1|D93F0B|High priority
+priority:p2|FBCA04|Normal priority
+rt:running|0E8A16|Roundtable loop: a worker is on it
+rt:ask|5319E7|Roundtable loop: waiting for an owner reply
+rt:self|C5DEF5|Sub-issue created by the loop itself
+rt:proposed|BFD4F2|Loop proposal; needs rt:approved
+rt:approved|0E8A16|Owner approved the proposal
+rt:ready-to-merge|0E8A16|Gates passed; merged automatically once CI is green (or left for the owner)
+rt:merged|6F42C1|Merged by the roundtable loop
+rt:blocked|B60205|Roundtable loop stopped; reply to resume
+rt:hold|FEF2C0|Decomposed; resumes when its sub-issues are closed
+rt:owner|B60205|Owner decision only; do not queue in rt-loop
+rt:go|0E8A16|Legacy: Roundtable loop: pick this up (ignored by v2)'
+existing=$("$GH" label list -R "$REPO" -L 300 --json name --jq '.[].name') || { echo "cannot list labels" >&2; exit 1; }
+while IFS='|' read -r name color desc; do
+  [ -n "$name" ] || continue
+  if grep -qxF "$name" <<<"$existing"; then echo "skip   $name (exists)"; continue; fi
+  if [ "$dry" = 1 ]; then echo "would create $name"; continue; fi
+  "$GH" label create "$name" -R "$REPO" --color "$color" --description "$desc" >/dev/null && echo "created $name" || echo "FAILED  $name" >&2
+done <<<"$LABELS"

@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""Resolve DeepSeek off-peak/peak and the harness/model a role should start with.
+
+  rt-window                 print: offpeak | peak
+  rt-window --window        same
+  rt-window --harness       print resolved harness (pi | codex)
+  rt-window --model ROLE    print resolved model for that role
+  rt-window --json          machine-readable summary
+  rt-window --at STAMP      evaluate at an ISO-8601 time or unix epoch
+                            (also reads $RT_WINDOW_AT)
+
+Off-peak (half price) follows DeepSeek's official pricing page:
+https://api-docs.deepseek.com/quick_start/pricing/
+  Peak: 01:00-04:00 and 06:00-10:00 UTC, Monday-Friday, excluding Chinese
+  public holidays. All other hours (weekends, holidays in full, and the
+  gaps between peak windows) are off-peak.
+
+config.env (all optional; defaults match the official page):
+  RT_HARNESS=auto|pi|codex     auto: pi in off-peak, codex otherwise
+  RT_FORCE_HARNESS=            empty: follow auto. pi|codex: force that harness
+                               (overrides the time window; turn off to resume auto)
+  RT_PEAK_TZ=UTC
+  RT_PEAK_WEEKDAYS=Mon-Fri
+  RT_PEAK_WINDOWS=01:00-04:00,06:00-10:00
+  RT_OFFPEAK_HOLIDAY_TZ=Asia/Shanghai
+  RT_OFFPEAK_HOLIDAYS=YYYY-MM-DD,...
+  RT_MODEL / RT_DECIDER_MODEL  used when the resolved harness is pi
+  RT_CODEX_MODEL[_ROLE]        used when the resolved harness is codex
+  RT_XCHECK_MODEL              Gate 2 model when the resolved harness is codex
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import os
+import re
+import sys
+from zoneinfo import ZoneInfo
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RT_HOME = os.path.abspath(os.path.expanduser(os.environ.get("RT_HOME") or os.path.join(HERE, "..")))
+
+DOW = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+       "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4,
+       "saturday": 5, "sunday": 6}
+PI_DECIDER_ROLES = {"decider", "threat", "exploit", "opus-fix"}
+
+
+def load_config(path):
+    cfg = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                v = re.split(r"\s+#", v, maxsplit=1)[0].strip().strip("'\"")
+                cfg[k.strip()] = v
+    except OSError:
+        pass
+    return cfg
+
+
+def parse_weekdays(spec):
+    """'Mon-Fri', '1-5', 'Mon,Tue,Wed' -> set of weekday indices (Mon=0)."""
+    if not spec:
+        return {0, 1, 2, 3, 4}
+    out = set()
+    for part in re.split(r"[,/\s]+", spec.strip()):
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(parse_dow(a), parse_dow(b) + 1))
+        else:
+            out.add(parse_dow(part))
+    return out
+
+
+def parse_dow(tok):
+    t = tok.strip().lower()
+    if t in DOW:
+        return DOW[t]
+    if t.isdigit():
+        n = int(t)
+        if 1 <= n <= 7:  # 1=Mon ... 7=Sun
+            return n - 1
+        if n == 0:
+            return 6
+    raise ValueError("bad weekday: %r" % tok)
+
+
+def parse_windows(spec):
+    """'01:00-04:00,06:00-10:00' -> list of (start_min, end_min) half-open."""
+    if not spec:
+        spec = "01:00-04:00,06:00-10:00"
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        a, b = part.split("-", 1)
+        out.append((parse_hhmm(a), parse_hhmm(b)))
+    return out
+
+
+def parse_hhmm(s):
+    s = s.strip()
+    hh, mm = s.split(":", 1)
+    h, m = int(hh), int(mm)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError("bad time: %r" % s)
+    return h * 60 + m
+
+
+def parse_holidays(spec):
+    out = set()
+    for part in re.split(r"[\s,]+", (spec or "").strip()):
+        if not part:
+            continue
+        dt.date.fromisoformat(part)
+        out.add(part)
+    return out
+
+
+def parse_at(stamp):
+    if stamp is None or stamp == "":
+        return None
+    stamp = str(stamp).strip()
+    if re.fullmatch(r"\d+(\.\d+)?", stamp):
+        return dt.datetime.fromtimestamp(float(stamp), tz=dt.timezone.utc)
+    s = stamp.replace("Z", "+00:00")
+    d = dt.datetime.fromisoformat(s)
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    return d.astimezone(dt.timezone.utc)
+
+
+def is_offpeak(now, cfg):
+    """True when DeepSeek bills the off-peak (half) rate at `now` (aware UTC)."""
+    hol_tz = ZoneInfo(cfg.get("RT_OFFPEAK_HOLIDAY_TZ") or "Asia/Shanghai")
+    holidays = parse_holidays(cfg.get("RT_OFFPEAK_HOLIDAYS", ""))
+    if now.astimezone(hol_tz).date().isoformat() in holidays:
+        return True
+    peak_tz = ZoneInfo(cfg.get("RT_PEAK_TZ") or "UTC")
+    local = now.astimezone(peak_tz)
+    if local.weekday() not in parse_weekdays(cfg.get("RT_PEAK_WEEKDAYS") or "Mon-Fri"):
+        return True
+    minutes = local.hour * 60 + local.minute
+    for start, end in parse_windows(cfg.get("RT_PEAK_WINDOWS") or "01:00-04:00,06:00-10:00"):
+        if start <= minutes < end:
+            return False
+    return True
+
+
+def force_harness(cfg):
+    """RT_FORCE_HARNESS=pi|codex pins the harness and ignores the time window.
+    Empty / unset / auto / off / none / 0 leaves time-based RT_HARNESS=auto in effect."""
+    force = (cfg.get("RT_FORCE_HARNESS") or "").strip().lower()
+    if force in ("pi", "codex"):
+        return force
+    return ""
+
+
+def resolved_harness(offpeak, cfg):
+    force = force_harness(cfg)
+    if force:
+        return force
+    pinned = (cfg.get("RT_HARNESS") or "auto").strip().lower()
+    if pinned in ("pi", "codex"):
+        return pinned
+    return "pi" if offpeak else "codex"
+
+
+def role_key(role):
+    return (role or "").strip().lower()
+
+
+def resolved_model(role, harness, cfg):
+    r = role_key(role)
+    if harness == "pi":
+        pk = "RT_PI_MODEL_" + r.replace("-", "_").upper()
+        if cfg.get(pk):
+            return cfg[pk]
+        if r in PI_DECIDER_ROLES:
+            return cfg.get("RT_DECIDER_MODEL") or cfg.get("RT_MODEL") or ""
+        return cfg.get("RT_MODEL") or ""
+    if r in ("xcheck", "x-check", "gate2", "gate-2"):
+        return cfg.get("RT_XCHECK_MODEL") or cfg.get("RT_CODEX_MODEL") or ""
+    envk = "RT_CODEX_MODEL_" + r.replace("-", "_").upper()
+    return cfg.get(envk) or cfg.get("RT_CODEX_MODEL") or ""
+
+
+def evaluate(cfg, at=None):
+    now = at or dt.datetime.now(dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.timezone.utc)
+    now = now.astimezone(dt.timezone.utc)
+    off = is_offpeak(now, cfg)
+    h = resolved_harness(off, cfg)
+    return {
+        "at_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "window": "offpeak" if off else "peak",
+        "harness": h,
+        "forced": bool(force_harness(cfg)) or (cfg.get("RT_HARNESS") or "auto").strip().lower() in ("pi", "codex"),
+        "force_harness": force_harness(cfg) or "",
+    }
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--window", action="store_true")
+    ap.add_argument("--harness", action="store_true")
+    ap.add_argument("--model", metavar="ROLE")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--at", dest="at", default=None)
+    args = ap.parse_args(argv)
+
+    cfg = load_config(os.path.join(RT_HOME, "config.env"))
+    # Environment overrides (tests / one-off). Empty values are ignored.
+    for k in ("RT_HARNESS", "RT_FORCE_HARNESS", "RT_PEAK_TZ", "RT_PEAK_WEEKDAYS", "RT_PEAK_WINDOWS",
+              "RT_OFFPEAK_HOLIDAY_TZ", "RT_OFFPEAK_HOLIDAYS",
+              "RT_MODEL", "RT_DECIDER_MODEL", "RT_XCHECK_MODEL", "RT_CODEX_MODEL"):
+        if k == "RT_FORCE_HARNESS" and k in os.environ:
+            cfg[k] = os.environ[k]
+            continue
+        v = os.environ.get(k)
+        if v:
+            cfg[k] = v
+    for k, v in list(os.environ.items()):
+        if k.startswith("RT_CODEX_MODEL_") and v:
+            cfg[k] = v
+
+    at = parse_at(args.at or os.environ.get("RT_WINDOW_AT"))
+    info = evaluate(cfg, at)
+    if args.model:
+        info["role"] = role_key(args.model)
+        info["model"] = resolved_model(args.model, info["harness"], cfg)
+
+    if args.json:
+        import json
+        json.dump(info, sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    if args.model:
+        sys.stdout.write(info.get("model", "") + "\n")
+        return 0 if info.get("model") else 2
+    if args.harness:
+        sys.stdout.write(info["harness"] + "\n")
+        return 0
+    sys.stdout.write(info["window"] + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

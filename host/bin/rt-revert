@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# rt-revert <merge-sha>
+# Main CI went red after an auto-merge (sha is in state/merges.log): revert it on branch rt/revert-<sha7>,
+# open a PR, wait for required checks, merge it through rt-merge, comment on the original issue and open a new
+# type:bug issue (rt:self, priority:p0). Uses the REAL gh. Idempotent via state/reverted/<sha7>.
+# RT_DRY_RUN=1: print the plan only (no git/gh writes).
+set -uo pipefail
+sha="${1:?merge sha}"; sha7="${sha:0:7}"
+RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"; export RT_HOME
+set -a; . "$RT_HOME/config.env"; set +a
+GH="${RT_GH_REAL:-/usr/bin/gh}"; export RT_GH_REAL="$GH"
+REPO_DIR="${RT_REPO_DIR:-$HOME/roundtable-work}"
+BR="rt/revert-$sha7"; WT="$RT_HOME/wt/revert-$sha7"
+CI_TMO="${RT_CI_TIMEOUT:-1200}"
+mkdir -p "$RT_HOME/state/reverted" "$RT_HOME/logs"
+log(){ echo "$(date '+%F %T %Z') revert-$sha7 $*" | tee -a "$RT_HOME/logs/workers.log"; }
+[ -e "$RT_HOME/state/reverted/$sha7" ] && { log "already handled"; exit 0; }
+row=$(awk -F'\t' -v s="$sha" 'index($4,s)==1 || index(s,$4)==1 {r=$0} END{print r}' "$RT_HOME/state/merges.log" 2>/dev/null)
+[ -n "$row" ] || { log "sha not found in merges.log; refusing to revert a commit the loop did not merge"; exit 2; }
+pr=$(cut -f2 <<<"$row"); issue=$(cut -f3 <<<"$row"); full=$(cut -f4 <<<"$row")
+title=$("$GH" pr view "$pr" -R "$RT_REPO" --json title --jq .title 2>/dev/null)
+log "main is red after auto-merge of PR #$pr (issue #$issue, $sha7)"
+if [ -n "${RT_DRY_RUN:-}" ]; then
+  log "DRY would: create $BR from origin/main, git revert --no-edit $sha7, push, open PR 'Revert ...', wait for checks, rt-merge, comment on #$issue, create type:bug rt:self issue"; exit 0
+fi
+safe(){ # file -> prints file if it passes the privacy scan, else a generic text file
+  if "$RT_HOME/bin/rt-gate0" --scan-text "$1" >/dev/null 2>&1; then echo "$1"; else
+    g=$(mktemp); echo "Details withheld by the privacy scan; see the worker log on the host." >"$g"; echo "$g"; fi; }
+post(){ # issue|pr num marker text
+  f=$(mktemp); printf '%s\n%s\n' "$3" "$4" >"$f"; s=$(safe "$f")
+  "$GH" "$1" comment "$2" -R "$RT_REPO" --body-file "$s" >/dev/null 2>&1 || log "WARN comment on $1 #$2 failed"; rm -f "$f"; }
+git -C "$REPO_DIR" fetch -q origin 2>/dev/null || log "WARN fetch failed"
+if [ ! -d "$WT" ]; then
+  git -C "$REPO_DIR" worktree add -q "$WT" -b "$BR" origin/main || { log "worktree add failed"; exit 1; }
+fi
+mkdir -p "$WT/.roundtable/state"
+newbug(){ # reason
+  bf=$(mktemp); printf 'Main CI went red after the loop auto-merged PR #%s (issue #%s, commit %s).\n\n%s\n\nAcceptance: main CI is green again and the original change is re-landed in a form that passes CI.\n' "$pr" "$issue" "$sha7" "$1" >"$bf"
+  s=$(safe "$bf")
+  "$GH" issue create -R "$RT_REPO" --title "Main CI red after auto-merge of PR #$pr" --body-file "$s" --label rt:self --label rt:go --label type:bug --label priority:p0 >/dev/null 2>&1 || log "WARN issue create failed"; }
+if ! (cd "$WT" && git revert --no-edit "$full" >/dev/null 2>&1); then
+  (cd "$WT" && git revert --abort >/dev/null 2>&1)
+  log "revert does not apply cleanly"; post issue "$issue" '<!-- rt:revert -->' "Main CI is red after the auto-merge of PR #$pr. An automatic revert does not apply cleanly, so manual action is needed. New merges stay paused until main is green."
+  newbug "The automatic revert conflicts with later commits on main."; touch "$RT_HOME/state/reverted/$sha7"; exit 1
+fi
+head=$(git -C "$WT" rev-parse HEAD)
+git -C "$WT" push -q origin "HEAD:refs/heads/$BR" || { log "push failed"; exit 1; }
+bf=$(mktemp); printf 'Automatic revert of PR #%s (commit %s): main CI went red after the loop merged it.\n\nThis PR is merged by the loop once its required checks are green. Original issue: #%s.\n' "$pr" "$sha7" "$issue" >"$bf"
+url=$("$GH" pr create -R "$RT_REPO" --base main --head "$BR" --title "Revert \"${title:-PR #$pr}\"" --body-file "$(safe "$bf")" 2>>"$RT_HOME/logs/workers.log")
+rpr=$(grep -oE '[0-9]+$' <<<"$url" | tail -1)
+[ -n "$rpr" ] || { log "pr create failed"; exit 1; }
+log "opened revert PR #$rpr"
+t=pass; (cd "$WT" && timeout 900 npm test >/dev/null 2>&1) || t=fail
+post pr "$rpr" '<!-- rt:gates -->' "Revert PR.
+- Gate 0 (npm test): $t
+- Gate 1: skipped (revert of a merged change)
+- Gate 2: skipped
+
+Result: $([ "$t" = pass ] && echo pass || echo fail)
+Head: ${head:0:7}"
+printf '{"kind":"revert","pr":%s,"head":"%s","gate0":"%s","gate1":"skipped-revert","gate2":"skipped"}\n' "$rpr" "$head" "$t" >"$WT/.roundtable/state/gates.json"
+if [ "$t" != pass ]; then log "npm test failed on the revert; leaving PR #$rpr for the owner"; post issue "$issue" '<!-- rt:revert -->' "Main CI is red after the auto-merge of PR #$pr. Revert PR #$rpr was opened but its tests fail; the owner needs to look at it."; newbug "Revert PR #$rpr was opened but its local tests fail."; touch "$RT_HOME/state/reverted/$sha7"; exit 1; fi
+timeout "$CI_TMO" "$GH" pr checks "$rpr" -R "$RT_REPO" --watch --required --interval 30 >/dev/null 2>&1; crc=$?
+if [ "$crc" -ne 0 ]; then log "revert PR #$rpr checks not green (rc=$crc); leaving it for the owner"; post issue "$issue" '<!-- rt:revert -->' "Main CI is red after the auto-merge of PR #$pr. Revert PR #$rpr was opened but its checks are not green; the owner needs to look at it."; newbug "Revert PR #$rpr: required checks are not green."; touch "$RT_HOME/state/reverted/$sha7"; exit 1; fi
+if RT_MERGE_STEP=1 "$RT_HOME/bin/rt-merge" "$rpr"; then
+  log "revert PR #$rpr merged"
+  post issue "$issue" '<!-- rt:revert -->' "Main CI went red after the auto-merge of PR #$pr, so the loop reverted it in PR #$rpr. A new issue tracks re-landing the change."
+  newbug "The change was reverted by PR #$rpr."
+else
+  log "rt-merge refused the revert PR #$rpr"; post issue "$issue" '<!-- rt:revert -->' "Main CI is red after the auto-merge of PR #$pr. Revert PR #$rpr is open but could not be merged automatically; the owner needs to merge it."; newbug "Revert PR #$rpr could not be merged automatically."
+fi
+touch "$RT_HOME/state/reverted/$sha7"

@@ -1,0 +1,1302 @@
+#!/usr/bin/python3
+"""Zero-LLM daily metrics recorder for the roundtable self-iteration case study.
+
+Reads GitHub (via the real gh CLI), ~/rt-loop/logs/sched.log, and
+~/rt-loop/state/interventions.tsv. Upserts one JSON object per America/Los_Angeles
+day into ~/rt-loop/state/metrics/daily.jsonl. Idempotent: re-running replaces the
+same dates in place.
+
+Does not call any LLM. Does not modify the scheduler, workers, or loop scripts.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+from collections import defaultdict
+from datetime import datetime, timedelta, date, time as dtime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Optional
+from zoneinfo import ZoneInfo
+
+PST = ZoneInfo("America/Los_Angeles")
+CST = ZoneInfo("Asia/Shanghai")  # sched.log timestamps (PST+16)
+UTC = timezone.utc
+POLL_DEFAULT = 300
+STALL_MULT = 3
+SIGNATURE = "— 鹿目圆"
+LOOP_MARKER_RE = re.compile(r"<!--\s*rt[:-]", re.I)  # <!-- rt:… or legacy <!-- rt-bot -->
+RUNNER_BODY_RE = re.compile(
+    r"(Roundtable runner\s*(已领取|停止)|🤖\s*Roundtable|⛔\s*Roundtable)",
+    re.I,
+)
+CLAIM_MARKER_RE = re.compile(r"<!--\s*rt:claim\s*-->", re.I)
+GATES_MARKER_RE = re.compile(r"<!--\s*rt:gates\s*-->", re.I)
+HOLD_MARKER_RE = re.compile(r"<!--\s*rt:merge-hold\s*-->", re.I)
+GATE_VERDICT_RE = re.compile(
+    r"^\s*-\s*Gate\s*([012])\b[^:]*:\s*(.+)$", re.I | re.M
+)
+RESULT_RE = re.compile(r"^\s*Result:\s*(\S+)", re.I | re.M)
+SCHED_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) CST (.*)$"
+)
+SPAWN_RE = re.compile(r"spawned worker #(\d+) slot=(\d+)")
+EXIT_RE = re.compile(r"worker #(\d+) exited")
+ADOPT_DONE_RE = re.compile(r"adopted worker #(\d+) finished")
+START_RE = re.compile(
+    r"rt-sched start pid=(\d+) dry=(True|False) once=(True|False) workers=(\d+) poll=(\d+)s"
+)
+GAP_WARN_RE = re.compile(r"WARN scheduler cycle gap (\d+)s")
+ISSUE_IN_TITLE_RE = re.compile(r"\[#(\d+)\]")
+USAGE_NAMES = (
+    "usage-ledger.jsonl",
+    "usage.jsonl",
+    "tokens.jsonl",
+    "usage-ledger.json",
+)
+PARK_LABELS = ("rt:hold", "rt:deferred")
+TRACK_LABELS = ("rt:ask", "rt:blocked", "rt:hold", "rt:deferred")
+LOOP_LABELS = {"rt:self", "rt:followup"}
+
+HOME = Path(os.environ.get("HOME") or os.path.expanduser("~"))
+RT_HOME = Path(os.environ.get("RT_HOME") or (HOME / "rt-loop")).resolve()
+STATE = RT_HOME / "state"
+METRICS = STATE / "metrics"
+CACHE = METRICS / "cache"
+DAILY_PATH = METRICS / "daily.jsonl"
+PHASES_PATH = METRICS / "phases.tsv"
+INTERVENTIONS_PATH = STATE / "interventions.tsv"
+SCHED_LOG = RT_HOME / "logs" / "sched.log"
+CONFIG = RT_HOME / "config.env"
+REPO_DEFAULT = "Liyuk/roundtable-work"
+REPO_ROOT = HOME / "roundtable-work"
+
+
+def log(msg: str) -> None:
+    ts = datetime.now(PST).strftime("%Y-%m-%d %H:%M:%S PST")
+    print(f"{ts} {msg}", flush=True)
+
+
+def load_config() -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not CONFIG.is_file():
+        return out
+    for line in CONFIG.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def find_gh() -> str:
+    for cand in (
+        os.environ.get("RT_GH_REAL"),
+        os.environ.get("GH_REAL"),
+        "/usr/local/bin/gh",
+        "/usr/bin/gh",
+    ):
+        if cand and Path(cand).is_file() and os.access(cand, os.X_OK):
+            return cand
+    raise SystemExit("rt-metrics: real gh CLI not found (expected /usr/local/bin/gh)")
+
+
+def repo_name(cfg: dict[str, str]) -> str:
+    return os.environ.get("RT_REPO") or cfg.get("RT_REPO") or REPO_DEFAULT
+
+
+# ---------- time helpers ----------
+
+def parse_iso(ts: str) -> datetime:
+    if not ts:
+        raise ValueError("empty timestamp")
+    s = ts.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(PST)
+
+
+def parse_cst(ts: str) -> datetime:
+    return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST).astimezone(PST)
+
+
+def day_of(dt: datetime) -> date:
+    return dt.astimezone(PST).date()
+
+
+def day_bounds(d: date) -> tuple[datetime, datetime]:
+    start = datetime.combine(d, dtime.min, tzinfo=PST)
+    return start, start + timedelta(days=1)
+
+
+def overlap_seconds(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -> float:
+    lo = max(a0, b0)
+    hi = min(a1, b1)
+    return max(0.0, (hi - lo).total_seconds())
+
+
+def daterange(start: date, end: date) -> list[date]:
+    """Inclusive start, inclusive end."""
+    out = []
+    cur = start
+    while cur <= end:
+        out.append(cur)
+        cur += timedelta(days=1)
+    return out
+
+
+def median(vals: list[float]) -> Optional[float]:
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    if n % 2:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
+
+
+def percentile(vals: list[float], p: float) -> Optional[float]:
+    if not vals:
+        return None
+    s = sorted(vals)
+    if len(s) == 1:
+        return s[0]
+    k = (len(s) - 1) * p
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return s[int(k)]
+    return s[f] * (c - k) + s[c] * (k - f)
+
+
+def rround(x: Optional[float], n: int = 3) -> Optional[float]:
+    if x is None:
+        return None
+    return round(float(x), n)
+
+
+# ---------- gh ----------
+
+def gh_json(gh: str, args: list[str]) -> Any:
+    r = subprocess.run(
+        [gh, *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(args[:6])} failed ({r.returncode}): {r.stderr.strip()[:400]}")
+    return json.loads(r.stdout) if r.stdout.strip() else None
+
+
+def gh_paginate_arrays(gh: str, path: str) -> list[Any]:
+    r = subprocess.run(
+        [gh, "api", "--paginate", path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"gh api {path} failed ({r.returncode}): {r.stderr.strip()[:400]}")
+    raw = r.stdout.lstrip()
+    if not raw:
+        return []
+    dec = json.JSONDecoder()
+    items: list[Any] = []
+    idx = 0
+    n = len(raw)
+    while idx < n:
+        obj, end = dec.raw_decode(raw, idx)
+        if isinstance(obj, list):
+            items.extend(obj)
+        else:
+            items.append(obj)
+        idx = end
+        while idx < n and raw[idx].isspace():
+            idx += 1
+    return items
+
+
+def cached_json(name: str, builder, refresh: bool = True) -> Any:
+    CACHE.mkdir(parents=True, exist_ok=True)
+    path = CACHE / name
+    if path.is_file() and not refresh:
+        return json.loads(path.read_text(encoding="utf-8"))
+    data = builder()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+    return data
+
+
+# ---------- sources ----------
+
+def fetch_issues(gh: str, repo: str) -> list[dict]:
+    fields = "number,title,createdAt,closedAt,state,author,labels,body,url"
+    items: list[dict] = []
+    # GitHub search pagination via gh issue list --limit is capped; use API.
+    data = gh_paginate_arrays(
+        gh,
+        f"repos/{repo}/issues?state=all&per_page=100&filter=all",
+    )
+    # This endpoint includes PRs. Split later via pull_request key.
+    return data
+
+
+def fetch_prs(gh: str, repo: str) -> list[dict]:
+    return gh_paginate_arrays(gh, f"repos/{repo}/pulls?state=all&per_page=100")
+
+
+def fetch_comments(gh: str, repo: str) -> list[dict]:
+    return gh_paginate_arrays(gh, f"repos/{repo}/issues/comments?per_page=100")
+
+
+def fetch_events(gh: str, repo: str) -> list[dict]:
+    return gh_paginate_arrays(gh, f"repos/{repo}/issues/events?per_page=100")
+
+
+def fetch_discussions(gh: str, repo: str) -> list[dict]:
+    owner, name = repo.split("/", 1)
+    comments: list[dict] = []
+    cursor = None
+    while True:
+        after = f', after: "{cursor}"' if cursor else ""
+        q = f"""
+        query {{
+          repository(owner:"{owner}", name:"{name}") {{
+            discussions(first: 50{after}) {{
+              pageInfo {{ hasNextPage endCursor }}
+              nodes {{
+                number
+                title
+                createdAt
+                author {{ login }}
+                comments(first: 50) {{
+                  nodes {{ createdAt author {{ login }} body }}
+                }}
+              }}
+            }}
+          }}
+        }}
+        """
+        data = gh_json(gh, ["api", "graphql", "-f", f"query={q}"])
+        conn = (((data or {}).get("data") or {}).get("repository") or {}).get("discussions") or {}
+        for d in conn.get("nodes") or []:
+            comments.append({
+                "source": "discussion",
+                "number": d.get("number"),
+                "created_at": d.get("createdAt"),
+                "user": (d.get("author") or {}).get("login"),
+                "body": "",
+                "kind": "discussion_post",
+            })
+            for c in ((d.get("comments") or {}).get("nodes") or []):
+                comments.append({
+                    "source": "discussion",
+                    "number": d.get("number"),
+                    "created_at": c.get("createdAt"),
+                    "user": (c.get("author") or {}).get("login"),
+                    "body": c.get("body") or "",
+                    "kind": "discussion_comment",
+                })
+        if not (conn.get("pageInfo") or {}).get("hasNextPage"):
+            break
+        cursor = (conn.get("pageInfo") or {}).get("endCursor")
+        if not cursor:
+            break
+    return comments
+
+
+def load_phases() -> list[tuple[date, str, str]]:
+    rows: list[tuple[date, str, str]] = []
+    if not PHASES_PATH.is_file():
+        return rows
+    for line in PHASES_PATH.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = s.split("\t")
+        if len(parts) < 2:
+            continue
+        try:
+            d = date.fromisoformat(parts[0].strip())
+        except ValueError:
+            continue
+        phase = parts[1].strip()
+        note = parts[2].strip() if len(parts) > 2 else ""
+        rows.append((d, phase, note))
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+def phase_on(d: date, rows: list[tuple[date, str, str]]) -> str:
+    cur = "unknown"
+    for start, phase, _ in rows:
+        if start <= d:
+            cur = phase
+        else:
+            break
+    return cur
+
+
+def load_interventions_tsv() -> list[dict]:
+    rows = []
+    if not INTERVENTIONS_PATH.is_file():
+        return rows
+    text = INTERVENTIONS_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines:
+        return rows
+    header = [c.strip() for c in lines[0].split("\t")]
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        cols = line.split("\t")
+        rec = {header[i] if i < len(header) else f"col{i}": (cols[i] if i < len(cols) else "") for i in range(max(len(header), len(cols)))}
+        rec.setdefault("time", cols[0] if cols else "")
+        rec.setdefault("category", cols[1] if len(cols) > 1 else "")
+        rec.setdefault("ref", cols[2] if len(cols) > 2 else "")
+        rec.setdefault("reason", cols[3] if len(cols) > 3 else "")
+        rec.setdefault("internalized", cols[4] if len(cols) > 4 else "")
+        rows.append(rec)
+    return rows
+
+
+def intervention_times(tsv_rows: list[dict]) -> tuple[list[datetime], dict[date, int], int, set]:
+    """Return (timestamped instants, per-day tsv counts, n_continuous, date_only_days).
+
+    Date-only rows count toward the day's intervention total but are not given a
+    fake clock time: that would invent a 24h unsupervised gap between noons.
+    """
+    instants: list[datetime] = []
+    per_day: dict[date, int] = defaultdict(int)
+    n_cont = 0
+    date_only_days: set[date] = set()
+    for rec in tsv_rows:
+        raw = (rec.get("time") or "").strip()
+        if not raw or raw.lower() == "continuous":
+            n_cont += 1
+            continue
+        # date only, or date plus time
+        try:
+            if len(raw) == 10:
+                d0 = date.fromisoformat(raw)
+                date_only_days.add(d0)
+                per_day[d0] += 1
+                continue
+            else:
+                # accept "YYYY-MM-DD HH:MM[:SS] [PST|PDT|CST]"
+                body = raw
+                tz = PST
+                for label, zone in (("PST", PST), ("PDT", PST), ("CST", CST), ("UTC", UTC)):
+                    if body.endswith(label):
+                        body = body[: -len(label)].strip()
+                        tz = zone
+                        break
+                if "T" in body or "+" in body or body.endswith("Z"):
+                    dt = parse_iso(body)
+                else:
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                        try:
+                            dt = datetime.strptime(body, fmt).replace(tzinfo=tz).astimezone(PST)
+                            break
+                        except ValueError:
+                            dt = None
+                    if dt is None:
+                        raise ValueError(raw)
+            instants.append(dt)
+            per_day[day_of(dt)] += 1
+        except Exception:
+            log(f"WARN skip interventions.tsv row with unparsable time: {raw!r}")
+    return instants, per_day, n_cont, date_only_days
+
+
+# ---------- comment classification ----------
+
+def last_nonempty_line(body: str) -> str:
+    lines = [ln.strip() for ln in (body or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def is_supervisor_comment(body: str) -> bool:
+    return last_nonempty_line(body) == SIGNATURE
+
+
+def is_loop_comment(body: str) -> bool:
+    b = body or ""
+    return bool(LOOP_MARKER_RE.search(b) or RUNNER_BODY_RE.search(b))
+
+
+def issue_number_from_url(url: str) -> Optional[int]:
+    if not url:
+        return None
+    m = re.search(r"/issues/(\d+)", url)
+    return int(m.group(1)) if m else None
+
+
+def is_loop_opened(issue: dict) -> bool:
+    labels = issue_labels(issue)
+    if labels & LOOP_LABELS:
+        return True
+    body = issue.get("body") or ""
+    if LOOP_MARKER_RE.search(body):
+        return True
+    title = issue.get("title") or ""
+    if title.lower().startswith("gate 2 follow-up"):
+        return True
+    return False
+
+
+def issue_labels(issue: dict) -> set[str]:
+    labs = issue.get("labels") or []
+    names = set()
+    for lab in labs:
+        if isinstance(lab, dict):
+            names.add(lab.get("name") or lab.get("login") or "")
+        elif isinstance(lab, str):
+            names.add(lab)
+    names.discard("")
+    return names
+
+
+def author_login(obj: dict) -> str:
+    a = obj.get("author") or obj.get("user") or {}
+    if isinstance(a, dict):
+        return a.get("login") or ""
+    return str(a or "")
+
+
+# ---------- first-pass / gates ----------
+
+def gate_verdicts(body: str) -> list[str]:
+    return [m.group(2).strip().lower() for m in GATE_VERDICT_RE.finditer(body or "")]
+
+
+def verdict_is_fail(v: str) -> bool:
+    # "fail", "fail (...)", but not "false positive" alone
+    head = v.split()[0] if v else ""
+    head = head.strip(".,;:()")
+    return head == "fail"
+
+
+def pr_first_pass(comments: list[dict]) -> Optional[bool]:
+    """True = first-pass, False = gate failure or rework, None = no gate evidence."""
+    gates = [c for c in comments if GATES_MARKER_RE.search(c.get("body") or "")]
+    if not gates:
+        return None
+    failed = False
+    for c in gates:
+        body = c.get("body") or ""
+        for v in gate_verdicts(body):
+            if verdict_is_fail(v):
+                failed = True
+        rm = RESULT_RE.search(body)
+        if rm and rm.group(1).strip().lower() == "fail":
+            failed = True
+    if failed:
+        return False
+    # merge-hold caused by a gate failure (not main-red / reviewer unavailable) is rework
+    for c in comments:
+        body = c.get("body") or ""
+        if not HOLD_MARKER_RE.search(body):
+            continue
+        low = body.lower()
+        if "gates.json is not all-pass" in low or "gate 0" in low and "fail" in low:
+            return False
+        if re.search(r"gate\s*[012].{0,40}fail", low):
+            return False
+    return True
+
+
+# ---------- sched.log ----------
+
+def parse_sched_log(path: Path) -> dict:
+    events = []  # (dt, msg)
+    if not path.is_file():
+        return {
+            "events": [],
+            "starts": [],
+            "spawns": [],
+            "exits": [],
+            "warn_gaps": [],
+            "downtime": [],
+            "poll": POLL_DEFAULT,
+        }
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = SCHED_RE.match(line.rstrip("\n"))
+            if not m:
+                continue
+            dt = parse_cst(m.group(1))
+            events.append((dt, m.group(2)))
+
+    starts = []
+    warn_gaps = []  # (start, end, seconds, kind)
+    spawns = []  # (dt, issue, slot)
+    exits = []
+    poll = POLL_DEFAULT
+    for dt, msg in events:
+        sm = START_RE.search(msg)
+        if sm:
+            dry = sm.group(2) == "True"
+            once = sm.group(3) == "True"
+            workers = int(sm.group(4))
+            poll = int(sm.group(5))
+            starts.append({"ts": dt, "dry": dry, "once": once, "workers": workers, "poll": poll, "pid": int(sm.group(1))})
+        gm = GAP_WARN_RE.search(msg)
+        if gm:
+            secs = int(gm.group(1))
+            warn_gaps.append((dt - timedelta(seconds=secs), dt, secs, "cycle-gap-warn"))
+        sp = SPAWN_RE.search(msg)
+        if sp:
+            spawns.append((dt, int(sp.group(1)), int(sp.group(2))))
+        if EXIT_RE.search(msg) or ADOPT_DONE_RE.search(msg):
+            em = EXIT_RE.search(msg) or ADOPT_DONE_RE.search(msg)
+            exits.append((dt, int(em.group(1))))
+
+    # live runs and downtime: last activity of a live run -> next live start
+    live_starts = [s for s in starts if not s["dry"] and not s["once"]]
+    downtime = []
+    # map events to surrounding live start
+    exit_times = [dt for dt, msg in events if msg.startswith("rt-sched exit")]
+    for i, st in enumerate(live_starts):
+        # last log line at or after this start, before the next live start
+        nxt = live_starts[i + 1]["ts"] if i + 1 < len(live_starts) else None
+        last = st["ts"]
+        for dt, msg in events:
+            if dt < st["ts"]:
+                continue
+            if nxt and dt >= nxt:
+                break
+            last = dt
+        if nxt is None:
+            continue
+        gap = (nxt - last).total_seconds()
+        thresh = STALL_MULT * st.get("poll") or POLL_DEFAULT
+        if gap > thresh:
+            downtime.append((last, nxt, gap, "restart-gap"))
+
+    # Also: repo existed before first live start — not a stall.
+    return {
+        "events": events,
+        "starts": starts,
+        "live_starts": live_starts,
+        "spawns": spawns,
+        "exits": exits,
+        "warn_gaps": warn_gaps,
+        "downtime": downtime,
+        "poll": poll,
+    }
+
+
+def merge_intervals(ivals: list[tuple[datetime, datetime, float, str]]) -> list[tuple[datetime, datetime, float, str]]:
+    if not ivals:
+        return []
+    items = sorted(ivals, key=lambda x: x[0])
+    out = [items[0]]
+    for a0, a1, _, kind in items[1:]:
+        b0, b1, _, k2 = out[-1]
+        if a0 <= b1:
+            kinds = k2 if k2 == kind else (k2 + "|" + kind if k2 != kind else k2)
+            if "cycle-gap-warn" in (k2, kind) and "cycle-gap-warn" not in kinds:
+                kinds = kinds + "|cycle-gap-warn"
+            end = max(b1, a1)
+            out[-1] = (b0, end, (end - b0).total_seconds(), kinds)
+        else:
+            out.append((a0, a1, (a1 - a0).total_seconds(), kind))
+    return out
+
+
+def worker_busy_series(sched: dict, now: datetime) -> list[tuple[datetime, int, int]]:
+    """Returns samples of (ts, busy, cap) at every spawn/exit/start/end."""
+    busy: dict[int, int] = {}  # issue -> slot
+    cap = 0
+    samples: list[tuple[datetime, int, int]] = []
+
+    def snap(ts: datetime) -> None:
+        samples.append((ts, len(busy), cap or len(busy)))
+
+    # interleave starts, spawns, exits
+    marks: list[tuple[datetime, str, tuple]] = []
+    slot_re = re.compile(r"no free worker slot \((\d+)/(\d+) busy\)")
+    for s in sched.get("starts") or []:
+        marks.append((s["ts"], "start", (s,)))
+    for dt, msg in sched.get("events") or []:
+        mm = slot_re.search(msg)
+        if mm:
+            marks.append((dt, "cap", (int(mm.group(2)),)))
+    for dt, issue, slot in sched.get("spawns") or []:
+        marks.append((dt, "spawn", (issue, slot)))
+    for dt, issue in sched.get("exits") or []:
+        marks.append((dt, "exit", (issue,)))
+    marks.sort(key=lambda x: x[0])
+    for ts, typ, payload in marks:
+        if typ == "start":
+            s = payload[0]
+            if not s["dry"]:
+                cap = s["workers"]
+        elif typ == "cap":
+            cap = payload[0]
+        elif typ == "spawn":
+            issue, slot = payload
+            busy[issue] = slot
+            if cap:
+                cap = max(cap, slot)
+            else:
+                cap = max(slot, len(busy))
+        elif typ == "exit":
+            busy.pop(payload[0], None)
+        snap(ts)
+    if samples and samples[-1][0] < now:
+        snap(now)
+    return samples
+
+
+def avg_busy(samples: list[tuple[datetime, int, int]], lo: datetime, hi: datetime,
+             down: list[tuple[datetime, datetime, float, str]]) -> tuple[Optional[float], Optional[float], float]:
+    """Time-weighted average busy slots and cap over [lo, hi) minus downtime. Also uptime hours."""
+    if not samples:
+        return None, None, 0.0
+    # build uptime intervals from first sample to last, minus downtime
+    start = max(samples[0][0], lo)
+    end = min(samples[-1][0] if samples[-1][0] > start else hi, hi)
+    if end <= start:
+        return None, None, 0.0
+    # walk piecewise constant between samples
+    busy_sec = 0.0
+    cap_sec = 0.0
+    up_sec = 0.0
+    # index samples
+    for i in range(len(samples) - 1):
+        a, busy, cap = samples[i]
+        b = samples[i + 1][0]
+        seg0, seg1 = max(a, lo), min(b, hi)
+        if seg1 <= seg0:
+            continue
+        # subtract downtime overlap
+        covered = (seg1 - seg0).total_seconds()
+        down_s = sum(overlap_seconds(seg0, seg1, d0, d1) for d0, d1, _, _ in down)
+        live = covered - down_s
+        if live <= 0:
+            continue
+        busy_sec += busy * live
+        cap_sec += cap * live
+        up_sec += live
+    # After last sample, hold last value until hi if a live run is still going
+    if samples:
+        a, busy, cap = samples[-1]
+        seg0, seg1 = max(a, lo), hi
+        if seg1 > seg0:
+            covered = (seg1 - seg0).total_seconds()
+            down_s = sum(overlap_seconds(seg0, seg1, d0, d1) for d0, d1, _, _ in down)
+            live = covered - down_s
+            if live > 0:
+                busy_sec += busy * live
+                cap_sec += cap * live
+                up_sec += live
+    if up_sec <= 0:
+        return None, None, 0.0
+    return busy_sec / up_sec, cap_sec / up_sec, up_sec / 3600.0
+
+
+# ---------- usage ledger ----------
+
+def find_usage_ledger() -> tuple[Optional[list], str]:
+    """Return (rows_or_none, note). Production host loop has no persisted usage ledger."""
+    candidates: list[Path] = []
+    for root in (REPO_ROOT, RT_HOME, RT_HOME / "state", REPO_ROOT / ".roundtable" / "state", RT_HOME / ".roundtable" / "state"):
+        if root.is_dir():
+            for name in USAGE_NAMES:
+                candidates.append(root / name)
+            # per-issue usage json as used by runtime/lib/metrics.mjs
+            usage_dir = root / "usage"
+            if usage_dir.is_dir():
+                candidates.extend(usage_dir.glob("*.json"))
+    # Also honour an explicit path
+    env = os.environ.get("RT_USAGE_LEDGER")
+    if env:
+        candidates.insert(0, Path(env))
+    found = [p for p in candidates if p.is_file() and p.stat().st_size > 0]
+    if not found:
+        return None, (
+            "No persisted usage ledger on the host or in the repo work root. "
+            "runtime/lib/usage-ledger.mjs exists and #337's `rt metrics` reads "
+            ".roundtable/state/*.json, but those files are not written by the "
+            "production host loop (rt-sched.py / rt-work.sh)."
+        )
+    # If we ever find one, parse json/jsonl; still may not have per-PR joins.
+    rows = []
+    for p in found:
+        text = p.read_text(encoding="utf-8", errors="replace")
+        if p.suffix == ".jsonl":
+            for line in text.splitlines():
+                if line.strip():
+                    rows.append(json.loads(line))
+        else:
+            data = json.loads(text)
+            if isinstance(data, dict) and "rows" in data:
+                rows.extend(data["rows"])
+            elif isinstance(data, list):
+                rows.extend(data)
+    if not rows:
+        return None, f"Found {found[0]} but it contains no usage rows."
+    return rows, f"loaded {len(rows)} rows from {found[0]}"
+
+
+# ---------- label intervals ----------
+
+def label_intervals(events: list[dict], issues_by_n: dict[int, dict], now: datetime) -> dict[str, list[tuple[int, datetime, datetime]]]:
+    """label -> list of (issue, start, end)."""
+    # events have event, created_at, issue.number, label.name
+    by: dict[tuple[int, str], list[tuple[datetime, str]]] = defaultdict(list)
+    for ev in events:
+        typ = ev.get("event")
+        if typ not in ("labeled", "unlabeled"):
+            continue
+        lab = (ev.get("label") or {}).get("name") or ""
+        if lab not in TRACK_LABELS:
+            continue
+        issue = ev.get("issue") or {}
+        n = issue.get("number")
+        if not n:
+            continue
+        try:
+            ts = parse_iso(ev.get("created_at") or "")
+        except Exception:
+            continue
+        by[(int(n), lab)].append((ts, typ))
+    out: dict[str, list[tuple[int, datetime, datetime]]] = {lab: [] for lab in TRACK_LABELS}
+    seen_issues = set()
+    for (n, lab), evs in by.items():
+        evs.sort(key=lambda x: x[0])
+        open_at: Optional[datetime] = None
+        for ts, typ in evs:
+            if typ == "labeled":
+                if open_at is None:
+                    open_at = ts
+            elif typ == "unlabeled" and open_at is not None:
+                if ts > open_at:
+                    out[lab].append((n, open_at, ts))
+                open_at = None
+        if open_at is not None:
+            out[lab].append((n, open_at, now))
+        seen_issues.add(n)
+    # If an issue currently has the label but no labeled event (truncated history),
+    # start at createdAt.
+    for n, issue in issues_by_n.items():
+        labs = issue_labels(issue)
+        for lab in TRACK_LABELS:
+            if lab not in labs:
+                continue
+            # already an open interval ending at now?
+            if any(iv[0] == n and iv[2] == now for iv in out[lab]):
+                continue
+            try:
+                created = parse_iso(issue.get("created_at") or issue.get("createdAt") or "")
+            except Exception:
+                continue
+            out[lab].append((n, created, now))
+    return out
+
+
+# ---------- main compute ----------
+
+def normalize_issue(raw: dict) -> dict:
+    # REST issues payload
+    return {
+        "number": raw.get("number"),
+        "title": raw.get("title") or "",
+        "createdAt": raw.get("created_at") or raw.get("createdAt"),
+        "closedAt": raw.get("closed_at") or raw.get("closedAt"),
+        "state": (raw.get("state") or "").lower(),
+        "author": author_login(raw),
+        "labels": raw.get("labels") or [],
+        "body": raw.get("body") or "",
+        "url": raw.get("html_url") or raw.get("url") or "",
+        "is_pr": bool(raw.get("pull_request")),
+    }
+
+
+def normalize_pr(raw: dict) -> dict:
+    return {
+        "number": raw.get("number"),
+        "title": raw.get("title") or "",
+        "createdAt": raw.get("created_at") or raw.get("createdAt"),
+        "closedAt": raw.get("closed_at") or raw.get("closedAt"),
+        "mergedAt": raw.get("merged_at") or raw.get("mergedAt"),
+        "state": (raw.get("state") or "").lower(),
+        "author": author_login(raw),
+        "labels": raw.get("labels") or [],
+        "body": raw.get("body") or "",
+        "url": raw.get("html_url") or raw.get("url") or "",
+        "head": ((raw.get("head") or {}).get("ref") if isinstance(raw.get("head"), dict) else None),
+    }
+
+
+def closing_issue_from_pr(pr: dict, merges_by_pr: dict[int, int]) -> Optional[int]:
+    n = pr["number"]
+    if n in merges_by_pr:
+        return merges_by_pr[n]
+    m = ISSUE_IN_TITLE_RE.search(pr.get("title") or "")
+    if m:
+        return int(m.group(1))
+    # body Closes #N
+    m2 = re.search(r"(?i)(?:closes|fixes|resolves)\s+#(\d+)", pr.get("body") or "")
+    if m2:
+        return int(m2.group(1))
+    # branch rt/417-pi
+    head = pr.get("head") or ""
+    m3 = re.search(r"rt/(\d+)\b", head)
+    if m3:
+        return int(m3.group(1))
+    return None
+
+
+def load_merges_log() -> dict[int, int]:
+    """PR number -> issue number from host merges.log."""
+    path = STATE / "merges.log"
+    out: dict[int, int] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        # 2026-11-12 06:49:46 CST  44  20  sha sha  — after splitting on whitespace
+        # date time tz pr issue ...
+        if len(parts) < 5:
+            continue
+        try:
+            pr = int(parts[3])
+            issue_s = parts[4]
+            if issue_s == "revert":
+                continue
+            out[pr] = int(issue_s)
+        except ValueError:
+            continue
+    return out
+
+
+def compute(now: Optional[datetime] = None) -> list[dict]:
+    now = now or datetime.now(PST)
+    cfg = load_config()
+    repo = repo_name(cfg)
+    gh = find_gh()
+    log(f"gh={gh} repo={repo} rt_home={RT_HOME}")
+
+    log("fetching issues")
+    raw_issues = fetch_issues(gh, repo)
+    log(f"  {len(raw_issues)} issue+PR items from issues API")
+    log("fetching pull requests")
+    raw_prs = fetch_prs(gh, repo)
+    log(f"  {len(raw_prs)} PRs")
+    log("fetching issue comments")
+    raw_comments = fetch_comments(gh, repo)
+    log(f"  {len(raw_comments)} comments")
+    log("fetching issue events")
+    raw_events = fetch_events(gh, repo)
+    log(f"  {len(raw_events)} events")
+    disc_comments: list[dict] = []
+    try:
+        log("fetching discussion comments")
+        disc_comments = fetch_discussions(gh, repo)
+        log(f"  {len(disc_comments)} discussion posts/comments")
+    except Exception as e:
+        log(f"WARN discussions fetch failed: {e}")
+
+    issues = [normalize_issue(x) for x in raw_issues if not x.get("pull_request")]
+    prs = [normalize_pr(x) for x in raw_prs]
+    issues_by_n = {i["number"]: i for i in issues}
+    prs_by_n = {p["number"]: p for p in prs}
+
+    # comments by issue/PR number
+    comments_by_n: dict[int, list[dict]] = defaultdict(list)
+    for c in raw_comments:
+        n = issue_number_from_url(c.get("issue_url") or c.get("html_url") or "")
+        if n is None:
+            continue
+        rec = {
+            "created_at": c.get("created_at"),
+            "user": author_login(c),
+            "body": c.get("body") or "",
+        }
+        comments_by_n[n].append(rec)
+
+    merges_by_pr = load_merges_log()
+    phases = load_phases()
+    tsv_rows = load_interventions_tsv()
+    tsv_instants, tsv_per_day, n_cont, date_only_days = intervention_times(tsv_rows)
+    sched = parse_sched_log(SCHED_LOG)
+    down_raw = list(sched["downtime"]) + list(sched["warn_gaps"])
+    down = merge_intervals(down_raw)
+    warn_only = merge_intervals(list(sched["warn_gaps"]))
+    samples = worker_busy_series(sched, now)
+    usage_rows, usage_note = find_usage_ledger()
+
+    # claim times per issue
+    claim_at: dict[int, datetime] = {}
+    for n, clist in comments_by_n.items():
+        times = []
+        for c in clist:
+            if CLAIM_MARKER_RE.search(c["body"]):
+                try:
+                    times.append(parse_iso(c["created_at"]))
+                except Exception:
+                    pass
+        if times:
+            claim_at[n] = min(times)
+    # label rt:running
+    for ev in raw_events:
+        if ev.get("event") != "labeled":
+            continue
+        if (ev.get("label") or {}).get("name") != "rt:running":
+            continue
+        n = (ev.get("issue") or {}).get("number")
+        if not n:
+            continue
+        try:
+            ts = parse_iso(ev.get("created_at"))
+        except Exception:
+            continue
+        n = int(n)
+        if n not in claim_at or ts < claim_at[n]:
+            claim_at[n] = ts
+    # sched spawn fallback
+    first_spawn: dict[int, datetime] = {}
+    for dt, issue, _slot in sched["spawns"]:
+        first_spawn[issue] = min(dt, first_spawn.get(issue, dt))
+    for n, ts in first_spawn.items():
+        if n not in claim_at:
+            claim_at[n] = ts
+
+    # supervisor comments + owner pull-ins
+    owner = (cfg.get("RT_OWNER") or "Liyuk").strip()
+    sup_comment_times: list[datetime] = []
+    owner_pullins_by_day: dict[date, int] = defaultdict(int)
+    sup_comments_by_day: dict[date, int] = defaultdict(int)
+
+    def consider_comment(created: str, user: str, body: str, number: Optional[int], is_issue: bool) -> None:
+        if (user or "") != owner:
+            return
+        try:
+            ts = parse_iso(created)
+        except Exception:
+            return
+        if is_supervisor_comment(body):
+            sup_comment_times.append(ts)
+            sup_comments_by_day[day_of(ts)] += 1
+            return
+        if is_loop_comment(body):
+            return
+        # Owner pull-in: a human comment from the owner account without the
+        # supervisor signature and without an rt: loop marker.
+        owner_pullins_by_day[day_of(ts)] += 1
+
+    for n, clist in comments_by_n.items():
+        for c in clist:
+            consider_comment(c["created_at"], c["user"], c["body"], n, True)
+    for c in disc_comments:
+        if c.get("kind") == "discussion_post":
+            continue
+        consider_comment(c.get("created_at") or "", c.get("user") or "", c.get("body") or "", c.get("number"), False)
+
+    # Timestamped supervisor instants (comments + TSV rows that have a clock time).
+    # Date-only TSV rows count in the day's intervention total and zero the streak
+    # at end-of-day, but they are not gap anchors: chaining 23:59:59 on consecutive
+    # date-only days would invent a 24h unsupervised gap we did not measure.
+    all_sup = sorted(tsv_instants + sup_comment_times)
+    last_date_only_end = None
+    for d0 in sorted(date_only_days):
+        end = datetime(d0.year, d0.month, d0.day, 23, 59, 59, tzinfo=PST)
+        if end <= now:
+            last_date_only_end = end
+    gaps: list[tuple[datetime, datetime, float]] = []
+    later = [t for t in all_sup if last_date_only_end is None or t > last_date_only_end]
+    if last_date_only_end is not None:
+        chain = [last_date_only_end] + later + [now]
+    else:
+        chain = later + [now]
+    for a, b in zip(chain, chain[1:]):
+        secs = (b - a).total_seconds()
+        if secs > 0:
+            gaps.append((a, b, secs))
+    max_to_date = (max((g[2] for g in gaps), default=None))
+    if max_to_date is not None:
+        max_to_date = max_to_date / 3600.0
+
+    label_iv = label_intervals(raw_events, issues_by_n, now)
+
+    # first issue date
+    created_dates = []
+    for i in issues:
+        try:
+            created_dates.append(day_of(parse_iso(i["createdAt"])))
+        except Exception:
+            pass
+    for p in prs:
+        try:
+            created_dates.append(day_of(parse_iso(p["createdAt"])))
+        except Exception:
+            pass
+    if not created_dates:
+        raise SystemExit("rt-metrics: no issues or PRs found; cannot backfill")
+    first_day = min(created_dates)
+    last_day = day_of(now)
+    days = daterange(first_day, last_day)
+    log(f"backfill {first_day} .. {last_day} ({len(days)} days), phase rows={len(phases)}")
+
+    # precompute PR metrics attributed to merge day
+    merged_prs: list[dict] = []
+    for p in prs:
+        if not p.get("mergedAt"):
+            continue
+        try:
+            merged_at = parse_iso(p["mergedAt"])
+            opened_at = parse_iso(p["createdAt"])
+        except Exception:
+            continue
+        issue_n = closing_issue_from_pr(p, merges_by_pr)
+        fp = pr_first_pass(comments_by_n.get(p["number"], []))
+        c2m = None
+        if issue_n and issue_n in claim_at and merged_at >= claim_at[issue_n]:
+            c2m = (merged_at - claim_at[issue_n]).total_seconds() / 3600.0
+        o2m = (merged_at - opened_at).total_seconds() / 3600.0
+        merged_prs.append({
+            "number": p["number"],
+            "issue": issue_n,
+            "merged_at": merged_at,
+            "open_to_merge_h": o2m,
+            "claim_to_merge_h": c2m,
+            "first_pass": fp,
+        })
+
+    # usage per merged PR if ledger present
+    tokens_by_issue: dict[int, float] = {}
+    if usage_rows:
+        for row in usage_rows:
+            try:
+                iss = int(row.get("issue") or row.get("issueNumber") or 0)
+            except Exception:
+                continue
+            tok = row.get("inputTokens", row.get("input_tokens", 0)) or 0
+            tok += row.get("outputTokens", row.get("output_tokens", 0)) or 0
+            if tok:
+                tokens_by_issue[iss] = tokens_by_issue.get(iss, 0) + float(tok)
+
+    records = []
+    for d in days:
+        lo, hi = day_bounds(d)
+        rec_notes: list[str] = []
+        if n_cont:
+            rec_notes.append(f"{n_cont} standing 'continuous' intervention row(s) excluded from counts and gaps")
+
+        opened = [i for i in issues if i.get("createdAt") and lo <= parse_iso(i["createdAt"]) < hi]
+        closed = [i for i in issues if i.get("closedAt") and lo <= parse_iso(i["closedAt"]) < hi]
+        opened_loop = [i for i in opened if is_loop_opened(i)]
+        opened_self = [i for i in opened if "rt:self" in issue_labels(i)]
+        opened_owner = [i for i in opened if not is_loop_opened(i)]
+
+        day_merged = [p for p in merged_prs if lo <= p["merged_at"] < hi]
+        c2m_vals = [p["claim_to_merge_h"] for p in day_merged if p["claim_to_merge_h"] is not None]
+        o2m_vals = [p["open_to_merge_h"] for p in day_merged]
+        fp_yes = sum(1 for p in day_merged if p["first_pass"] is True)
+        fp_no = sum(1 for p in day_merged if p["first_pass"] is False)
+        fp_unk = sum(1 for p in day_merged if p["first_pass"] is None)
+        fp_rate = (fp_yes / (fp_yes + fp_no)) if (fp_yes + fp_no) else None
+
+        # labels
+        def entered_and_minutes(lab: str) -> tuple[int, float]:
+            entered = 0
+            minutes = 0.0
+            for _n, a, b in label_iv.get(lab, []):
+                if lo <= a < hi:
+                    entered += 1
+                minutes += overlap_seconds(a, b, lo, hi) / 60.0
+            return entered, minutes
+
+        ask_n, ask_min = entered_and_minutes("rt:ask")
+        blk_n, blk_min = entered_and_minutes("rt:blocked")
+        hold_n, hold_min = entered_and_minutes("rt:hold")
+        def_n, def_min = entered_and_minutes("rt:deferred")
+        parked_n = hold_n + def_n
+        parked_min = hold_min + def_min
+
+        # interventions
+        tsv_n = int(tsv_per_day.get(d, 0))
+        sup_n = int(sup_comments_by_day.get(d, 0))
+        own_n = int(owner_pullins_by_day.get(d, 0))
+
+        edge = min(hi, now)
+        day_gaps = [g for g in gaps if overlap_seconds(g[0], g[1], lo, edge) > 0]
+        has_ts = any(lo <= t < edge for t in all_sup)
+        # A completed date-only day with no clock times has no measured intra-day gap.
+        if d in date_only_days and not has_ts and edge == hi:
+            gap_max = None
+            gap_mean = None
+        else:
+            gap_max = max((g[2] for g in day_gaps), default=None)
+            gap_mean = (sum(g[2] for g in day_gaps) / len(day_gaps)) if day_gaps else None
+        last_ts = [t for t in all_sup if t <= edge]
+        last_do = None
+        prior_do = [
+            datetime(d0.year, d0.month, d0.day, 23, 59, 59, tzinfo=PST)
+            for d0 in date_only_days
+            if datetime(d0.year, d0.month, d0.day, 23, 59, 59, tzinfo=PST) <= edge
+        ]
+        if prior_do:
+            last_do = max(prior_do)
+        last = max(last_ts + ([last_do] if last_do else []), default=None)
+        if d in date_only_days and not last_ts and edge == hi:
+            streak = 0.0  # intervened sometime today; clock time unknown
+        elif last is None:
+            streak = None
+        else:
+            streak = (edge - last).total_seconds() / 3600.0
+            if streak < 0:
+                streak = 0.0
+        gap_precision = "timestamp" if has_ts else ("date-only" if d in date_only_days else "none")
+        # Running max of *measured* gaps whose end is at or before this day's edge
+        # (do not copy today's value onto earlier days).
+        prior_gaps = [g[2] for g in gaps if g[1] <= edge]
+        to_date = (max(prior_gaps) / 3600.0) if prior_gaps else None
+
+        # uptime / stalls
+        day_stalls = [(a, b, s, k) for a, b, s, k in down if overlap_seconds(a, b, lo, hi) > 0]
+        stall_n = len(day_stalls)
+        stall_min = sum(overlap_seconds(a, b, lo, hi) for a, b, s, k in day_stalls) / 60.0
+        day_freezes = [(a, b, s, k) for a, b, s, k in warn_only if overlap_seconds(a, b, lo, hi) > 0]
+        freeze_n = len(day_freezes)
+        freeze_min = sum(overlap_seconds(a, b, lo, hi) for a, b, s, k in day_freezes) / 60.0
+
+        # loop coverage: if no sched events overlap this day and no live start before hi, uptime 0
+        first_live = sched["live_starts"][0]["ts"] if sched.get("live_starts") else None
+        if first_live is None or hi <= first_live:
+            util, cap, up_h = (None, None, 0.0)
+            if first_live is None or d < day_of(first_live):
+                rec_notes.append("no sched.log coverage (before host loop start)")
+        else:
+            util, cap, up_h = avg_busy(samples, lo, min(hi, now), down)
+            # Also add scheduled uptime from live starts even if no worker samples
+            if up_h == 0.0 and first_live < hi:
+                # compute raw coverage: from max(first_live, lo) to min(now, hi) minus downtime
+                cov = overlap_seconds(first_live, now, lo, min(hi, now))
+                cov -= sum(overlap_seconds(a, b, lo, min(hi, now)) for a, b, s, k in down)
+                up_h = max(0.0, cov) / 3600.0
+
+        tokens = None
+        if usage_rows is None:
+            tokens = None
+            if d == days[0]:
+                rec_notes.append(usage_note)
+        else:
+            vals = []
+            for p in day_merged:
+                iss = p.get("issue")
+                if iss and iss in tokens_by_issue:
+                    vals.append(tokens_by_issue[iss])
+            tokens = (sum(vals) / len(day_merged)) if (vals and day_merged) else None
+            if day_merged and not vals:
+                rec_notes.append("usage ledger present but no rows for today's merged issues")
+
+        rec = {
+            "date": d.isoformat(),
+            "phase": phase_on(d, phases),
+            "partial": d == last_day and now < hi,
+            "issues_opened": len(opened),
+            "issues_opened_owner_supervisor": len(opened_owner),
+            "issues_opened_loop": len(opened_loop),
+            "issues_opened_source_self": len(opened_self),
+            "issues_closed": len(closed),
+            "prs_merged": len(day_merged),
+            "claim_to_merge_hours_median": rround(median(c2m_vals), 3),
+            "claim_to_merge_hours_p90": rround(percentile(c2m_vals, 0.9), 3),
+            "claim_to_merge_n": len(c2m_vals),
+            "pr_open_to_merge_hours_median": rround(median(o2m_vals), 3),
+            "pr_open_to_merge_hours_p90": rround(percentile(o2m_vals, 0.9), 3),
+            "pr_open_to_merge_n": len(o2m_vals),
+            "first_pass_rate": rround(fp_rate, 4),
+            "first_pass_n": fp_yes,
+            "rework_n": fp_no,
+            "first_pass_unknown_n": fp_unk,
+            "ask_entered": ask_n,
+            "ask_minutes": rround(ask_min, 1),
+            "blocked_entered": blk_n,
+            "blocked_minutes": rround(blk_min, 1),
+            "parked_entered": parked_n,
+            "parked_minutes": rround(parked_min, 1),
+            "parked_hold_entered": hold_n,
+            "parked_deferred_entered": def_n,
+            "interventions_tsv": tsv_n,
+            "interventions_supervisor_comments": sup_n,
+            "interventions_owner_pullins": own_n,
+            "interventions_supervisor_total": tsv_n + sup_n,
+            "unsupervised_gap_max_hours": rround((gap_max / 3600.0) if gap_max is not None else None, 3),
+            "unsupervised_gap_mean_hours": rround((gap_mean / 3600.0) if gap_mean is not None else None, 3),
+            "unsupervised_gap_max_hours_to_date": rround(to_date, 3),
+            "unsupervised_streak_end_of_day_hours": rround(streak, 3),
+            "unsupervised_gap_precision": gap_precision,
+            "loop_uptime_hours": rround(up_h, 3),
+            "stall_gaps_n": stall_n,
+            "stall_minutes": rround(stall_min, 1),
+            "box_freeze_intervals_n": freeze_n,
+            "box_freeze_minutes": rround(freeze_min, 1),
+            "tokens_per_merged_pr": rround(tokens, 1) if tokens is not None else None,
+            "tokens_note": usage_note if tokens is None else None,
+            "worker_util_avg_busy_slots": rround(util, 3),
+            "worker_cap_avg": rround(cap, 3),
+            "notes": rec_notes,
+        }
+        records.append(rec)
+    return records
+
+
+def upsert_daily(records: list[dict]) -> None:
+    METRICS.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, dict] = {}
+    if DAILY_PATH.is_file():
+        for line in DAILY_PATH.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "date" in obj:
+                existing[obj["date"]] = obj
+    for rec in records:
+        existing[rec["date"]] = rec
+    dates = sorted(existing)
+    tmp = DAILY_PATH.with_suffix(".jsonl.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        for d in dates:
+            f.write(json.dumps(existing[d], ensure_ascii=False, sort_keys=False) + "\n")
+    tmp.replace(DAILY_PATH)
+
+
+def main() -> int:
+    METRICS.mkdir(parents=True, exist_ok=True)
+    log("rt-metrics start")
+    records = compute()
+    upsert_daily(records)
+    log(f"wrote {len(records)} day(s) -> {DAILY_PATH}")
+    # brief stdout summary
+    merged = sum(r["prs_merged"] for r in records)
+    inter = sum(r["interventions_supervisor_total"] for r in records)
+    log(f"summary: days={len(records)} prs_merged={merged} supervisor_interventions={inter}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:
+        log(f"ERROR {type(e).__name__}: {e}")
+        raise
