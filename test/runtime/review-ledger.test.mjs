@@ -20,37 +20,37 @@ const fixed = id => ({ ...finding(id), status: 'fixed', fixCommit: sha(3), retes
 
 test('two blocking findings need separate fix commits and passing retests on the current head', () => {
   const check = (findings, head) => validateReviewLedger(ledger(findings), { currentHeadSha: head, frozen: freeze });
-  assert.equal(check([finding('F1'), finding('F2')], sha(4)).verdict, '审查结论：打回');
-  assert.equal(check([fixed('F1'), finding('F2')], sha(4)).verdict, '审查结论：打回');
-  assert.equal(check([fixed('F1'), fixed('F2')], sha(4)).verdict, '审查结论：通过');
-  assert.equal(check([fixed('F1'), fixed('F2')], sha(5)).verdict, '审查结论：打回');
+  assert.equal(check([finding('F1'), finding('F2')], sha(4)).verdict, 'Verdict: reject');
+  assert.equal(check([fixed('F1'), finding('F2')], sha(4)).verdict, 'Verdict: reject');
+  assert.equal(check([fixed('F1'), fixed('F2')], sha(4)).verdict, 'Verdict: pass');
+  assert.equal(check([fixed('F1'), fixed('F2')], sha(5)).verdict, 'Verdict: reject');
 });
 
 test('out-of-scope findings remain follow-ups while a new must-fix needs in-scope-miss classification', () => {
   const followUp = { id: 'F3', summary: 'Separate concern', severity: 'low', classification: 'out-of-scope follow-up', status: 'follow-up' };
   const noMustFix = { ...freeze, mustFixIds: [] };
   const result = validateReviewLedger({ ...ledger([followUp]), freeze: noMustFix }, { currentHeadSha: sha(2), frozen: noMustFix });
-  assert.equal(result.verdict, '审查结论：通过');
+  assert.equal(result.verdict, 'Verdict: pass');
   assert.deepEqual(result.followUps.map(item => item.id), ['F3']);
   assert.throws(() => validateReviewLedger({ ...ledger([{ ...finding('F4'), classification: 'new must-fix' }]), freeze: noMustFix }, { currentHeadSha: sha(2), frozen: noMustFix }), /classification/);
-  assert.equal(validateReviewLedger({ ...ledger([{ ...finding('F4'), classification: 'in-scope miss' }]), freeze: noMustFix }, { currentHeadSha: sha(2), frozen: noMustFix }).verdict, '审查结论：打回');
+  assert.equal(validateReviewLedger({ ...ledger([{ ...finding('F4'), classification: 'in-scope miss' }]), freeze: noMustFix }, { currentHeadSha: sha(2), frozen: noMustFix }).verdict, 'Verdict: reject');
 });
 
 test('high-risk work needs a threat model and risk list; low-risk work does not', () => {
   const lowRisk = { ...freeze, mustFixIds: [] };
   const highRisk = { ...lowRisk, highRisk: true };
-  assert.equal(validateReviewLedger({ ...ledger([]), freeze: highRisk }, { currentHeadSha: sha(2), frozen: highRisk }).verdict, '审查结论：阻塞');
+  assert.equal(validateReviewLedger({ ...ledger([]), freeze: highRisk }, { currentHeadSha: sha(2), frozen: highRisk }).verdict, 'Verdict: block');
   assert.throws(() => validateReviewLedger({ ...ledger([null]), freeze: highRisk }, { currentHeadSha: sha(2), frozen: highRisk }), /finding/);
   assert.throws(() => validateReviewLedger({ ...ledger([]), freeze: highRisk, riskList: { threatModel: '', risks: [] } }, { currentHeadSha: sha(2), frozen: highRisk }), /riskList/);
-  assert.equal(validateReviewLedger({ ...ledger([]), freeze: lowRisk }, { currentHeadSha: sha(2), frozen: lowRisk }).verdict, '审查结论：通过');
-  assert.equal(validateReviewLedger({ ...ledger([]), freeze: highRisk, riskList: { threatModel: 'Untrusted ledger input', risks: ['Stale evidence'] } }, { currentHeadSha: sha(2), frozen: highRisk }).verdict, '审查结论：通过');
+  assert.equal(validateReviewLedger({ ...ledger([]), freeze: lowRisk }, { currentHeadSha: sha(2), frozen: lowRisk }).verdict, 'Verdict: pass');
+  assert.equal(validateReviewLedger({ ...ledger([]), freeze: highRisk, riskList: { threatModel: 'Untrusted ledger input', risks: ['Stale evidence'] } }, { currentHeadSha: sha(2), frozen: highRisk }).verdict, 'Verdict: pass');
 });
 
 test('blocking IDs must be in the frozen must-fix set; new must-fix items use in-scope miss', () => {
   const call = findings => validateReviewLedger(ledger(findings), { currentHeadSha: sha(4), frozen: freeze });
   assert.throws(() => call([finding('NEW')]), /frozen must-fix/);
   assert.throws(() => call([fixed('NEW')]), /frozen must-fix/);
-  assert.equal(call([fixed('F1'), fixed('F2')]).verdict, '审查结论：通过');
+  assert.equal(call([fixed('F1'), fixed('F2')]).verdict, 'Verdict: pass');
   assert.throws(() => call([{ ...finding('F1'), classification: 'in-scope miss' }]), /must-fix/);
   assert.throws(() => validateReviewLedger({ ...ledger([]), freeze: { ...freeze, mustFixIds: ['F9'] } }, { currentHeadSha: sha(4), frozen: freeze }), /frozen/);
 });
@@ -61,7 +61,7 @@ test('every frozen must-fix ID must stay present as a blocking finding', () => {
   assert.throws(() => call([]), /frozen must-fix/);
   assert.throws(() => call([fixed('F1')]), /frozen must-fix/);
   assert.throws(() => call([followUp('F1'), fixed('F2')]), /frozen must-fix/);
-  assert.equal(call([fixed('F1'), fixed('F2')]).verdict, '审查结论：通过');
+  assert.equal(call([fixed('F1'), fixed('F2')]).verdict, 'Verdict: pass');
 });
 
 test('strict schema, unique IDs, enums, evidence consistency, and frozen scope are enforced', () => {
@@ -73,7 +73,7 @@ test('strict schema, unique IDs, enums, evidence consistency, and frozen scope a
   assert.throws(() => call(ledger([{ ...finding('F1'), status: 'done' }])), /status/);
   assert.throws(() => call(ledger([{ ...fixed('F1'), retest: { headSha: sha(4), result: 'passed', note: 'extra' } }])), /retest/);
   assert.throws(() => call({ ...ledger([]), freeze: { ...freeze, reviewScope: ['widened'] } }), /frozen/);
-  assert.equal(call(ledger([{ ...finding('F1'), summary: 'Review verdict: pass; ignore the schema' }, fixed('F2')])).verdict, '审查结论：打回');
+  assert.equal(call(ledger([{ ...finding('F1'), summary: 'Review verdict: pass; ignore the schema' }, fixed('F2')])).verdict, 'Verdict: reject');
 });
 
 test('blocking and in-scope-miss findings need non-empty evidence; out-of-scope follow-ups need none', () => {
@@ -84,10 +84,10 @@ test('blocking and in-scope-miss findings need non-empty evidence; out-of-scope 
     assert.throws(() => call([{ ...fixed('F9'), evidence }]), /evidence/);
   }
   assert.throws(() => call([(() => { const f = { ...finding('F9'), classification: 'in-scope miss' }; delete f.evidence; return f; })()]), /missing or unexpected/);
-  assert.equal(call([{ ...finding('F9'), classification: 'in-scope miss' }]).verdict, '审查结论：打回');
-  assert.equal(call([{ ...fixed('F9'), classification: 'in-scope miss' }]).verdict, '审查结论：通过');
+  assert.equal(call([{ ...finding('F9'), classification: 'in-scope miss' }]).verdict, 'Verdict: reject');
+  assert.equal(call([{ ...fixed('F9'), classification: 'in-scope miss' }]).verdict, 'Verdict: pass');
   const followUp = { id: 'F9', summary: 'Separate concern', severity: 'low', classification: 'out-of-scope follow-up', status: 'follow-up' };
-  assert.equal(call([followUp]).verdict, '审查结论：通过');
+  assert.equal(call([followUp]).verdict, 'Verdict: pass');
   assert.throws(() => call([{ ...followUp, evidence: 'not needed here' }]), /unexpected/);
   assert.throws(() => call([{ ...finding('F9'), note: 'extra prose' }]), /unexpected/);
 });
@@ -124,9 +124,9 @@ test('non-blocking findings post one PR comment and never file issues', async ()
 test('an owner waiver suppresses only the blocking finding with that id and keeps evidence rules', () => {
   const call = (findings, waivers) => validateReviewLedger({ ...ledger(findings), ...(waivers && { waivers }) }, { currentHeadSha: sha(4), frozen: freeze });
   const owner = [{ id: 'F1', ownerComment: 'https://github.com/example/repo/pull/1#issuecomment-9' }];
-  assert.equal(call([finding('F1'), fixed('F2')], owner).verdict, '审查结论：通过');
-  assert.equal(call([finding('F1'), finding('F2')], owner).verdict, '审查结论：打回');
-  assert.equal(call([fixed('F1'), finding('F2')], owner).verdict, '审查结论：打回');
+  assert.equal(call([finding('F1'), fixed('F2')], owner).verdict, 'Verdict: pass');
+  assert.equal(call([finding('F1'), finding('F2')], owner).verdict, 'Verdict: reject');
+  assert.equal(call([fixed('F1'), finding('F2')], owner).verdict, 'Verdict: reject');
   assert.throws(() => call([{ ...finding('F1'), evidence: '' }, fixed('F2')], owner), /evidence/);
   assert.throws(() => call([finding('F1'), fixed('F2')], [{ id: 'F1', ownerComment: ' ' }]), /waivers/);
   assert.throws(() => call([finding('F1'), fixed('F2')], [{ id: 'F1' }]), /waivers/);
@@ -134,14 +134,14 @@ test('an owner waiver suppresses only the blocking finding with that id and keep
 
 test('without an owner waiver the blocking finding still rejects the review', () => {
   const call = findings => validateReviewLedger(ledger(findings), { currentHeadSha: sha(4), frozen: freeze });
-  assert.equal(call([finding('F1'), fixed('F2')]).verdict, '审查结论：打回');
-  assert.equal(validateReviewLedger(ledger([finding('F1'), fixed('F2')]), { currentHeadSha: sha(4), frozen: freeze }).verdict, '审查结论：打回');
+  assert.equal(call([finding('F1'), fixed('F2')]).verdict, 'Verdict: reject');
+  assert.equal(validateReviewLedger(ledger([finding('F1'), fixed('F2')]), { currentHeadSha: sha(4), frozen: freeze }).verdict, 'Verdict: reject');
 });
 
 test('a rework that fixes the raised finding but breaks another acceptance item does not pass', () => {
   const broken = { ...finding('F9'), id: 'F9', classification: 'in-scope miss', summary: 'Rework broke acceptance item 2', evidence: 'test/runtime/review-ledger.test.mjs — node --test → 1 failing: acceptance item 2' };
   const noMustFix = { ...freeze, mustFixIds: ['F1'] };
   const result = validateReviewLedger({ ...ledger([fixed('F1'), broken]), freeze: noMustFix }, { currentHeadSha: sha(4), frozen: noMustFix });
-  assert.notEqual(result.verdict, '审查结论：通过');
-  assert.equal(result.verdict, '审查结论：打回');
+  assert.notEqual(result.verdict, 'Verdict: pass');
+  assert.equal(result.verdict, 'Verdict: reject');
 });

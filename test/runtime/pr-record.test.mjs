@@ -14,7 +14,7 @@ function completeRecord(overrides = {}) {
 
 test('a complete fixture builds a record that validates against head and required gates', () => {
   const record = completeRecord({ usage: { inputTokens: 10, outputTokens: 4, calls: 2 } });
-  assert.deepEqual(record.verdicts, [{ gate: 'gate1', role: null, verdict: '审查结论：通过', sha: HEAD }]);
+  assert.deepEqual(record.verdicts, [{ gate: 'gate1', role: null, verdict: 'Verdict: pass', sha: HEAD }]);
   assert.deepEqual(record.checks.map((check) => check.name), REQUIRED);
   assert.deepEqual(record.usage, { usageKnown: true, inputTokens: 10, outputTokens: 4, calls: 2 });
   assert.deepEqual(record.rounds[0], { gate: 'gate0', role: null, harness: null, model: null, degraded: false, chiefImplemented: false });
