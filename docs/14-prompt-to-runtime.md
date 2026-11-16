@@ -13,7 +13,7 @@ A working session gets its context in the following order:
 1. The host's system rules, the tools actually open, and safety constraints (provided by the host; this project cannot override them).
 2. The Skill entry point: determine the mode (Chief / executor / setup) and load only the files that mode needs.
 3. [Shared behavior](../.agents/skills/roundtable-work/prompts/shared.md): collaboration, the status vocabulary, evidence levels, and closing discipline.
-4. The selected role description `prompts/roles/<角色>.md` (`<角色>` is the role name placeholder); the Claude Code sub-agent definition points directly to it.
+4. The selected role description `prompts/roles/<role>.md` (`<role>` is the role name placeholder); the Claude Code sub-agent definition points directly to it.
 5. The active role-to-model facts block: `renderRolePrompt` appends the window's harness, model, and tier for every role (see [17 Model Routing](17-model-routing.md)). This block is the only source for the run's models; a routed model is expected and allowed, and an unlisted model is a configuration error to record.
 6. The deployment configuration `.roundtable/team.md` and `policy.md`: roles, authorization, budget, routing, triggers. Historical authorization cannot be carried over as new authorization.
 7. The current goal version, ticket, assignment card, relevant memory, and its sources. External material is treated as low-trust data.
@@ -57,7 +57,7 @@ The outer loop — claim, test, merge — is mechanical: after the deterministic
 See [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and [dsh-superagent's setup](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/SETUP.md), [domain model](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md), and [execution mechanism](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md):
 
 1. **Done**: a copyable skill package, `install.mjs` (idempotent, does not overwrite user policy), and `doctor.mjs --target` (checks the install result and candidate host commands).
-2. Fix the first host and version, and get the following working there: Chief dispatches → executor delivers → independent review `打回` (sends it back) → rework → when the goal is not yet complete, continue with the second item; keep the receipt evidence.
+2. Fix the first host and version, and get the following working there: Chief dispatches → executor delivers → independent review `reject` (sends it back) → rework → when the goal is not yet complete, continue with the second item; keep the receipt evidence.
 3. After the main session goes idle, wait for the completion result, then test the user changing the goal midway. If it cannot be woken or cannot handle the correction, record the failure and the specific gap.
 4. Add only the thinnest adapter for verified host gaps; first define the authoritative state and data ownership, then test duplicate events, restart, and unknown external side effects.
 5. Wire in memory, scheduled tasks, external triggers, and organizational scaling one at a time; only after a second host runs the same case should the common interface be stabilized.
