@@ -19,6 +19,7 @@ import { stackStatus } from './lib/merge-order.mjs';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, validateDecision } from './lib/decisions.mjs';
 import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
 import { runGates, recoverRedMain } from './lib/gates.mjs';
+import { loadUsageLedger } from './lib/usage-ledger.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
 import { createMergeEntryPoint } from './lib/merge.mjs';
@@ -856,7 +857,7 @@ export async function runQueue({
               let gated;
               try {
                 await requireObservation(item, 'pre-gates', result);
-                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
+                gated = await runGates({ ...context, issue: id, gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: gateState, store, merge: { squash: guardedSquash }, models, routing, modelRouter, usageRows: (await loadUsageLedger(workRoot, id)).rows, precondition: createReviewPrecondition({ clients: observationClients, issue: item, github: autoMerge.github }) });
               } catch (error) {
                 if (error?.observation) return { ...result, mergeHold: { gate: 'observation', reason: error.message } };
                 throw error;

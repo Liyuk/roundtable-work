@@ -260,7 +260,7 @@ export default {
  gates: { async gate0(input) { await log('gate0'); issue = input.issue; return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head,rationale:RATIONALE}; }, async crossCheck() { return true; } },
  git: { async createRevert() { await log('revert'); return {sha:'1234567'}; } },
  github: {
-  async setBase() {}, async getPullRequest(pr) { return { body: (pr === 90 ? 'Closes #53 Closes #54 ' : 'Closes #92 ') + upsertPrRecord('', buildPrRecord({issue, head: pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}', tree: pr === 90 ? 'tree' : 'reverttree', passed: ['gate0', 'gate1', 'ci']})), state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
+  async setBase() {}, async getPullRequest(pr) { return { body: (pr === 90 ? 'Closes #53 Closes #54 ' : 'Closes #92 ') + upsertPrRecord('', buildPrRecord({issue, head: pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}', tree: pr === 90 ? 'tree' : 'reverttree', passed: ['gate0', 'gate1', 'ci'], rounds: { gate1: { role: 'reviewer', harness: 'test', model: 'test-reviewer' } }})), state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
   async requiredGreen(pr) { return pr === 90 || ${revertGreen}; },
   async squashMerge(pr,options) { await log('squash',pr,options); return {mergeCommit:pr === 90 ? 'abcdef0123456789' : '1111111111111111'}; },
   async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},

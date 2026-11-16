@@ -50,7 +50,7 @@ export function createGateStateStore({ load, save }) {
  * before any review, so the merge never proceeds for an unlinked loop PR.
  * The caller must stay fail-closed on `hold: false` and must not treat a hold as a gate pass.
  */
-export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation, precondition, localChecks = { enabled: false }, requireClosesLink = true }) {
+export async function runGates({ issue, head, tree, highRisk = false, changedFiles = [], pr, gates, ci, merge, state, store, github, models = {}, routing, modelRouter, escalation, precondition, localChecks = { enabled: false }, requireClosesLink = true, usageRows = [] }) {
   const id = assertSafeId(issue);
   if (![head, tree].every((v) => typeof v === 'string' && v.length)) throw new TypeError('head and tree are required');
   required(gates, 'gates'); required(ci, 'ci'); required(merge, 'merge'); required(state, 'state'); required(github, 'github');
@@ -62,6 +62,8 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   let record = stored;
   if (record && (record.issue !== id || record.head !== head || record.tree !== tree)) record = null;
   const passed = new Set(record?.passed ?? []);
+  // Round metadata per gate is persisted with the record, so a resumed merge still records the gate 1 and gate 2 agents.
+  const roundMeta = { ...record?.roundMeta };
   // Gate 2 triggers are recorded with the gate; a resumed record without them is treated as requiring Gate 2 (rationale unknown).
   let gate2Reasons = record?.gate2Reasons ?? gate2Triggers({ changedFiles });
   // The gated safety set is written on every persist so the merge entry point can compare it with the
@@ -70,7 +72,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   const gatedSafetyFiles = safetyFiles(changedFiles);
   const persist = async (gate) => {
     if (gate) passed.add(gate);
-    record = { issue: id, head, tree, passed: [...passed], gate2Reasons, safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
+    record = { issue: id, head, tree, passed: [...passed], roundMeta, gate2Reasons, safetyFiles: gatedSafetyFiles, safetyApproved: gate === 'ci' && gatedSafetyFiles.length > 0 };
     await state.put(id, record);
   };
   // `hold` separates a resumable wait from a genuine failure; see the runGates contract above. Default is
@@ -107,6 +109,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
       return failed('gate1', 'Reviewer unavailable after one retry; labeled rt:ready-to-merge', true);
     }
     gate2Reasons = gate2Triggers({ changedFiles, gate1: result });
+    if (routing) roundMeta.gate1 = { role: 'reviewer', harness: result.harness ?? routing.facts.roles.reviewer.harness, model: reviewModel };
     await persist('gate1');
   }
   if ((highRisk || gate2Reasons.length > 0) && !passed.has('gate2')) {
@@ -122,6 +125,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
       await escalation({ issue: id, head, tree, model: modelRouter?.('escalation'), disagreement: { gate1: 'pass', gate2: 'fail', reason } });
       return { ...await failed('gate2', reason), escalated: true };
     }
+    if (routing) roundMeta.gate2 = { role: 'crosscheck', harness: result.harness ?? routing.facts.roles.crosscheck.harness, model: crossCheckModel };
     await persist('gate2');
   }
   if (gatedSafetyFiles.length) {
@@ -189,7 +193,11 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
   }
   await persist('ci');
   // The adapter is the single merge entry point and must revalidate live PR/head/CI immediately before squash.
-  const evidence = { issue: id, head, tree, highRisk, passed: [...passed], ciGreen: true, safetyFiles: gatedSafetyFiles, safetyApproved: gatedSafetyFiles.length > 0 };
+  // Usage is recorded only for calls whose tokens are known; with none, the merge record states usageKnown: false.
+  const known = usageRows.filter((row) => row.usageKnown === true);
+  const total = (key) => known.reduce((sum, row) => sum + row[key], 0);
+  const usage = known.length ? { inputTokens: total('inputTokens'), outputTokens: total('outputTokens'), calls: known.length } : undefined;
+  const evidence = { issue: id, head, tree, highRisk, passed: [...passed], ciGreen: true, safetyFiles: gatedSafetyFiles, safetyApproved: gatedSafetyFiles.length > 0, roundMeta, usage };
   const merged = await merge.squash(pr, evidence);
   return { status: 'merged', issue: id, head, tree, result: merged };
 }

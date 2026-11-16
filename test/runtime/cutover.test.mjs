@@ -20,7 +20,7 @@ const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 const PASS = '审查结论：通过';
 const SHA = 'a'.repeat(40);
-const BODY = upsertPrRecord('', buildPrRecord({ issue: '21', head: SHA, tree: 'tree1', passed: ['gate0', 'gate1', 'gate2', 'ci'] }));
+const BODY = upsertPrRecord('', buildPrRecord({ issue: '21', head: SHA, tree: 'tree1', passed: ['gate0', 'gate1', 'gate2', 'ci'], rounds: { gate1: { role: 'reviewer', harness: 'test', model: 'test-reviewer' }, gate2: { role: 'crosscheck', harness: 'test', model: 'test-crosscheck' } } }));
 const READS = ['repo view', 'issue list', 'issue view', 'pr list', 'pr view'];
 
 async function fixture() {
