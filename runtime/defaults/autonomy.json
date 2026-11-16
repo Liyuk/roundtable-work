@@ -1,0 +1,7 @@
+{
+  "kinds": ["merge", "label", "comment", "issue-create", "issue-close", "config-change", "decision"],
+  "silentKinds": ["merge"],
+  "silentPaths": ["docs/**", "test/**", "README.md"],
+  "notifyTtlDays": 7,
+  "safetyApprover": "decider"
+}

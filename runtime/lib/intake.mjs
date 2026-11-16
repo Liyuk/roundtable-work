@@ -1,5 +1,7 @@
 import { resumeDecomposition } from './decisions.mjs';
 import { CorruptStateError } from './state.mjs';
+import { duplicatesOf, overlappingIssues } from './overlap.mjs';
+import { seriesKey } from './series-key.mjs';
 
 const excluded = new Set(['rt:owner', 'rt:deferred', 'rt:running', 'rt:ask', 'rt:blocked', 'rt:hold', 'rt:ready-to-merge']);
 const labelsOf = issue => (issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
@@ -9,7 +11,7 @@ const section = (body, name) => {
   return match?.[1]?.trim() ?? '';
 };
 
-function parseAdmission(body, source) {
+function parseAdmission(body, source, overlap = [], duplicates = []) {
   const goal = section(body, 'Goal');
   const acceptance = section(body, 'Observable acceptance|Acceptance criteria|Acceptance');
   const scope = section(body, 'Out of scope|Non-goals');
@@ -33,14 +35,18 @@ function parseAdmission(body, source) {
   if (missing.length) reasons.push(...missing.map(field => ({ code: 'missing_field', field })));
   if (parseableSize && tooLarge) reasons.push({ code: 'size_exceeded', lines: Number(lines[1]), files: Number(files[1]), decision: 'decompose' });
   if (!parseableSize) reasons.push({ code: 'size_unparseable', decision: 'decompose' });
+  const cited = [...body.matchAll(/Builds on #(\d+)/gi)].map(match => Number(match[1]));
+  const overlapRefused = overlap.length > 0 && !(overlap.some(number => cited.includes(number)) && section(body, 'Delta'));
+  if (overlapRefused) reasons.push({ code: 'scope_overlap', issues: overlap, decision: 'reask' });
+  if (duplicates.length) reasons.push({ code: 'duplicate', issues: duplicates, decision: 'skip' });
   const needsHuman = /(?:needs human decision|human input required)\s*:\s*(?:yes|true)/i.test(body);
   const sizeRefused = !parseableSize || tooLarge;
   return {
-    admitted: missing.length === 0 && parseableSize && !tooLarge,
+    admitted: missing.length === 0 && parseableSize && !tooLarge && !overlapRefused && !duplicates.length,
     reasons,
     missing,
     needsHuman,
-    ...(sizeRefused ? { decision: 'decompose' } : needsHuman && missing.length ? { decision: 'ask' } : {}),
+    ...(duplicates.length ? { decision: 'skip' } : sizeRefused ? { decision: 'decompose' } : overlapRefused ? { decision: 'reask' } : needsHuman && missing.length ? { decision: 'ask' } : {}),
     source,
   };
 }
@@ -52,12 +58,13 @@ function chiefDraft(issue) {
   return draft?.slice(draft.indexOf('<!-- rt:admission-draft -->') + '<!-- rt:admission-draft -->'.length).trim() ?? '';
 }
 
-export function admission(issue) {
+/** Scope overlap with closed issues is checked against the same text the admission parses; a duplicate of open work is skipped. */
+export function admission(issue, scope = {}) {
   const draft = chiefDraft(issue);
-  if (draft) {
-    return parseAdmission(draft, 'chief_draft');
-  }
-  return parseAdmission(String(issue.body ?? ''), 'body');
+  const body = draft || String(issue.body ?? '');
+  const text = { number: issue.number, title: issue.title, body };
+  const overlap = overlappingIssues(text, scope.closed, scope);
+  return parseAdmission(body, draft ? 'chief_draft' : 'body', overlap, duplicatesOf(text, scope));
 }
 
 const admissionText = issue => `${issue.body ?? ''}\n${chiefDraft(issue)}`;
@@ -74,7 +81,7 @@ export function dependencies(body = '') {
 }
 
 /** Select from a tracker snapshot; missing or unknown dependency states are ineligible. */
-export function selectIssues({ issues, owner, dependencyStates = {}, includeRunning = false }) {
+export function selectIssues({ issues, owner, dependencyStates = {}, includeRunning = false, closed, open, linked, now, days, threshold }) {
   if (!Array.isArray(issues) || typeof owner !== 'string' || !owner) throw new TypeError('Issue snapshot and owner are required');
   const candidates = [], triage = [], admissionResults = [];
   for (const issue of issues) {
@@ -89,7 +96,7 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
     if (!recovering && (loopCreated ? !labels.includes('rt:go') : !labels.includes('type:bug') && !labels.includes('type:feature'))) continue;
     if (!recovering && !dependencies(admissionText(issue)).every(n => String(dependencyStates[n] ?? '').toUpperCase() === 'CLOSED')) continue;
     if (!recovering) {
-      const result = admission(issue);
+      const result = admission(issue, { closed, open, linked, now, days, threshold });
       if (!result.admitted) {
         admissionResults.push({ id: String(issue.number), admitted: false, reasons: result.reasons, missing: result.missing, needsHuman: result.needsHuman, ...(result.decision ? { decision: result.decision } : {}) });
         continue;
@@ -99,15 +106,21 @@ export function selectIssues({ issues, owner, dependencyStates = {}, includeRunn
     candidates.push({ issue, bug: labels.includes('type:bug') ? 0 : 1, rank: rank < 0 ? 3 : rank, self: loopCreated ? 0 : 1 });
   }
   candidates.sort((a, b) => a.bug - b.bug || a.rank - b.rank || a.self - b.self || String(a.issue.createdAt).localeCompare(String(b.issue.createdAt)) || a.issue.number - b.issue.number);
-  return { issues: candidates.map(({ issue }) => ({ id: String(issue.number), priority: 0, state: 'queued', title: issue.title, series: /^\[([^\]]+)\]/.exec(issue.title ?? '')?.[1] ?? null, number: issue.number, url: issue.url, ...(includeRunning ? { labels: issue.labels, body: issue.body, author: issue.author } : {}) })), triage, admission: admissionResults };
+  return { issues: candidates.map(({ issue }) => ({ id: String(issue.number), priority: 0, state: 'queued', title: issue.title, series: seriesKey(issue.title), number: issue.number, url: issue.url, ...(includeRunning ? { labels: issue.labels, body: issue.body, author: issue.author } : {}) })), triage, admission: admissionResults };
 }
+
+// Linked pull requests are a best-effort dedupe signal, as in status: a failed read leaves intake running without them.
+export const linkedPullRequests = (reader, signal) => reader.getRepository({ signal })
+  .then(repository => reader.listLinkedPullRequests(repository, { signal }))
+  .catch(error => { if (signal?.aborted) throw error; return {}; });
 
 /** A fresh tracker snapshot is read for each queue pass. Triage is available on the provider. */
 export function createIntakeProvider(reader, { includeRunning = false } = {}) {
   const provider = async ({ signal, store, client } = {}) => {
-    const [owner, issues] = await Promise.all([reader.getOwner({ signal }), reader.listIssues({ signal })]);
+    const [owner, issues, closed, linked] = await Promise.all([reader.getOwner({ signal }), reader.listIssues({ signal }), typeof reader.listClosedIssues === 'function' ? reader.listClosedIssues({ signal }) : [], typeof reader.listLinkedPullRequests === 'function' ? linkedPullRequests(reader, signal) : {}]);
+    const scope = { closed, open: issues, linked };
     const candidates = issues.filter(issue => !includeRunning || !labelsOf(issue).some(label => ['rt:running', 'rt:ask', 'rt:blocked'].includes(label)))
-      .filter(issue => !admission(issue).admitted);
+      .filter(issue => !admission(issue, scope).admitted);
     const hydrated = await Promise.all(issues.map(async issue => {
       if (!candidates.includes(issue) || typeof reader.listComments !== 'function') return issue;
       try { return { ...issue, comments: await reader.listComments(issue.number, { signal }) }; }
@@ -175,7 +188,7 @@ export function createIntakeProvider(reader, { includeRunning = false } = {}) {
         released.set(number, { ...issue, labels: (issue.labels ?? []).filter(label => (typeof label === 'string' ? label : label.name) !== 'rt:hold') });
       }
     }
-    const result = selectIssues({ issues: [...hydrated.filter(issue => !recovering.has(Number(issue.number)) && !released.has(Number(issue.number))), ...released.values()], owner, dependencyStates: states, includeRunning });
+    const result = selectIssues({ issues: [...hydrated.filter(issue => !recovering.has(Number(issue.number)) && !released.has(Number(issue.number))), ...released.values()], owner, dependencyStates: states, includeRunning, ...scope });
     provider.triage = result.triage;
     provider.admission = result.admission;
     return result.issues;

@@ -119,16 +119,16 @@ test('verifyIsolation accepts executed probe observations and rejects claims wit
   assert.deepEqual(verifyIsolation({ ...PROBES, 'child-process': { ...PROBES['child-process'], signal: 'SIGKILL', exitCode: null } }).errors, []);
 });
 
-test('an unverified isolation precheck blocks before the submitted command is invoked', async () => {
-  const dirs = await fixture(test, tree());
+test('an unverified isolation precheck blocks before the submitted command is invoked', async (t) => {
+  const dirs = await fixture(t, tree());
   const { result, sandbox } = await execute(dirs, { sandbox: { ...realSandbox(dirs), probe: async () => ({ network: true }) } });
   assert.equal(result.passed, false);
   assert.deepEqual(errorsOf(result), ['isolation:network:0', 'isolation:filesystem:0', 'isolation:child-process:0']);
   assert.equal(sandbox.calls.filter((c) => c.startsWith('run:')).length, 0);
 });
 
-test('records the runtime, rejects an engine mismatch, and derives dependencies from the base lockfile', async () => {
-  const dirs = await fixture(test, tree());
+test('records the runtime, rejects an engine mismatch, and derives dependencies from the base lockfile', async (t) => {
+  const dirs = await fixture(t, tree());
   const ok = await execute(dirs);
   assert.equal(ok.result.passed, true, JSON.stringify(ok.result.errors));
   assert.equal(ok.result.runtime, process.version);
@@ -143,14 +143,14 @@ test('records the runtime, rejects an engine mismatch, and derives dependencies 
   assert.equal(wrongLock.sandbox.calls.filter((c) => c.startsWith('run:')).length, 0);
 });
 
-test('base and head evidence compare cleanly: head may add cases and files, and forged stdout is not evidence', async () => {
-  const dirs = await fixture(test, tree(A), tree(FORGED, { 'test/b.test.mjs': B }));
+test('base and head evidence compare cleanly: head may add cases and files, and forged stdout is not evidence', async (t) => {
+  const dirs = await fixture(t, tree(A), tree(FORGED, { 'test/b.test.mjs': B }));
   const { result } = await execute(dirs, { discovered: ['test/a.test.mjs', 'test/b.test.mjs'] });
   assert.equal(result.passed, true, JSON.stringify(result.errors));
 });
 
-test('a dropped base case, a skipped/todo case and a discovered decoy all reject', async () => {
-  const dirs = await fixture(test, tree(THREE), tree(GAPPED));
+test('a dropped base case, a skipped/todo case and a discovered decoy all reject', async (t) => {
+  const dirs = await fixture(t, tree(THREE), tree(GAPPED));
   const { result } = await execute(dirs, { discovered: ['test/a.test.mjs', 'test/decoy.test.mjs'] });
   assert.deepEqual(errorsOf(result), [
     'compare:test/decoy.test.mjs:0',
@@ -160,8 +160,8 @@ test('a dropped base case, a skipped/todo case and a discovered decoy all reject
   ]);
 });
 
-test('a head tree without the base test file cannot cover it', async () => {
-  const dirs = await fixture(test, tree(A), { 'package.json': PACKAGE, 'test/b.test.mjs': B });
+test('a head tree without the base test file cannot cover it', async (t) => {
+  const dirs = await fixture(t, tree(A), { 'package.json': PACKAGE, 'test/b.test.mjs': B });
   assert.deepEqual(errorsOf((await execute(dirs, { discovered: ['test/b.test.mjs'] })).result), ['compare:test/a.test.mjs:0']);
 });
 
@@ -195,8 +195,8 @@ test('compareEvidence rejects skipped cases in either run', () => {
   assert.deepEqual(compareEvidence(base, head, { discovered: ['test/a.test.mjs'] }).errors, [{ rule: 'compare', path: 'test/a.test.mjs', line: 1 }]);
 });
 
-test('a non-zero runner fails closed without echoing child output', async () => {
-  const dirs = await fixture(test, tree("import test from 'node:test';\ntest('one', () => { throw new Error('boom'); });\n"));
+test('a non-zero runner fails closed without echoing child output', async (t) => {
+  const dirs = await fixture(t, tree("import test from 'node:test';\ntest('one', () => { throw new Error('boom'); });\n"));
   const { result } = await execute(dirs);
   assert.deepEqual(errorsOf(result), ['runner:<runner>:0']);
 
@@ -207,8 +207,8 @@ test('a non-zero runner fails closed without echoing child output', async () => 
   assert.equal(JSON.stringify(echoed.result).includes(canary), false);
 });
 
-test('timeout kills the process group and a survivor is a blocking failure', async () => {
-  const dirs = await fixture(test, { 'package.json': SLEEP, 'test/a.test.mjs': A });
+test('timeout kills the process group and a survivor is a blocking failure', async (t) => {
+  const dirs = await fixture(t, { 'package.json': SLEEP, 'test/a.test.mjs': A });
   const timeout = await execute(dirs, { packageBase: SLEEP, packageHead: SLEEP, timeoutMs: 400 });
   assert.equal(timeout.result.passed, false);
   assert.ok(errorsOf(timeout.result).includes('timeout:<runner>:0'));
@@ -221,12 +221,12 @@ test('timeout kills the process group and a survivor is a blocking failure', asy
   assert.ok(fake.calls.includes('kill'));
 });
 
-test('missing inputs, a throwing probe or run and a cleanup failure all fail closed', async () => {
+test('missing inputs, a throwing probe or run and a cleanup failure all fail closed', async (t) => {
   const empty = await runGateExecution({});
   assert.equal(empty.passed, false);
   assert.deepEqual(errorsOf(empty).slice(0, 3), ['input:<commits>:0', 'input:<package>:0', 'input:<lockfile>:0']);
 
-  const dirs = await fixture(test, tree());
+  const dirs = await fixture(t, tree());
   const throwing = await execute(dirs, { sandbox: { ...realSandbox(dirs), probe: async () => { throw new Error('probe'); } } });
   assert.deepEqual(errorsOf(throwing.result), ['internal:<gate>:0']);
   const runThrows = await execute(dirs, { sandbox: { ...realSandbox(dirs), run: async () => { throw new Error('spawn'); } } });

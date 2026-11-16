@@ -48,9 +48,20 @@ export function createGitHubReader({ repo, run = runGh } = {}) {
       }
       return linked;
     },
+    async listOpenPullRequestTitles({ owner, name } = {}, options) {
+      if (typeof owner !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(owner) || typeof name !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(name)) throw new TypeError('Invalid repository identity');
+      const result = await run(['pr', 'list', '--repo', `${owner}/${name}`, '--state', 'open', '--limit', '1000', '--json', 'number,title'], options);
+      if (!Array.isArray(result) || result.length >= 1000 || result.some(pr => !Number.isSafeInteger(pr?.number) || typeof pr?.title !== 'string')) throw new TypeError('Invalid open pull requests');
+      return result.map(({ number, title }) => ({ number, title }));
+    },
     async listIssues(options) {
       const result = await run(['issue', 'list', ...repository, '--state', 'open', '--limit', '1000', '--json', 'number,title,state,author,labels,createdAt,updatedAt,body,url'], options);
       if (!Array.isArray(result) || result.length >= 1000) throw new TypeError('Issue list is invalid or may be truncated');
+      return result;
+    },
+    async listClosedIssues(options) {
+      const result = await run(['issue', 'list', ...repository, '--state', 'closed', '--limit', '200', '--json', 'number,title,body,state,closedAt'], options);
+      if (!Array.isArray(result)) throw new TypeError('Invalid closed issue list');
       return result;
     },
     async getIssue(number, options) {
@@ -82,6 +93,7 @@ export function createGitHubWriter({ repo, run = async (args) => (await exec('gh
       return { number: Number(match[1]) };
     },
     addLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--add-label', label]),
+    createLabel: (name) => run(['label', 'create', name, ...repository, '--force']),
     removeLabel: (number, label) => run(['issue', 'edit', id(number), ...repository, '--remove-label', label]),
     createComment: (number, body) => run(['issue', 'comment', id(number), ...repository, '--body', body]),
     listComments: async (number) => JSON.parse(await run(['issue', 'view', id(number), ...repository, '--json', 'comments'])).comments,

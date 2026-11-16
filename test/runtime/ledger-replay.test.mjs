@@ -55,11 +55,12 @@ test('a replayed merge for the same head does not squash again', async () => {
     const store = await createStateStore({ workRoot: root, now: () => 1 });
     const gateRecord = { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'], safetyFiles: [], safetyApproved: false };
     const squashes = [];
-    const entry = createMergeEntryPoint({
+    const entry = createMergeEntryPoint({ mode: 'agent',
       store,
       gateState: { async get() { return gateRecord; } },
       github: {
-        async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files: [] }; },
+        async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: `Closes #53
+${BODY}`, files: [] }; },
         async requiredGreen() { return true; },
         async squashMerge(pr) { squashes.push(pr); return 'merged'; },
       },
@@ -89,7 +90,7 @@ test('CI re-run budget survives a crash inside the re-run: at most MAX_CI_RERUNS
         async rerunCancelled() { reruns += 1; throw new Error('provider crashed mid-request'); }, // simulated crash
       },
       merge: { async squash() { throw new Error('must not merge'); } },
-      github: { async addLabel() {} },
+      github: { async addLabel() {}, async getPullRequest() { return { body: 'Closes #53' }; } },
     });
     let outcome;
     for (let run = 0; run < MAX_CI_RERUNS + 2; run++) {
@@ -134,8 +135,9 @@ test('claim, merge, CI re-run, and label projection all read and write the one s
     assert.equal((await projectLabels({ number: 53, issue: { state: 'open', labels: [] }, client, store, now: () => 2 })).desired.length, 1);
     // Merge reads the ledger through the same store and records the merge there.
     const gateRecord = { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'], safetyFiles: [], safetyApproved: false };
-    const entry = createMergeEntryPoint({ store, gateState: { async get() { return gateRecord; } }, github: {
-      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files: [] }; },
+    const entry = createMergeEntryPoint({ mode: 'agent', store, gateState: { async get() { return gateRecord; } }, github: {
+      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: `Closes #53
+${BODY}`, files: [] }; },
       async requiredGreen() { return true; },
       async squashMerge() { return 'merged'; },
     } });
@@ -146,7 +148,7 @@ test('claim, merge, CI re-run, and label projection all read and write the one s
     await runGates({ issue: '53', head: 'abc1234', tree: 'tree-a', changedFiles: ['README.md'], pr: 90, store, models: { reviewer: 'model-review' },
       state: { get: async (id) => (await store.load(id)).gateRecord, put: (id, record) => store.update(id, (s) => { s.gateRecord = record; }) },
       gates, ci: { requiredGreen: async () => ({ green: false, status: 'cancelled' }), rerunCancelled: async () => {} },
-      merge: { squash: async () => { throw new Error('must not merge'); } }, github: { addLabel: async () => {} } });
+      merge: { squash: async () => { throw new Error('must not merge'); } }, github: { addLabel: async () => {}, getPullRequest: async () => ({ body: 'Closes #53' }) } });
     assert.equal((await store.load('53')).ledger.filter((e) => e.type === 'ci_rerun').length, 1);
     // Every reader and writer above went through this one instance: a fresh reader sees the same ledger.
     const fresh = await createStateStore({ workRoot: root, now: () => 1 });

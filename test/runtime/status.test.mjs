@@ -366,6 +366,12 @@ test('GitHub reader separates empty linked pull results from failures', async ()
   await assert.rejects(malformed.listLinkedPullRequests({ owner: 'owner', name: 'repo' }), TypeError);
   const truncated = createGitHubReader({ run: async () => Array.from({ length: 1000 }, (_, index) => ({ number: index + 1, title: 'Many', body: '' })) });
   await assert.rejects(truncated.listLinkedPullRequests({ owner: 'owner', name: 'repo' }), TypeError);
+  const openCalls = [];
+  const open = createGitHubReader({ run: async (args) => { openCalls.push(args); return [{ number: 10, title: 'Unlinked', body: 'x', state: 'OPEN' }]; } });
+  assert.deepEqual(await open.listOpenPullRequestTitles({ owner: 'owner', name: 'repo' }), [{ number: 10, title: 'Unlinked' }]);
+  assert.deepEqual(openCalls[0].slice(0, 4), ['pr', 'list', '--repo', 'owner/repo']);
+  assert.deepEqual(openCalls[0].slice(openCalls[0].indexOf('--state'), openCalls[0].indexOf('--state') + 2), ['--state', 'open']);
+  await assert.rejects(open.listOpenPullRequestTitles({ owner: 'bad owner', name: 'repo' }), TypeError);
 });
 
 test('production status reads linked PRs and recent merges and distinguishes empty from unavailable', async (t) => {

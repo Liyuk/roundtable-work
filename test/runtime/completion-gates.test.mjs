@@ -12,7 +12,8 @@ async function runCase(failure) {
   const github = {
     async addLabel(_pr, label) { calls.push(label); },
     async recordedEscalationApproval() { return null; },
-    async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, mergeable: true, head: 'a'.repeat(40), body: upsertPrRecord('', buildPrRecord({ issue: '53', head: 'a'.repeat(40), tree: 'tree', passed: ['gate0', 'gate1', 'gate2', 'ci'] })), files: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
+    async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, mergeable: true, head: 'a'.repeat(40), body: `Closes #53
+${upsertPrRecord('', buildPrRecord({ issue: '53', head: 'a'.repeat(40), tree: 'tree', passed: ['gate0', 'gate1', 'gate2', 'ci'] }))}`, files: [failure === 'safety' ? '.github/workflows/check.yml' : 'runtime/rtd.mjs'] }; },
     async requiredGreen() { calls.push('ci'); ciCalls++; if (failure === 'ci-error') throw new Error('offline'); if (failure === 'pending') return { green: false, status: 'pending' }; return !(failure === 'ci' || (failure === 'recheck' && ciCalls === 2)); },
     async squashMerge(_pr, options) { calls.push(['squash', options]); },
   };
@@ -33,7 +34,7 @@ async function runCase(failure) {
 test('worker completion runs ordered gates and rechecked CI through one squash entry point', async () => {
   const { result, calls } = await runCase();
   assert.equal(result.outcomes[0].status, 'done');
-  assert.deepEqual(calls, ['gate0', 'pr', 'gate1', 'gate2', 'ci', 'pr', 'ci', ['squash', { method: 'squash', sha: 'a'.repeat(40) }]]);
+  assert.deepEqual(calls, ['pr', 'pr', 'gate0', 'pr', 'gate1', 'gate2', 'ci', 'pr', 'ci', ['squash', { method: 'squash', sha: 'a'.repeat(40) }]]);
 });
 
 test('worker completion fails closed on gate failures, unavailable reviewer and CI failures', async () => {

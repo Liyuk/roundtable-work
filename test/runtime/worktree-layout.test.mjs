@@ -70,3 +70,20 @@ test('remove rejects an id that escapes the worktrees root before any git comman
   await assert.rejects(manager.remove('../escape'), PathEscapeError);
   await assert.rejects(manager.remove('a/b'), PathEscapeError);
 });
+
+test('create after remove reuses an unmerged branch and keeps its commit', async () => {
+  const { manager, repoRoot } = await fixture();
+  const { path, branch } = await manager.create('312');
+  await writeFile(join(path, 'work.txt'), 'unmerged work\n');
+  await git(path, 'add', 'work.txt');
+  await git(path, 'commit', '--quiet', '-m', 'unmerged work');
+  const { stdout: head } = await git(repoRoot, 'rev-parse', branch);
+
+  assert.deepEqual(await manager.remove('312'), { removed: true, branchDeleted: false });
+  const again = await manager.create('312');
+
+  assert.equal(again.path, path);
+  assert.equal(again.branch, branch);
+  assert.equal((await git(path, 'rev-parse', 'HEAD')).stdout.trim(), head.trim());
+  assert.equal(await exists(join(path, 'work.txt')), true);
+});

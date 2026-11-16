@@ -1,7 +1,7 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, rmSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +13,11 @@ const ROUTING = fileURLToPath(new URL('./routing-fixture.json', import.meta.url)
 // Runtime lock records live in a private anchor, never in the work root.
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-live-anchor-'));
 process.env.RTW_STATE_DIR = ANCHOR;
-process.on('exit', () => { try { rmSync(ANCHOR, { recursive: true, force: true }); } catch { /* best effort */ } });
+after(() => rm(ANCHOR, { recursive: true, force: true }));
+// Children a test spawned are killed and awaited before its temp dir is removed, so a failed or timed-out test leaves none running.
+const children = new Set();
+const track = (child) => { children.add(child); child.once('exit', () => children.delete(child)); return child; };
+const reap = () => Promise.all([...children].map((c) => new Promise((resolve) => { c.once('exit', resolve); c.kill('SIGKILL'); })));
 
 const ADMISSIBLE = '## Goal\nFixture task.\n\n## Acceptance criteria\nRun: `node --test test/runtime/live.test.mjs`; Expected: exit 0.\n\n## Out of scope\nNone.\n\n## Dependencies\nNone.\n\n## Size estimate\nChanged lines: 10\nFiles: 1';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
@@ -63,7 +67,7 @@ export default {
     async crossCheck() { log('gate2'); return true; },
   },
   github: {
-    async getPullRequest() { return { state: 'open', draft: false, mergeable: true, head: SHA, body: BODY, files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }; },
+    async setBase() {}, async getPullRequest() { return { state: 'open', draft: false, mergeable: true, head: SHA, body: 'Closes #21 ' + BODY, files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr) { log(['squash', pr]); return { mergeCommit: 'abcdef0123456789' }; },
     async addLabel() {}, async recordedEscalationApproval() { return null; }, async createComment() {},
@@ -86,7 +90,7 @@ export default {
 }
 
 function runRtd(args, bin) {
-  const child = spawn(process.execPath, [RTD, ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = track(spawn(process.execPath, [RTD, ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'] }));
   let stdout = '', stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -111,7 +115,7 @@ test('with --live the fixture issue is claimed, gated and squash-merged end to e
     const providerCalls = await readLines(f.providerLog);
     assert.deepEqual(providerCalls, ['gate0', 'gate1', 'gate2', ['squash', 90]]);
     await assert.rejects(readFile(join(f.workRoot, 'shadow', 'cycle-1.jsonl'), 'utf8'), { code: 'ENOENT' }, 'live mode writes no shadow cycle');
-  } finally { await rm(f.root, { recursive: true, force: true }); }
+  } finally { await reap(); await rm(f.root, { recursive: true, force: true }); }
 });
 
 test('--live requires --github: the flag alone is a usage error', async () => {
@@ -119,5 +123,5 @@ test('--live requires --github: the flag alone is a usage error', async () => {
   try {
     const result = await runRtd(['--work-root', f.workRoot, '--live', '--queue', 'x.json', '--handler', 'h.mjs', '--routing', ROUTING], f.bin);
     assert.equal(result.code, 2, result.stderr);
-  } finally { await rm(f.root, { recursive: true, force: true }); }
+  } finally { await reap(); await rm(f.root, { recursive: true, force: true }); }
 });

@@ -66,7 +66,7 @@ function mergeFixture({ persisted = { issue: '340', head: HEAD, tree: TREE, pass
     async requiredGreen() { return true; },
     async squashMerge(number) { squashes.push(number); return 'merged'; },
   };
-  return { squashes, entry: createMergeEntryPoint({ gateState: { async get() { return persisted; } }, github }) };
+  return { squashes, entry: createMergeEntryPoint({ mode: 'agent', gateState: { async get() { return persisted; } }, github }) };
 }
 
 test('merge refuses an invalid record before squashMerge', async () => {
@@ -118,7 +118,7 @@ test('a production-shaped pull request result with a matching body record squash
     async requiredGreen() { return true; },
     async squashMerge(number) { squashes.push(number); return 'merged'; },
   };
-  const entry = createMergeEntryPoint({ gateState: { async get() { return { issue: '340', head: HEAD, tree: TREE, passed: ALL, safetyFiles: [], safetyApproved: false }; } }, github });
+  const entry = createMergeEntryPoint({ mode: 'agent', gateState: { async get() { return { issue: '340', head: HEAD, tree: TREE, passed: ALL, safetyFiles: [], safetyApproved: false }; } }, github });
   assert.equal(await entry(340, evidence), 'merged');
   assert.deepEqual(squashes, [340]);
 });
@@ -140,7 +140,7 @@ function bodyWriteFixture({ body = 'Body', persist = true, fail } = {}) {
     },
   };
   const persisted = { issue: '340', head: HEAD, tree: TREE, passed: ALL, safetyFiles: [], safetyApproved: false };
-  const entry = createMergeEntryPoint({ gateState: { async get() { return persisted; } }, github, pullRequestBody });
+  const entry = createMergeEntryPoint({ mode: 'agent', gateState: { async get() { return persisted; } }, github, pullRequestBody });
   return { calls, state, entry };
 }
 
@@ -189,7 +189,7 @@ test('live: a body write the provider silently drops is refused by the provider 
     async write(number) { calls.push(`write:${number}`); },
   };
   const persisted = { issue: '340', head: HEAD, tree: TREE, passed: ALL, safetyFiles: [], safetyApproved: false };
-  const entry = createMergeEntryPoint({ gateState: { async get() { return persisted; } }, github, pullRequestBody });
+  const entry = createMergeEntryPoint({ mode: 'agent', gateState: { async get() { return persisted; } }, github, pullRequestBody });
   await assert.rejects(entry(340, evidence), /PR record is missing or stale after the pull request body update/);
   assert.deepEqual(calls, ['read', 'write:340', 'read']);
 });

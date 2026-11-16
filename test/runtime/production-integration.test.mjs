@@ -7,9 +7,15 @@ test('production adapter rejects missing providers with a concrete diagnostic', 
   assert.throws(() => createProductionAdapter({}), /provider.*required/i);
 });
 
+test('production adapter requires github.setBase for stacked retargeting', () => {
+  const fn = async () => {};
+  const github = Object.fromEntries(['getPullRequest', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'].map((name) => [name, fn]));
+  assert.throws(() => createProductionAdapter({ context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn }, github, git: { createRevert: fn } }), /provider github\.setBase is required/);
+});
+
 test('production adapter requires github.createComment for actionable safety rejects', () => {
   const fn = async () => {};
-  const github = Object.fromEntries(['getPullRequest', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue'].map((name) => [name, fn]));
+  const github = Object.fromEntries(['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue'].map((name) => [name, fn]));
   assert.throws(() => createProductionAdapter({ context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn }, github, git: { createRevert: fn } }), /provider github\.createComment is required/);
 });
 
@@ -38,7 +44,7 @@ test('an in-flight recovery effect stays paused and requests human intervention 
   const autoMerge = createProductionAdapter({
     pause: { async get() { return null; }, async put() {} },
     github: {
-      async getPullRequest() { return { state: 'open', draft: false, mergeable: true, head: 'head', files: ['x'] }; },
+      async setBase() {}, async getPullRequest() { return { body: 'Closes #53', state: 'open', draft: false, mergeable: true, head: 'head', files: ['x'] }; },
       async requiredGreen() { return true; }, async squashMerge() { return { mergeCommit: 'abcdef0123456789' }; },
       async addLabel() {}, async recordedEscalationApproval() { return null; }, async createComment() {},
       async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; },
@@ -80,7 +86,7 @@ test('distinct unknown recovery effects each receive an intervention notificatio
   const calls = [];
   const autoMerge = createProductionAdapter({
     github: {
-      async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
+      async setBase() {}, async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
       async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
       async openRevertPullRequest() { throw new Error('must not repeat pull request'); },
       async createIssue(input) { calls.push(input); return { number: 120 + calls.length }; },
@@ -121,7 +127,7 @@ for (const scenario of ['throws', 'null', 'restart']) {
     let calls = 0;
     const autoMerge = createProductionAdapter({
       github: {
-        async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
+        async setBase() {}, async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
         async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
         async openRevertPullRequest() {}, async createIssue() { calls++; if (scenario === 'throws') throw new Error('network failure'); return null; },
       },
@@ -151,7 +157,7 @@ test('an uncertain notification does not duplicate or hide a different unknown e
   const calls = [];
   const autoMerge = createProductionAdapter({
     github: {
-      async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
+      async setBase() {}, async getPullRequest() {}, async requiredGreen() {}, async squashMerge() {}, async addLabel() {},
       async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
       async openRevertPullRequest() {}, async createIssue(input) { calls.push(input); return { number: 122 }; },
     },
@@ -180,7 +186,7 @@ for (const status of [{ head: 'changed', status: 'red' }, { head: 'changed', sta
     let calls = 0;
     const autoMerge = createProductionAdapter({
       github: {
-        async getPullRequest() {}, async requiredGreen() {}, async squashMerge() { throw new Error('must not repeat'); }, async addLabel() {},
+        async setBase() {}, async getPullRequest() {}, async requiredGreen() {}, async squashMerge() { throw new Error('must not repeat'); }, async addLabel() {},
         async recordedEscalationApproval() {}, async mainStatus() { return status; }, async openRevertPullRequest() {}, async createComment() {},
         async createIssue() { calls++; return { number: 121 }; },
       },
@@ -202,7 +208,9 @@ test('production adapter triggers recovery after red main and holds later work',
   const root = await mkdtemp(join(process.cwd(), 'rt53-test-'));
   const calls = [];
   const github = {
-    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, body: pr === 90 ? body('53', BASE_SHA, 'tree') : body('92', REVERT_SHA, 'reverttree'), files: ['x'] }; },
+    async setBase() {}, async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, body: pr === 90 ? `Closes #53
+${body('53', BASE_SHA, 'tree')}` : `Closes #92
+${body('92', REVERT_SHA, 'reverttree')}`, files: ['x'] }; },
     async requiredGreen() { return true; },
     async squashMerge(pr, options) { calls.push(['merge', pr, options]); return { mergeCommit: pr === 90 ? 'abcdef0123456789' : '1111111111111111' }; },
     async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
@@ -252,7 +260,7 @@ export default {
  gates: { async gate0(input) { await log('gate0'); issue = input.issue; return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head,rationale:RATIONALE}; }, async crossCheck() { return true; } },
  git: { async createRevert() { await log('revert'); return {sha:'1234567'}; } },
  github: {
-  async getPullRequest(pr) { return {state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',body:upsertPrRecord('', buildPrRecord({issue, head: pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}', tree: pr === 90 ? 'tree' : 'reverttree', passed: ['gate0', 'gate1', 'ci']})),files:['x']}; },
+  async setBase() {}, async getPullRequest(pr) { return { body: (pr === 90 ? 'Closes #53 Closes #54 ' : 'Closes #92 ') + upsertPrRecord('', buildPrRecord({issue, head: pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}', tree: pr === 90 ? 'tree' : 'reverttree', passed: ['gate0', 'gate1', 'ci']})), state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
   async requiredGreen(pr) { return pr === 90 || ${revertGreen}; },
   async squashMerge(pr,options) { await log('squash',pr,options); return {mergeCommit:pr === 90 ? 'abcdef0123456789' : '1111111111111111'}; },
   async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
@@ -341,7 +349,9 @@ test('pending main and failed revert gate hold tracker claims across passes', as
   const calls = [];
   const pause = { value: null, async get() { return this.value; }, async put(value) { this.value = structuredClone(value); } };
   const github = {
-    async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, body: pr === 90 ? body(issue, BASE_SHA, 'tree') : body(issue, REVERT_SHA, 'tree'), files: ['x'] }; },
+    async setBase() {}, async getPullRequest(pr) { return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? BASE_SHA : REVERT_SHA, body: pr === 90 ? `Closes #53
+${body(issue, BASE_SHA, 'tree')}` : `Closes #92
+${body(issue, REVERT_SHA, 'tree')}`, files: ['x'] }; },
     async requiredGreen() { return true; }, async addLabel() {}, async recordedEscalationApproval() {}, async createComment() {},
     async squashMerge(pr) { calls.push(pr); return { mergeCommit: 'abcdef0123456789' }; },
     async mainStatus() { return { head: mainHead, status: main }; },

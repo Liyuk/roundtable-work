@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { assertSafeId, createConfinement } from './paths.mjs';
 import { acquireLock } from './lock.mjs';
+import { mergeOne, retargetAndMerge } from './merge-order.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -65,7 +66,10 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
       return { path, branch, existing: true };
     }
     await confinement.resolve('worktrees', id);
-    await execFile('git', ['-C', repoRoot, 'worktree', 'add', '-b', branch, path, baseBranch], { maxBuffer: 1024 * 1024 });
+    // A branch kept by an earlier `remove` (unmerged work) is reused as-is so its commits survive.
+    const branchKept = await execFile('git', ['-C', repoRoot, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { maxBuffer: 1024 * 1024 }).then(() => true, () => false);
+    const args = branchKept ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, baseBranch];
+    await execFile('git', ['-C', repoRoot, ...args], { maxBuffer: 1024 * 1024 });
     return { path, branch, existing: false };
   }
 
@@ -105,4 +109,32 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
   }
 
   return { workRoot: confinement.root, repoRoot, pathFor, list, create, remove, acquire, inspect };
+}
+
+/**
+ * Bring the issue branch of `id` up to `origin/<base>` before its gates run: merge, never rebase or force, and push
+ * with a normal push, which git refuses unless it fast-forwards the remote branch. A conflicting merge is aborted and
+ * returns `{ stop: 'conflict' }` with nothing pushed. A repository without an `origin` remote has no base to sync
+ * with, so it is left as it is. The checks and merge steps of `mergeOne` are no-ops here: the gates run next.
+ * With `github` and `pr` (a stacked pull request whose upstreams merged) the base is first set through `github.setBase`.
+ */
+export async function syncWithBase({ path, id, base, github, pr }) {
+  const git = async (...args) => (await execFile('git', ['-C', path, ...args], { maxBuffer: 1024 * 1024 })).stdout.trim();
+  if (!(await git('remote')).split('\n').includes('origin')) return {};
+  const step = {
+    issue: id, pr: null, base,
+    git: {
+      async mergeBase(name) {
+        await git('fetch', '--quiet', 'origin', name);
+        const before = await git('rev-parse', 'HEAD');
+        try { await git('merge', '--no-edit', '--quiet', `origin/${name}`); } catch { return 'conflict'; }
+        return (await git('rev-parse', 'HEAD')) === before ? 'up-to-date' : 'clean';
+      },
+      mergeAbort: () => git('merge', '--abort').catch(() => {}),
+      push: () => git('push', '--quiet', 'origin', 'HEAD'),
+      head: () => git('rev-parse', 'HEAD'),
+    },
+    checks: { run: async () => true }, merge: async () => true, cleanup: async () => {},
+  };
+  return github ? retargetAndMerge({ github, ...step, pr }) : mergeOne(step);
 }

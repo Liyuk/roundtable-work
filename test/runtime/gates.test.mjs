@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { runGates, recoverRedMain } from '../../runtime/lib/gates.mjs';
+import { runGates, recoverRedMain, closesLink } from '../../runtime/lib/gates.mjs';
 import { createMergeEntryPoint } from '../../runtime/lib/merge.mjs';
 import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
@@ -26,6 +26,7 @@ function fixture(overrides = {}) {
     ci: { async requiredGreen() { calls.push('ci'); return { green: true }; } },
     merge: { async squash(pr, evidence) { calls.push('merge'); assert.equal(pr, 90); assert.equal(evidence.ciGreen, true); return { merged: true }; } },
     github: {
+      async getPullRequest() { return { body: 'Closes #53' }; },
       async recordedEscalationApproval() { calls.push('approval'); return null; },
       async addLabel(_pr, label) { calls.push(`label:${label}`); },
     },
@@ -47,7 +48,7 @@ function livePullRequest(files) {
 
 function entryFixture({ persisted = gatedRecord(), live = livePullRequest([]) } = {}) {
   const calls = [];
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return persisted; } },
     github: {
       async getPullRequest() { calls.push('pr'); return live; },
@@ -103,7 +104,7 @@ test('reviewer unavailable is retried once, then only ready-to-merge is labeled'
 
 test('single merge entry point rechecks persisted gates, live head, mergeability, and CI', async () => {
   const calls = [];
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false }; } },
     github: {
       async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files: [] }; },
@@ -117,7 +118,7 @@ test('single merge entry point rechecks persisted gates, live head, mergeability
 
 test('single merge entry point refuses stale heads and red CI without invoking merge', async () => {
   let merges = 0;
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return { issue: '53', head: 'oldhead', tree: 'tree-a', passed: ['gate0', 'gate1', 'ci'] }; } },
     github: {
       async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true }; },
@@ -319,7 +320,7 @@ test('safety-file diff requires recorded escalation-model approval for current h
 test('cross-check model approval cannot authorize a safety-file merge', async () => {
   const f = fixture({ changedFiles: ['.github/workflows/check.yml'], models: {},
     modelRouter: type => ({ review: 'review-model', escalation: 'escalation-model', 'cross-check': 'cross-check-model' })[type],
-    github: { async recordedEscalationApproval() { return { approved: true, model: 'cross-check-model', head: 'abc1234' }; }, async addLabel() {} },
+    github: { async getPullRequest() { return { body: 'Closes #53' }; }, async recordedEscalationApproval() { return { approved: true, model: 'cross-check-model', head: 'abc1234' }; }, async addLabel() {} },
   });
   assert.equal((await runGates(f.input)).gate, 'safety-approval');
   assert.equal(f.calls.includes('merge'), false);
@@ -330,6 +331,7 @@ test('approved safety-file change records approval at gate time and merges throu
   const f = fixture({
     changedFiles: files,
     github: {
+      async getPullRequest() { return { body: 'Closes #53' }; },
       async recordedEscalationApproval() { f.calls.push('approval'); return { approved: true, model: 'model-crosscheck', head: 'abc1234' }; },
       async addLabel(_pr, label) { f.calls.push(`label:${label}`); },
     },
@@ -339,7 +341,7 @@ test('approved safety-file change records approval at gate time and merges throu
   assert.deepEqual(persisted.safetyFiles, ['.github/workflows/check.yml']);
   assert.equal(persisted.safetyApproved, true);
   // The provider supplies only live changed files, no safetyFiles/safetyApprovalHead hint fields.
-  const entry = createMergeEntryPoint({
+  const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return persisted; } },
     github: {
       async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files }; },
@@ -387,7 +389,7 @@ test('the safety approval must name the routed cross-check model', async () => {
   const f = fixture({
     changedFiles: ['.github/workflows/check.yml'],
     github: {
-      async recordedEscalationApproval() { f.calls.push('approval'); return { approved: true, model: 'model-other', head: 'abc1234' }; },
+      async getPullRequest() { return { body: 'Closes #53' }; }, async recordedEscalationApproval() { f.calls.push('approval'); return { approved: true, model: 'model-other', head: 'abc1234' }; },
       async addLabel(_pr, label) { f.calls.push(`label:${label}`); },
     },
   });
@@ -508,4 +510,35 @@ test('a CI-wait timeout is a resumable hold, never a red failure', async () => {
   const result = await runGates(f.input);
   assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'ci', true]);
   assert.equal(f.calls.includes('merge'), false);
+});
+
+// Criterion 9: every loop PR links its issue with a closing keyword; an unlinked PR is a non-passing gate before review.
+test('closesLink accepts a closing keyword for exactly that issue number', () => {
+  assert.equal(closesLink('Summary\n\nCloses #53', 53), true);
+  assert.equal(closesLink('fixes: #53', 53), true);
+  assert.equal(closesLink('Related to #53', 53), false, 'not a closing keyword');
+  assert.equal(closesLink('Resolved #53', 53), true, 'GitHub closing keyword');
+  assert.equal(closesLink('Closes #531', 53), false, 'a longer number is another issue');
+  assert.equal(closesLink('Refs #53', 53), false);
+  assert.equal(closesLink(undefined, 53), false);
+});
+
+test('a loop PR whose body does not close its issue is flagged before any review, with a hold-free reason', async () => {
+  const f = fixture({ github: { async getPullRequest() { return { body: 'Refs #53' }; }, async recordedEscalationApproval() { return null; }, async addLabel() {} } });
+  const result = await runGates(f.input);
+  assert.deepEqual([result.status, result.gate, result.hold], ['blocked', 'pr-link', false]);
+  assert.match(result.reason, /Closes #53/);
+  assert.equal(f.calls.some(call => call.startsWith('reviewer') || call === 'merge' || call === 'ci'), false);
+});
+
+test('requireClosesLink: false lets a body without "Closes #N" past pr-link (red-main revert PR path)', async () => {
+  const f = fixture({ github: { async getPullRequest() { return { body: 'Revert "bad change"' }; }, async recordedEscalationApproval() { return null; }, async addLabel() {} } });
+  const result = await runGates({ ...f.input, requireClosesLink: false });
+  assert.notEqual(result.gate, 'pr-link');
+  assert.equal(f.calls.includes('merge'), true, 'the gated merge is reached');
+});
+
+test('a PR body read that throws is a resumable hold, not a pass', async () => {
+  const f = fixture({ github: { async getPullRequest() { throw new Error('offline'); }, async recordedEscalationApproval() { return null; }, async addLabel() {} } });
+  assert.deepEqual([(await runGates(f.input)).gate, (await runGates(f.input)).hold], ['pr-link', true]);
 });

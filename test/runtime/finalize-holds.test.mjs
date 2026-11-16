@@ -48,7 +48,8 @@ function world(overrides = {}) {
     async addLabel(_pr, label) { log(`label:${label}`); },
     async createComment(pr, body) { log(['comment', pr, body]); },
     async recordedEscalationApproval() { log('approval'); return w.state.approval; },
-    async getPullRequest() { log('pr'); return { state: 'open', draft: false, mergeable: true, head: w.state.head, body: recordBody(w.state), files: w.state.changedFiles, ownerLogin: w.state.ownerLogin, comments: w.state.comments }; },
+    async setBase() {}, async getPullRequest() { log('pr'); return { state: 'open', draft: false, mergeable: true, head: w.state.head, body: `Closes #53
+${recordBody(w.state)}`, files: w.state.changedFiles, ownerLogin: w.state.ownerLogin, comments: w.state.comments }; },
     async requiredGreen() {
       log('ci');
       if (w.state.ciThrow) throw new Error('checks provider offline');
@@ -99,7 +100,7 @@ test('a CI hold waits: waiting_external/wait, recovery untouched, gate record ke
     assert.deepEqual([result.outcomes[0].status, result.outcomes[0].class, result.outcomes[0].decision], ['waiting_external', 'finalize_hold', 'wait']);
     assert.match(result.outcomes[0].reason, /^ci: /);
     assert.equal(w.squashes().length, 0, 'no merge attempt for a hold');
-    assert.equal(w.count('pr'), 1, 'only the Gate 1 precondition read the PR; the merge entry point was never reached');
+    assert.equal(w.count('pr'), 3, 'the stack check, the PR-link gate and the Gate 1 precondition read the PR; the merge entry point was never reached');
     const store = await createStateStore({ workRoot: root });
     const s = await store.load('53');
     assert.equal(s.status, 'waiting_external', 'not interrupted: the issue is picked up again');
@@ -390,9 +391,11 @@ function productionWorld(overrides = {}) {
   };
   w.github = {
     ...w.github,
-    async getPullRequest(pr) {
+    async setBase() {}, async getPullRequest(pr) {
       w.calls.push(`pr:${pr}`);
-      return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : REVERT_SHA, body: pr === 90 ? recordBody(w.state) : revertBody, files: w.state.changedFiles };
+      return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : REVERT_SHA, body: pr === 90 ? `Closes #53
+${recordBody(w.state)}` : `${w.state.revertBody ?? 'Closes #92'}
+${revertBody}`, files: w.state.changedFiles };
     },
     async squashMerge(pr, options) { w.calls.push(['squash', pr, options]); return structuredClone(w.state.squashResult); },
     async mainStatus() {
@@ -443,7 +446,7 @@ test('a post-merge invalid mergeCommit ends done with main paused and never squa
 
       // A later pass starts no new work while main is paused and never re-squashes that pull request.
       w.calls.length = 0;
-      w.github.getPullRequest = async () => ({ state: 'unknown' });
+      w.github.getPullRequest = async () => ({ state: 'unknown', body: 'Closes #53' });
       const phases = [];
       const second = await wake(root, w, phases);
       assert.deepEqual(phases, [], JSON.stringify(result));
@@ -496,6 +499,22 @@ test('a post-merge mainStatus failure ends done and keeps the monitoring record 
   }
 });
 
+test('a host-written revert PR body without "Closes #N" still merges the revert: pr-link never blocks red-main recovery', async () => {
+  const root = await tmp();
+  try {
+    const w = productionWorld();
+    w.state.revertBody = 'Revert "bad change"';
+    w.state.mainThrows = true;
+    assert.equal((await wake(root, w)).outcomes[0].status, 'done');
+    w.state.mainThrows = false;
+    w.state.main = { head: 'abcdef0123456789', status: 'red' };
+    w.state.reviewHead = REVERT_SHA;
+    await wake(root, w);
+    assert.deepEqual(w.squashes().map((entry) => entry[1]), [90, 91], 'the revert pull request is merged');
+    assert.equal((await (await createStateStore({ workRoot: root })).load('rt-main-monitor')).mainMonitor.recovery.revertMerged.done, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('a red main after a post-merge mainStatus failure runs the revert path on the next pass', async () => {
   const root = await tmp();
   try {
@@ -541,7 +560,7 @@ function gateFixture(overrides = {}) {
     },
     ci: { async requiredGreen() { calls.push('ci'); return true; } },
     merge: { async squash() { calls.push('squash'); return { merged: true }; } },
-    github: { async recordedEscalationApproval() { return null; }, async addLabel() {} },
+    github: { async getPullRequest() { return { body: 'Closes #53' }; }, async recordedEscalationApproval() { return null; }, async addLabel() {} },
     ...overrides,
     gates: { ...gates, ...overrides.gates },
   };

@@ -2,13 +2,25 @@ import { safetyFiles } from './safety.mjs';
 import { ledgerEntry } from './state.mjs';
 import { buildPrRecord, validatePrRecord, extractPrRecord, upsertPrRecord } from './pr-record.mjs';
 import { isDeepStrictEqual } from 'node:util';
+import { ciAllowsMerge } from './local-checks.mjs';
+import { MERGE_MODES } from './merge-mode.mjs';
 
 const samePaths = (a, b) => a.length === b.length && a.every((path, index) => path === b[index]);
 const isStringArray = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 
+/** Thrown when the tier function requires an owner or decider approval before squashing. */
+export class ApprovalRequired extends Error {
+  constructor(reasons) {
+    super(`Approval required: ${reasons.join(', ')}`);
+    this.name = 'ApprovalRequired';
+    this.code = 'APPROVAL_REQUIRED';
+  }
+}
+
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
-export function createMergeEntryPoint({ github, gateState, store, pullRequestBody }) {
+export function createMergeEntryPoint({ github, gateState, store, tierOf, mode = 'dry-run', localChecks = { enabled: false }, pullRequestBody }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
+  const resolvedMode = MERGE_MODES.includes(mode) ? mode : 'dry-run';
   for (const name of ['getPullRequest', 'requiredGreen', 'squashMerge']) {
     if (typeof github[name] !== 'function') throw new TypeError(`github.${name} is required`);
   }
@@ -29,7 +41,10 @@ export function createMergeEntryPoint({ github, gateState, store, pullRequestBod
     if (!valid.ok) throw new Error(`PR record is invalid: ${valid.reason}`);
     // The merge record lives in the ledger: a replayed squash for the same head returns the recorded merge instead of merging again.
     const mergeId = `merge:${evidence.head}`;
-    if (store && ledgerEntry(await store.load(evidence.issue), mergeId)) return { replayed: true };
+    const dryRunId = `dry-run:${evidence.head}`;
+    const ledger = store ? (await store.load(evidence.issue)).ledger : [];
+    if (ledgerEntry({ ledger }, mergeId)) return { replayed: true };
+    if (resolvedMode === 'dry-run' && ledgerEntry({ ledger }, dryRunId)) return { held: 'dry-run', mode: 'dry-run', replayed: true };
     const live = await github.getPullRequest(pr);
     if (!live || live.state !== 'open' || live.draft === true || live.head !== evidence.head || live.mergeable !== true) {
       throw new Error('Pull request is not open, ready, current, and mergeable');
@@ -47,7 +62,15 @@ export function createMergeEntryPoint({ github, gateState, store, pullRequestBod
       throw new Error('Safety-file approval is missing or stale for the current head and tree');
     }
     const checks = await github.requiredGreen(pr);
-    if (checks !== true && checks?.green !== true) throw new Error('Required CI is red or pending');
+    if (!ciAllowsMerge({ checks, enabled: localChecks.enabled, ledger, head: live.head })) throw new Error('Required CI is red or pending');
+    const tier = tierOf ? await tierOf(evidence, live) : null;
+    if (tier?.tier === 'approve-first') throw new ApprovalRequired(tier.reasons);
+    // owner and dry-run hold the merge: no provider squash, and no merge record.
+    if (resolvedMode === 'owner') return { held: 'owner', mode: 'owner' };
+    if (resolvedMode === 'dry-run') {
+      if (store) await store.append(evidence.issue, { id: dryRunId, type: 'would-merge', detail: { pr } });
+      return { held: 'dry-run', mode: 'dry-run' };
+    }
     // The body must carry this exact record before squash; a missing body fails closed.
     const current = pullRequestBody ? await pullRequestBody.read(pr) : live.body;
     if (typeof current !== 'string') throw new Error('PR record check failed: pull request body not supplied');
@@ -66,6 +89,6 @@ export function createMergeEntryPoint({ github, gateState, store, pullRequestBod
     }
     const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
     if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });
-    return merged;
+    return tier ? { tier: tier.tier, reasons: tier.reasons, result: merged } : merged;
   };
 }

@@ -1,0 +1,9 @@
+# TEMPLATE ONLY. A systemd --user unit: not enabled, not installed, and not referenced by any script.
+# Runs rtd-watchdog.service on the same cadence as the daemon poll interval. See docs/supervisor.md.
+[Unit]
+Description=Roundtable Work watchdog timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true

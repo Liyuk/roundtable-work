@@ -109,7 +109,7 @@ test('a degraded single-session pass is never a Gate 1 pass', withDir(async (dir
     },
     ci: { async requiredGreen() { return { green: true }; } },
     merge: { async squash() { throw new Error('must not merge'); } },
-    github: { async recordedEscalationApproval() { return null; }, async addLabel() {} },
+    github: { async getPullRequest() { return { body: 'Closes #302' }; }, async recordedEscalationApproval() { return null; }, async addLabel() {} },
   });
   assert.equal(gated.status, 'blocked');
   assert.equal(gated.gate, 'gate1');

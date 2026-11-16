@@ -1,0 +1,33 @@
+# Runs the rtd daemon from the mounted repo. The repo is read-only; only .roundtable (workspace state) is writable.
+# Secrets and host-specific values come from ./rtd.env (not committed, see .gitignore in this folder).
+services:
+  rtd:
+    image: node:24-bookworm-slim
+    working_dir: /workspace
+    command:
+      - node
+      - runtime/rtd.mjs
+      - --work-root
+      - .roundtable
+      - --github
+      - --handler
+      - ${RTD_HANDLER:-/config/handler.mjs}
+      - --providers
+      - ${RTD_PROVIDERS:-/config/providers.mjs}
+      - --routing
+      - ${RTD_ROUTING:-/config/routing.json}
+      - --loop
+    env_file:
+      - path: ./rtd.env
+        required: false
+    restart: unless-stopped
+    volumes:
+      - ../..:/workspace:ro
+      - ../../.roundtable:/workspace/.roundtable
+      - ${RTD_CONFIG_DIR:-./config}:/config:ro
+    healthcheck:
+      test: ["CMD", "node", "deploy/docker/healthcheck.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
