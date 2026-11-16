@@ -61,15 +61,67 @@ const WHITELIST = new Map([
   ['test/runtime/watchdog-restart.test.mjs', 'Legacy Chinese verdict fixture fed to the alias parser; frozen-token check requires the count to stay.'],
 ]);
 
+// Exact Han line fragments that must stay Chinese because the live loop matches or emits them.
+// A Han line in a listed file is allowed only when it contains one of that file's fragments.
+const LIVE_FRAGMENTS = new Map([
+  ['host/README-v2.md', [
+    // Gate 1 text quotes the verdict line the parser accepts.
+    '`\u5ba1\u67e5\u7ed3\u8bba：\u901a\u8fc7`',
+  ]],
+  ['host/rt-work.sh', [
+    // Threat-model grep matches the Chinese heading in worker notes.
+    'threat[ -]?model|\u5a01\u80c1\u6a21\u578b',
+    // Supervisor budget grep matches the Chinese fix-budget line.
+    '\u5e38\u89c4\u4fee\u590d\u8f6e\u5df2\u7528\u5b8c',
+    // Worker note quotes the legacy verdict line the parser accepts.
+    'legacy first line \u5ba1\u67e5\u7ed3\u8bba',
+  ]],
+  ['host/bin/rt-agent', [
+    // Insufficient-balance grep matches the Chinese error text.
+    'payment required|\u4f59\u989d\u4e0d\u8db3',
+    // Sed strips the legacy verdict heading from the reviewer output.
+    'OPUS_FIX|\u5ba1\u67e5\u7ed3\u8bba',
+  ]],
+  ['host/bin/rt-delegate', [
+    // Comment documents the legacy verdict first line.
+    'parser: \u5ba1\u67e5\u7ed3\u8bba',
+    // Grep matches the legacy Chinese verdict line.
+    '\u5ba1\u67e5\u7ed3\u8bba[：:][[:space:]]*(\u901a\u8fc7|\u6253\u56de|\u963b\u585e)',
+    // Sed strips the legacy verdict prefix.
+    '(Verdict|\u5ba1\u67e5\u7ed3\u8bba)[：:]',
+    // Case maps the legacy pass word to pass.
+    'pass|\u901a\u8fc7) echo pass',
+    // Case maps the legacy reject word to fail.
+    'reject|fail|\u6253\u56de) echo fail',
+    // Case maps the legacy block word to blocked.
+    'block|blocked|\u963b\u585e) echo blocked',
+  ]],
+  ['host/bin/rt-metrics', [
+    // Signature is written to GitHub comments.
+    'SIGNATURE = "— \u9e7f\u76ee\u5706"',
+    // Regex matches the runner status lines in GitHub comments.
+    '(\u5df2\u9886\u53d6|\u505c\u6b62)',
+  ]],
+  ['host/bin/rt-metrics-report', [
+    // Prose documents the comment signature the report counts.
+    'GitHub comments ending with `— \u9e7f\u76ee\u5706`',
+    // Prose documents the signature convention start date.
+    'the `— \u9e7f\u76ee\u5706` signature convention',
+  ]],
+]);
+
 // Escaped so that this file contains no Han itself (the four legacy verdict words).
 const ALIASES = ['\u5ba1\u67e5\u7ed3\u8bba', '\u901a\u8fc7', '\u6253\u56de', '\u963b\u585e'];
 const HAN = /\p{Script=Han}/u;
 
-// Returns "file:line" for each Han line that is not an allowed legacy alias line.
+// Returns "file:line" for each Han line that is not an allowed legacy alias or live fragment line.
 function hanErrors(file, text) {
   const allowed = WHITELIST.has(file);
+  const fragments = LIVE_FRAGMENTS.get(file) ?? [];
   return text.split('\n').flatMap((line, i) =>
-    HAN.test(line) && !(allowed && ALIASES.some((alias) => line.includes(alias))) ? [`${file}:${i + 1}`] : []);
+    HAN.test(line) &&
+    !(allowed && ALIASES.some((alias) => line.includes(alias))) &&
+    !fragments.some((fragment) => line.includes(fragment)) ? [`${file}:${i + 1}`] : []);
 }
 
 const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
@@ -107,4 +159,9 @@ test('Han check reports a non-whitelisted file and a non-alias line in a whiteli
   assert.deepEqual(hanErrors('docs/new.md', `ok\n${han}`), ['docs/new.md:2']);
   assert.deepEqual(hanErrors('lib/verdict.mjs', han), ['lib/verdict.mjs:1']);
   assert.deepEqual(hanErrors('lib/verdict.mjs', `${ALIASES[1]}`), []);
+});
+
+test('Han check reports a listed-file Han line that lacks every listed fragment', () => {
+  const han = '\u4e2d\u6587';
+  assert.deepEqual(hanErrors('host/bin/rt-metrics', `ok\n${han}`), ['host/bin/rt-metrics:2']);
 });

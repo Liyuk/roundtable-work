@@ -1,65 +1,65 @@
-# rt-loop v2 操作说明
+# rt-loop v2 operator guide
 
-本目录的文件将**整体复制到 `~/rt-loop`（同一路径，现有 worktree 继续有效）**。所有脚本从自身位置或 `RT_HOME` 环境变量推导根目录，没有硬编码 `rt-loop-next`。不要复制 `SPEC.md`/`ADDENDUM*.md`/`test/`/`.build-session`/`build*.log`；`config.env` 复制前确认是否要保留线上已有改动。部署前先停掉旧的 `rt-loop.sh`（它不使用 `locks/<n>.lock`，两者不能并存）。
+Copy the files in this directory **as a whole to `~/rt-loop` (the same path, so existing worktrees stay valid)**. All scripts derive the root from their own location or the `RT_HOME` environment variable; nothing is hard-coded to `rt-loop-next`. Do not copy `SPEC.md`/`ADDENDUM*.md`/`test/`/`.build-session`/`build*.log`. Before copying `config.env`, confirm whether existing live changes to it must be kept. Before deploying, stop the old `rt-loop.sh` first (it does not use `locks/<n>.lock`, and the two cannot run side by side).
 
-GitHub intake + 自主决策 + 并行 worker。`rt-loop.sh` / `queue.txt` 保留为旧版，**v2 不使用**。
+GitHub intake + autonomous decisions + parallel workers. `rt-loop.sh` / `queue.txt` are kept as the legacy version; **v2 does not use them**.
 
-## 组成
-| 文件 | 作用 |
+## Components
+| File | Role |
 | --- | --- |
-| `rt-sched.py [--dry-run] [--once]` | 常驻调度器：每 `RT_POLL` 秒一轮（收尾 → ask 恢复 → 拉 issue → 认领 → 孤儿恢复 → 心跳） |
-| `rt-work.sh <n> [base]` | 单 issue worker：worktree `wt/<n>`、分支 `rt/<n>-pi`、Chief 唤醒循环 + 后处理（decide/decompose/ask/gates/标签），持有 `locks/<n>.lock` |
-| `bin/rt-gate0 <wt> <base> <n>` | Gate 0（确定性）：npm test、隐私、冻结字段计数（`gate0-frozen.txt`）、翻译方向、测试未削弱。`--scan-text <file>` 做纯文本隐私扫描 |
-| `bin/rt-xcheck <wt> <base> <n>` | Gate 2：`codex exec --sandbox read-only`，首行 `XCHECK: pass|fail|unavailable` |
-| `bin/rt-decide <n> <question-file>` | Opus 决策者，首行 `DECIDE: resolve|ask-owner|stop`；只决策，不实现不审查 |
-| `bin/rt-labels-init [-n]` | 创建缺失标签（已存在的跳过；`-n` 只列出）。**部署者手动运行一次** |
-| `bin/gh` | pi 侧受限 gh：只读 + `pr create/edit` + 评论（评论自动加 `<!-- rt:chief -->` 标记）；无 label/close/merge/ready |
-| `bin/rt-merge <pr>` | **唯一**执行 `gh pr merge --squash` 的地方（无 `--admin`/`--auto`）。要求 `RT_MERGE_STEP=1` + `wt/<n>/.roundtable/state/gates.json` 全绿且 head 与 PR 一致；合并前重新核对 PR 状态。`RT_DRY_RUN=1` 只打印。退出码：0 合并/将合并、2 拒绝、3 跳过（已合并/关闭/hands-off）、5 需同步 main、6 CI 未绿、7 main 红 |
-| `bin/rt-sync-branch <n>` | 把 `origin/main` **merge** 进 `rt/<n>-pi` 并普通 push（不 rebase、不 force）；冲突则中止并写 SUPERVISOR.md |
-| `bin/rt-revert <sha>` | main CI 红且头提交是自动合并产物时：建 `rt/revert-<sha7>`、开 PR、等 CI、经 rt-merge 合并、评论原 issue、开 `rt:self` `type:bug` `priority:p0` 新 issue |
-| `bin/rt-safety` | 安全文件检测器（stdin/参数里的文件名 → 命中列表，命中则退出 1） |
-| `bin/rt-state <n> get/set/inc/reset` | 每 issue 持久计数器 `state/issues/<n>.json`（decide_n、fix_n、review_n、safety_n、merge_hold） |
-| `bin/rt-tree <dir>` | 工作树内容的 git tree ID，用来证明“审查对象就是当前 head” |
-| `bin/rt-wt <n> [base]` | 创建/复用 worker worktree |
-| `status.sh` | 健康检查 |
-| `test/run-all.sh` | 假 gh/pi/codex 的端到端测试（只写本地裸仓库，不访问 GitHub） |
+| `rt-sched.py [--dry-run] [--once]` | Long-running scheduler: one round every `RT_POLL` seconds (finalize → ask resume → pull issues → claim → orphan recovery → heartbeat) |
+| `rt-work.sh <n> [base]` | Single-issue worker: worktree `wt/<n>`, branch `rt/<n>-pi`, Chief wake loop + post-processing (decide/decompose/ask/gates/labels), holds `locks/<n>.lock` |
+| `bin/rt-gate0 <wt> <base> <n>` | Gate 0 (deterministic): npm test, privacy, frozen-field count (`gate0-frozen.txt`), translation direction, tests not weakened. `--scan-text <file>` runs a plain-text privacy scan |
+| `bin/rt-xcheck <wt> <base> <n>` | Gate 2: `codex exec --sandbox read-only`, first line `XCHECK: pass|fail|unavailable` |
+| `bin/rt-decide <n> <question-file>` | Opus decider, first line `DECIDE: resolve|ask-owner|stop`; decides only, does not implement or review |
+| `bin/rt-labels-init [-n]` | Creates missing labels (existing ones are skipped; `-n` only lists). **The deployer runs it once by hand** |
+| `bin/gh` | Restricted gh for the pi side: read-only + `pr create/edit` + comments (comments automatically get the `<!-- rt:chief -->` marker); no label/close/merge/ready |
+| `bin/rt-merge <pr>` | **The only place** that runs `gh pr merge --squash` (no `--admin`/`--auto`). Requires `RT_MERGE_STEP=1` + `wt/<n>/.roundtable/state/gates.json` all green and head matching the PR; re-checks PR state before merging. `RT_DRY_RUN=1` only prints. Exit codes: 0 merged/will merge, 2 refused, 3 skipped (already merged/closed/hands-off), 5 must sync main, 6 CI not green, 7 main red |
+| `bin/rt-sync-branch <n>` | **Merges** `origin/main` into `rt/<n>-pi` and does a normal push (no rebase, no force); on conflict it aborts and writes SUPERVISOR.md |
+| `bin/rt-revert <sha>` | When main CI is red and the head commit is an auto-merge product: creates `rt/revert-<sha7>`, opens a PR, waits for CI, merges via rt-merge, comments on the original issue, and opens a new `rt:self` `type:bug` `priority:p0` issue |
+| `bin/rt-safety` | Safety-file detector (file names from stdin/arguments → list of hits; exits 1 on a hit) |
+| `bin/rt-state <n> get/set/inc/reset` | Per-issue persistent counters in `state/issues/<n>.json` (decide_n, fix_n, review_n, safety_n, merge_hold) |
+| `bin/rt-tree <dir>` | Git tree ID of the worktree content, used to prove "the reviewed object is the current head" |
+| `bin/rt-wt <n> [base]` | Creates/reuses a worker worktree |
+| `status.sh` | Health check |
+| `test/run-all.sh` | End-to-end tests with fake gh/pi/codex (writes only to local bare repositories, never touches GitHub) |
 
-## 模型路由（`config.env`）
-模型路由唯一来源是 `config.env`：`bin/rt-agent` 在每次角色启动时生成「本轮路由事实」（每个角色的 harness 和模型，以及 DeepSeek 没钱时的 `RT_NOFUNDS_MODEL`）注入系统提示；`bin/rt-agent --routing-facts` 查看，`bin/rt-agent --check` 校验每个角色都配了模型（start-box.sh 启动前会跑）。提示词与政策文件只写档位（开发档、审查档、决策者档），不写模型名。
+## Model routing (`config.env`)
+The only source of model routing is `config.env`. At each role start, `bin/rt-agent` generates the "routing facts" block (each role's harness and model, plus `RT_NOFUNDS_MODEL` for when DeepSeek has no funds) and injects it into the system prompt. `bin/rt-agent --routing-facts` shows it; `bin/rt-agent --check` verifies that every role has a model configured (start-box.sh runs it before startup). Prompts and policy files only name tiers (developer tier, reviewer tier, decider tier), never model names.
 
-## 部署（由部署者做，本目录未执行）
-1. `bin/rt-labels-init -n` 看清单，再 `bin/rt-labels-init` 建标签。
-2. 先 `RT_HOME=$PWD ./rt-sched.py --dry-run --once` 看决策（只读，不写 GitHub）。
-3. 旧 `rt-loop` 停掉后（`touch ~/rt-loop/STOP`，等其 worker 结束），在 tmux 里 `./rt-sched.py`。旧 `status.tsv` 的终态（done/stop/…）会被沿用；owner 之后的新评论会重新打开。
-4. `./status.sh` 看状态；停：`touch STOP`（调度器不再认领，等 worker 做完才退出，**不会杀 worker**）；SIGTERM/Ctrl-C 只退调度器，worker 继续（重启后按 `locks/` 认领回来）。
+## Deployment (done by the deployer; not executed in this directory)
+1. `bin/rt-labels-init -n` to see the list, then `bin/rt-labels-init` to create the labels.
+2. First run `RT_HOME=$PWD ./rt-sched.py --dry-run --once` to see the decisions (read-only, writes nothing to GitHub).
+3. After the old `rt-loop` is stopped (`touch ~/rt-loop/STOP`, and wait for its workers to finish), run `./rt-sched.py` in tmux. Terminal states from the old `status.tsv` (done/stop/…) are carried over; new owner comments reopen them.
+4. `./status.sh` shows status. To stop: `touch STOP` (the scheduler stops claiming and exits only after workers finish; **it does not kill workers**). SIGTERM/Ctrl-C only exits the scheduler; workers continue (after a restart they are reclaimed from `locks/`).
 
-## 自动合并（owner 决定）
-done → Gate 0 → （高风险）Gate 2 → **Gate 1：必须是 Sonnet 在“当前 head 的文件树”上给出的 `审查结论：通过`**（`rt-delegate reviewer` 把 verdict+树 ID 记到 `wt/<n>/.roundtable/state/reviews.log`；没有就由 worker 自己跑一次 `rt-delegate reviewer`，卡片来自 issue 正文 + `git diff base...HEAD`；打回→修复轮；不可用→重试一次，仍不可用则只标 `rt:ready-to-merge` 不合并并记日志）→ 写 `gates.json` + PR 评论 `<!-- rt:gates -->`（含 `Result: pass` 与 `Head: <sha7>`）→ 安全文件则走 Opus（`APPROVE-MERGE` + 先发 `<!-- rt:opus-merge -->` 评论，否则留给 owner）→ `gh pr checks --watch --required`（`RT_CI_TIMEOUT`，红/超时=Gate 失败走修复轮，没有 required checks 则不合并）→ `bin/rt-merge`。合并后：`rt:merged`，堆叠中的后继分支用 `git merge origin/main` + 普通 push 更新并把 PR base 改回 main（冲突→中止、写 SUPERVISOR.md、状态 queued 唤醒 Chief）。`RT_AUTOMERGE=0` 可整体关闭；`RT_HANDS_OFF_PRS` 里的 PR 不碰。
-堆叠：依赖 issue 已 CLOSED 即满足；依赖 PR 只是 `rt:ready-to-merge`（在等 CI/合并，且不是留给 owner 的）时仍可作为后备堆叠，但堆叠 PR 在其 base PR 合并前不会被合并。
+## Automatic merge (owner decision)
+done → Gate 0 → (high-risk) Gate 2 → **Gate 1: must be a `审查结论：通过` verdict from Sonnet on the file tree of the current head** (`rt-delegate reviewer` records the verdict and tree ID to `wt/<n>/.roundtable/state/reviews.log`; if there is none, the worker runs `rt-delegate reviewer` once itself, with the card built from the issue body and `git diff base...HEAD`; reject → fix round; unavailable → retry once, and if still unavailable only label `rt:ready-to-merge`, do not merge, and log it) → write `gates.json` and PR comment `<!-- rt:gates -->` (containing `Result: pass` and `Head: <sha7>`) → for safe files go to Opus (`APPROVE-MERGE`, after first posting the `<!-- rt:opus-merge -->` comment; otherwise leave it to the owner) → `gh pr checks --watch --required` (`RT_CI_TIMEOUT`; red or timeout = Gate failure → fix round; no required checks → no merge) → `bin/rt-merge`. After merge: `rt:merged`; stacked successor branches run `git merge origin/main` with a plain push and change the PR base back to main (conflict → abort, write SUPERVISOR.md, set status queued to wake Chief). `RT_AUTOMERGE=0` disables it entirely; PRs in `RT_HANDS_OFF_PRS` are not touched.
+Stacking: a dependency issue that is CLOSED counts as satisfied. A dependency PR that is only `rt:ready-to-merge` (waiting on CI/merge, and not left for the owner) can still be used as a fallback base, but a stacked PR is not merged until its base PR has merged.
 
-## PR 清扫（ADDENDUM2）
-调度器每轮在认领前扫描所有开放的 `rt/<n>-*` PR（不含 `rt:merged`/`rt:blocked`、无活跃 worker、issue 开放且未被 hold/ask）：head 上没有 gates 通过记录（`gates.json` 或 `<!-- rt:gates -->` 通过评论）→ 起 `rt-work.sh <n> --gate-only`（占一个 worker 槽）：复用/创建 worktree，落后 main 则 merge main，跑 Gate 0/1/2、等 CI、合并；失败或冲突则退化为带 SUPERVISOR.md 的普通 Chief 唤醒。瞬时 hold（base 未合并、main 红、同步）会在退避（`RT_SWEEP_RETRY`，默认 900s）后重试；`owner:*` hold 不再动。旧循环的终态（如 #16 `stop`）保持终态，除非 owner 之后评论。
+## PR sweep (ADDENDUM2)
+Each scheduler round, before claiming, scans all open `rt/<n>-*` PRs (excluding `rt:merged`/`rt:blocked`, no active worker, issue open and not held/asked). If the head has no passing gates record (`gates.json` or a passing `<!-- rt:gates -->` comment), it starts `rt-work.sh <n> --gate-only` (taking one worker slot): reuses/creates the worktree, merges main if behind, runs Gate 0/1/2, waits for CI, and merges. On failure or conflict it falls back to a normal Chief wake with SUPERVISOR.md. Transient holds (base not merged, main red, sync) are retried after a backoff (`RT_SWEEP_RETRY`, default 900s); `owner:*` holds are not touched. Terminal states from the old loop (e.g. #16 `stop`) stay terminal unless the owner comments afterwards.
 
-## main 红灯
-每轮读 main 最近一次完成的 CI：红 → `state/main_red`，暂停新认领与合并（revert 例外）；若头提交在 `state/merges.log` 里（我们自动合并的）→ 起 `bin/rt-revert`。绿 → 自动解除。
+## main red
+Each round, read the most recent completed CI on main: red → `state/main_red`, which pauses new claims and merges (revert excepted); if the head commit is in `state/merges.log` (merged by us automatically) → start `bin/rt-revert`. Green → cleared automatically.
 
-## 标签
-`type:feature|bug`、`priority:p0|p1|p2`、`rt:running`（已认领/有 worker）、`rt:ask`（等 owner 回复）、`rt:self`（循环自己拆出的子 issue）、`rt:proposed`+`rt:approved`、`rt:ready-to-merge`（Gate 通过；CI 绿后自动合并，或因安全文件/Gate 1 不可用/无 required checks 等留给 owner）、`rt:merged`（已由循环合并）、`rt:blocked`（停了，回复即恢复）、`rt:hold`（已拆分，子 issue 全关闭后自动解除）、`rt:owner`（只给 owner，不认领）。`rt:go` 是旧标签，忽略。
+## Labels
+`type:feature|bug`, `priority:p0|p1|p2`, `rt:running` (claimed / has a worker), `rt:ask` (waiting for owner reply), `rt:self` (sub-issue split off by the loop), `rt:proposed`+`rt:approved`, `rt:ready-to-merge` (gates passed; auto-merged after CI is green, or left to the owner because of a safety file / Gate 1 unavailable / no required checks, etc.), `rt:merged` (merged by the loop), `rt:blocked` (stopped; a reply resumes it), `rt:hold` (split; automatically released once all sub-issues are closed), `rt:owner` (for the owner only, not claimed). `rt:go` is a legacy label and is ignored.
 
-## 决策流程（worker）
-- Chief DECISION：`continue|wait|ask|done|stop|decompose|out-of-scope`。`ask` 第 2 行类别（`scope|credentials|destructive|direction`，没有 merge），第 3 行起问题。
-- `ask`：`credentials|destructive` 直接 `<!-- rt:ask -->` 问 owner；`scope|direction` 或类别不合法（含已取消的 `merge`）→ 先 `rt-decide`（`resolve` 则写 SUPERVISOR.md 再唤醒一次；每个 issue 最多 `RT_DECIDE_MAX=2` 次，计数持久化，owner 回复后清零）。
-- `stop`/无进展（连续 2 次唤醒无变化）/唤醒预算（`RT_MAXWAKE`）耗尽：问决策者一次，`resolve` 再唤醒，否则 `rt:blocked` + 评论原因。
-- `decompose`：按 `state/subissues/NN-*.md` 创建 `rt:self` 子 issue（`sub:NN` 换成真实编号），父 issue `rt:hold`；子 issue 全关闭后调度器解除 hold 并唤醒父 issue 核对验收（DECISION `done` + 第 2 行 `no-pr`）。子 issue 列表在 `state/children/<父>`。
-- `out-of-scope`：评论 + `rt:blocked`（不关闭；仅循环自己建的 `rt:self` 子 issue 会被关闭）。
-- `done`：见上面“自动合并”。Gate 0 隐私/测试失败永远不能被覆盖，只走修复（最多 2 轮，持久化）；Gate 0/2 与 Gate 1 的分歧由 Opus 判 `VERDICT: real|false-positive`（覆盖需要 Gate 1 通过）。XCHECK `unavailable` 不阻塞。
-- 所有 worker 发到 GitHub 的文本先过隐私扫描，不过则换成通用文案并写日志。
+## Decision flow (worker)
+- Chief DECISION: `continue|wait|ask|done|stop|decompose|out-of-scope`. For `ask`, line 2 is the category (`scope|credentials|destructive|direction`; there is no merge), and line 3 onward is the question.
+- `ask`: `credentials|destructive` go straight to the owner via `<!-- rt:ask -->`; `scope|direction` or an invalid category (including the cancelled `merge`) → first `rt-decide` (`resolve` writes SUPERVISOR.md and wakes once more; at most `RT_DECIDE_MAX=2` times per issue, count persisted, reset after an owner reply).
+- `stop` / no progress (2 consecutive wakes with no change) / wake budget (`RT_MAXWAKE`) exhausted: ask the decider once; `resolve` wakes again, otherwise `rt:blocked` + a comment with the reason.
+- `decompose`: creates `rt:self` sub-issues from `state/subissues/NN-*.md` (`sub:NN` is replaced with the real number), and the parent issue gets `rt:hold`. After all sub-issues close, the scheduler releases the hold and wakes the parent issue to check acceptance (DECISION `done` + line 2 `no-pr`). The sub-issue list is in `state/children/<parent>`.
+- `out-of-scope`: comment + `rt:blocked` (not closed; only `rt:self` sub-issues created by the loop itself are closed).
+- `done`: see "Automatic merge" above. Gate 0 privacy/test failures can never be overridden; they only go to fixes (at most 2 rounds, persisted). Disagreements between Gate 0/2 and Gate 1 are judged by Opus as `VERDICT: real|false-positive` (overriding requires Gate 1 to pass). XCHECK `unavailable` does not block.
+- All text a worker sends to GitHub passes the privacy scan first; if it fails, it is replaced with generic wording and logged.
 
-## 调度规则摘要
-候选：owner 作者、非 `[Owner]`/epic、无排除标签、无 `rt/<n>-*` 的开放 PR（除非 ask 恢复）、未终态、依赖满足（依赖已 CLOSED，或恰好 1 个 `rt:ready-to-merge` 依赖 PR → 以其分支为 base 堆叠；多于 1 个则等待）。同系列（首个 `[..]` 前缀）与有依赖关系的 issue 互斥。排序：bug → priority → `rt:self` → 创建时间。`--dry-run` 只打印 `DRY would claim` / `DRY skip #n: 原因`。
+## Scheduling rules summary
+Candidates: owner-authored, not `[Owner]`/epic, no excluded label, no open PR on `rt/<n>-*` (unless resuming from ask), not terminal, dependencies satisfied (dependency issue CLOSED, or exactly one `rt:ready-to-merge` dependency PR → stack on its branch as base; more than one → wait). Issues in the same series (first `[..]` prefix) and issues with dependencies are mutually exclusive. Ordering: bug → priority → `rt:self` → creation time. `--dry-run` only prints `DRY would claim` / `DRY skip #n: reason`.
 
-## 状态文件
-`status.tsv`（n state wake updated detail，与旧格式相同，`state/status.lock` 共享 flock）、`state/heartbeat`、`logs/sched.log`、`logs/work/<n>-<ts>.log`、`logs/gates/`、`logs/decide/`、`logs/chief/`、`locks/<n>.lock|.info`、`state/base/<n>`、`state/children/<n>`、`state/issues/<n>.json`、`state/merges.log`、`state/main_red`、`state/reverted/`。
+## State files
+`status.tsv` (n state wake updated detail; same format as before; shares the flock on `state/status.lock`), `state/heartbeat`, `logs/sched.log`, `logs/work/<n>-<ts>.log`, `logs/gates/`, `logs/decide/`, `logs/chief/`, `locks/<n>.lock|.info`, `state/base/<n>`, `state/children/<n>`, `state/issues/<n>.json`, `state/merges.log`, `state/main_red`, `state/reverted/`.
 
-## 已知限制
-见交付报告：Gate 0 隐私扫描只对 `test/` 下文件豁免通用密钥形状（`bin/rt-gate0` 的 `SECRET_SHAPE_KINDS` 所列类别），其他路径（如 `scripts/validate-site.mjs`）里的同类字符串仍会报警且不可被决策者覆盖；真实 pi/codex/Opus 链路只做了假 gh/pi/codex 的桩测试（见 `test/run-all.sh`）。
+## Known limitations
+See the delivery report: the Gate 0 privacy scan exempts only generic secret-shape kinds (those listed in `SECRET_SHAPE_KINDS` in `bin/rt-gate0`) for files under `test/`; the same kinds of strings in other paths (such as `scripts/validate-site.mjs`) still raise warnings and cannot be overridden by the decider. The real pi/codex/Opus chains have only been tested with fake gh/pi/codex stubs (see `test/run-all.sh`).
