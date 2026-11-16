@@ -68,6 +68,20 @@ test('fresh and host-freeze verdicts run nothing even with --restart', async (t)
   assert.equal(existsSync(join(ws, JOURNAL)), false);
 });
 
+test('STOP file with a stale heartbeat: the verdict is reported, but nothing is restarted and no restart is journaled', async (t) => {
+  const ws = await workspace(t); await beat(ws, WALL - 10_000);
+  await mkdir(join(ws, '.roundtable/state'), { recursive: true });
+  await writeFile(join(ws, '.roundtable/state/STOP'), '');
+  const { calls, exec } = recorder();
+  const r = await watchdog({ workspace: ws, pollMs: POLL, restart: true, unit: 'rtd.service', clock: () => sample(WALL), exec });
+  assert.equal(r.exit, 3);
+  assert.equal(r.reason, 'stale');
+  assert.equal(r.skipped, 'stop');
+  assert.equal(r.restart, undefined);
+  assert.deepEqual(calls, []);
+  assert.equal(existsSync(join(ws, JOURNAL)), false);
+});
+
 test('--unit not matching the unit-name pattern exits 2 before anything is restarted', async (t) => {
   const ws = await workspace(t); await beat(ws, WALL - 10_000);
   for (const unit of ['rtd', 'rtd.target', '../rtd.service', 'rtd service.service']) {
