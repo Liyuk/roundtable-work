@@ -8,7 +8,7 @@ This is an executable experiment protocol, not a standalone background service. 
 - Workspace: a temporary directory specified by the user; do not read or write real project data and do not access external accounts.
 - Chief: after receiving the task, create the task card and assign it to the developer; after receiving the result, assign a reviewer to check it independently. If acceptance conditions are missing, have the developer fill them in; deliver once it passes.
 - Developer: following the [shared instructions](../.agents/skills/roundtable-work/prompts/shared.md) and the [developer instructions](../.agents/skills/roundtable-work/prompts/roles/developer.md), write the file and report the actual path.
-- Reviewer: following the [shared instructions](../.agents/skills/roundtable-work/prompts/shared.md) and the [reviewer instructions](../.agents/skills/roundtable-work/prompts/roles/reviewer.md), review the file against the task card, point out what is missing, and give a verdict of pass (`通过`) or send back (`打回`).
+- Reviewer: following the [shared instructions](../.agents/skills/roundtable-work/prompts/shared.md) and the [reviewer instructions](../.agents/skills/roundtable-work/prompts/roles/reviewer.md), review the file against the task card, point out what is missing, and give a verdict of pass (`通过 (pass)`) or send back (`打回 (reject)`).
 - Budget: at most two runs per role; stop and report when there is no permission, no progress, or the harness cannot wake up.
 
 ## Steps and evidence

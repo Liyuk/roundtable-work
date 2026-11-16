@@ -35,7 +35,7 @@ The overlapping or actionable parts of the two groups' reports of friction have 
 - Executors do not commit by default; after review passes, the Chief commits on a feature branch; `policy.md` allows this by default.
 - Temporary files are uniformly placed in `.roundtable/scratch/<assignment>/`; the Chief checks for out-of-bounds writes at acceptance.
 - How to record delegation events when there are only two kinds of receipt; a harness error before sending does not count as an attempt.
-- The overall continuation decision when multiple items are in different states (such as "ask: Q1; the rest done"), and the notation for "satisfied by default (pending confirmation)" (`按默认已满足（待确认）`).
+- The overall continuation decision when multiple items are in different states (such as "ask: Q1; the rest done"), and the notation for "satisfied by default (pending confirmation)" (`satisfied by default (pending confirmation)`).
 - Handling of non-blocking suggestions, when changes after review must be re-reviewed, and the line between the Chief's verification and execution.
 - The continuation record is written in full only on the first turn, when the decision changes, and on the last turn; a lightweight mode is added.
 - Delegation goes to in-process subagents by default; when the session directory differs from the workspace, the card writes absolute paths.
