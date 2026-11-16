@@ -37,6 +37,7 @@ reference or reason, on a `not ported:` row that names no issue, a missing refer
 | waitguard | Bounded wait with a cycle-gap WARN. | not ported: pending #333 [RT-O-3] |
 | tmpclean | Prune leaked test temp and lock directories. | `runtime/lib/prune.mjs` + `test/runtime/prune.test.mjs` :: RT-S6 prune removes only old, owned rt temp entries with no live pid and keeps the rest |
 | cirerun | Re-run only cancelled required CI, then hold. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: cancelled-only required CI requests one re-run and holds instead of failing into the fixer path |
+| mainrerun | Main-red CI re-run goes through the real gh; success is logged only when the re-run is accepted. | `host/rt-sched.py` + `host/test/mainrerun.test.mjs` :: main-red re-run uses the real gh and logs WARN with no success line when the re-run fails (#539) |
 | ciwait | Only pending required CI is a resumable hold; every other not-green answer fails closed. | `runtime/lib/gates.mjs` + `test/runtime/gates.test.mjs` :: only pending required CI is a resumable hold; every other not-green answer fails closed before squash |
 | mergelock | Only one holder at a time may own the merge lock. | `runtime/lib/lock.mjs` + `test/runtime/lock.test.mjs` :: lock: stale takeover is mutually exclusive across real processes: one winner per round, never two holders |
 | nopr-close | Close an issue that has no pull request. | not ported: no close-without-PR path in the runtime (parent-close covers decomposition parents only); tracked by #428 |
