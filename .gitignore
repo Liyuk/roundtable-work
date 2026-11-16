@@ -5,4 +5,5 @@ node_modules/
 !.env.example
 .roundtable/state/rtd.lock.d/
 .roundtable/
+host/releases/
 /.claude/agents/rt-*.md
