@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { freemem, loadavg, cpus, totalmem } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { createGovernor, governorDefaults, readMemAvailableRatio } from './governor.mjs';
+import { GAP_CLAIM_HOLD_MS, admissionHold, createGovernor, governorDefaults, readAdmissionConfig, readMemAvailableMiB, readMemAvailableRatio, readPsiSomeAvg60 } from './governor.mjs';
 import { openInterventions } from './interventions.mjs';
 import { GAP_FACTOR, boundedWait, createCapState, createFreezeLedger, effectiveCap, recordCycleGap } from './liveness.mjs';
 import { HEARTBEAT_PATH, SCHEMA_VERSION, parseHeartbeat, writeHeartbeat } from '../supervisor/heartbeat.mjs';
@@ -19,6 +19,7 @@ export const LEDGER_PATH = '.roundtable/state/freeze-ledger.jsonl';
 /** The workspace root that contains `.roundtable/` for a work root ending in `.roundtable`; undefined otherwise. */
 export const loopWorkspace = (workRoot) => (basename(resolve(workRoot)) === '.roundtable' ? dirname(resolve(workRoot)) : undefined);
 const ERROR_CODE_POINTS = 300;
+const THROTTLE_LOG_MS = 10 * 60_000; // the same throttle reason is logged at most once per this interval
 const DEADLINE = Symbol('cycle deadline');
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -27,8 +28,14 @@ const clip = (text, n) => Array.from(text).slice(0, n).join('');
 /** Reads a state file; undefined when absent. */
 const readText = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined);
 
-/** Host sample for the governor: 1-minute load, CPU count and MemAvailable ratio (falls back to os.freemem/totalmem). */
-const hostSample = () => ({ load1: loadavg()[0], cpus: cpus().length, memAvailableRatio: readMemAvailableRatio(readText('/proc/meminfo'), freemem() / totalmem()) });
+/** A /proc file's text; undefined when it cannot be read. */
+const readProc = (file) => { try { return readFileSync(file, 'utf8'); } catch { return undefined; } };
+
+/** Host sample: 1-minute load, CPU count, MemAvailable ratio (falls back to os.freemem/totalmem), MemAvailable MiB and memory PSI some avg60. */
+const hostSample = () => {
+  const meminfo = readProc('/proc/meminfo');
+  return { load1: loadavg()[0], cpus: cpus().length, memAvailableRatio: readMemAvailableRatio(meminfo, freemem() / totalmem()), memAvailableMiB: readMemAvailableMiB(meminfo), memPsiAvg60: readPsiSomeAvg60(readProc('/proc/pressure/memory')) };
+};
 
 /** Replaces the file atomically: write a temp file in the same directory, then rename it over the target. */
 function writeAtomic(file, text) {
@@ -64,8 +71,9 @@ export function watchdogVerdict({ heartbeat, ledgerEntries, now, pollMs }) {
 }
 
 /**
- * Runs `pass({ admit, workers })` once per cycle until `signal` aborts. Each cycle first runs `prune()`, then `budget()`;
+ * Runs `pass({ admit, workers, claimHold })` once per cycle until `signal` aborts. Each cycle first runs `prune()`, then `budget()`;
  * `admit` is false when the budget resolves false, and the pass still runs so the inbox and outbox work continue.
+ * `claimHold` is true while the host is under admission thresholds or within GAP_CLAIM_HOLD_MS after a cycle gap; running work is not touched.
  * Resolves 0 on abort, EXIT_CYCLE_DEADLINE when a pass does not settle within `cycleDeadlineMs`. A throwing pass writes a
  * stopped heartbeat and rethrows.
  */
@@ -88,13 +96,23 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
     }, { write: (path, text) => writeAtomic(join(workRoot, path), text) });
   };
 
-  let last = null;
+  let last = null, gapHoldUntil = 0;
+  const throttled = new Map(); // reason key -> wall time of its last throttle log line
   while (!signal?.aborted) {
     const start = wall(), m0 = mono();
-    if (last) recordCycleGap({ ledger, pollMs, start: last.wall, end: start, wallDeltaMs: start - last.wall, monoDeltaMs: m0 - last.mono });
+    const gap = last ? recordCycleGap({ ledger, pollMs, start: last.wall, end: start, wallDeltaMs: start - last.wall, monoDeltaMs: m0 - last.mono }) : null;
+    if (gap) gapHoldUntil = start + GAP_CLAIM_HOLD_MS;
     last = { wall: start, mono: m0 };
 
     const s = sample(), next = governor.step(s);
+    const reasons = admissionHold(s, readAdmissionConfig());
+    if (start < gapHoldUntil) reasons.push('gap');
+    const claimHold = reasons.length > 0;
+    const key = reasons.join(',');
+    if (claimHold && (throttled.get(key) ?? -Infinity) <= start - THROTTLE_LOG_MS) {
+      throttled.set(key, start);
+      console.error(`INFO throttle: reason=${key} load1=${s.load1} cpus=${s.cpus} memAvailableMiB=${s.memAvailableMiB} memPsiAvg60=${s.memPsiAvg60}`);
+    }
     if (next !== governorCap) {
       const at = new Date(start).toISOString(), workspace = loopWorkspace(workRoot);
       if (workspace) openInterventions(workspace).append({ at, category: 'resource', ref: 'none', internalized: 'no', source: 'self', reason: `load1=${s.load1} cpus=${s.cpus} memAvailableRatio=${s.memAvailableRatio} from=${governorCap} to=${next}` }, { key: `governor:${at}:${governorCap}->${next}` });
@@ -108,7 +126,7 @@ export async function runLoop({ pass, pollMs, cycleDeadlineMs, workRoot, baseWor
       const cycle = async () => {
         if (prune) await prune();
         const admit = !budget || (await budget());
-        return pass({ admit, workers: () => Math.min(effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }), governorCap) });
+        return pass({ admit, claimHold, workers: () => Math.min(effectiveCap({ base: baseWorkers, ledger, now: wall(), state: cap }), governorCap) });
       };
       outcome = await Promise.race([cycle(), deadline]);
     } catch (error) {
