@@ -53,6 +53,17 @@ test('verdict line: pass continues, rejection spends a developer retry, block as
   assert.equal(reviewer({ output: '审查结论: 通过' }).class, 'review_passed', 'ASCII colon accepted');
 });
 
+test('English verdict line: Verdict: pass/reject/block, case-insensitive, ASCII or fullwidth colon', () => {
+  const pass = reviewer({ output: 'Verdict: pass\nfine' });
+  assert.deepEqual([pass.class, pass.verdict, pass.consumesDeveloperRetry], ['review_passed', 'passed', false]);
+  const rej = reviewer({ output: 'verdict: REJECT\nfix' });
+  assert.deepEqual([rej.class, rej.verdict, rej.consumesDeveloperRetry], ['review_rejected', 'rejected', true]);
+  const blk = reviewer({ output: 'Verdict：block' });
+  assert.deepEqual([blk.class, blk.verdict, blk.decision], ['human_block', 'blocked', 'ask']);
+  assert.equal(reviewer({ output: 'Verdict:   pass  ' }).class, 'review_passed', 'optional spaces accepted');
+  assert.equal(reviewer({ output: 'Verdict: maybe' }).reason, 'unparseable_verdict');
+});
+
 test('developer and test failures spend a developer retry; scope mismatch and human block do not', () => {
   assert.equal(classify({ stage: 'developer', timedOut: true, output: 'partial' }).consumesDeveloperRetry, true);
   assert.equal(classify({ stage: 'developer', timedOut: true }).class, 'quota_wait', 'an output-less developer timeout is a candidate wait');

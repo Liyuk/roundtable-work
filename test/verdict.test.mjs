@@ -147,3 +147,9 @@ test('Error message is clear for invalid input', () => {
     assert.ok(err.message.includes(invalidInput));
   }
 });
+
+test('English writer words: pass, reject, block map to the normalized forms', () => {
+  assert.equal(parseVerdict('pass'), 'passed');
+  assert.equal(parseVerdict('Reject'), 'rejected');
+  assert.equal(parseVerdict('BLOCK'), 'blocked');
+});
