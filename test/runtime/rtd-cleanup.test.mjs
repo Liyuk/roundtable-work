@@ -9,6 +9,7 @@ import { runQueue } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { createWorktreeManager } from '../../runtime/lib/worktree.mjs';
 import { createIntakeProvider } from '../../runtime/lib/intake.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 // Locks live in a private anchor, never in the work root (same arrangement as daemon-workers.test.mjs).
 const ANCHOR = await mkdtemp(join(tmpdir(), 'rt-anchor-'));
@@ -85,7 +86,7 @@ function world(worktree, { ci = true } = {}) {
       crossCheck: async () => true,
     },
     github: {
-      getPullRequest: async () => ({ state: 'open', body: 'Closes #53', draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
+      getPullRequest: async () => ({ state: 'open', body: upsertPrRecord('Closes #53', buildPrRecord({ issue: '53', head: head(), tree: 'tree1', passed: ['gate0', 'gate1', 'ci'] })), draft: false, mergeable: true, head: head(), files: ['runtime/rtd.mjs'], ownerLogin: 'owner', comments: [] }),
       requiredGreen: async () => (state.ci === true ? true : { green: false, status: state.ci }),
       squashMerge: async (_pr, options) => { squashes.push(options); return { mergeCommit: 'abcdef0123456789' }; },
       addLabel: async () => {},

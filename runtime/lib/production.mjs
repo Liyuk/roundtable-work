@@ -7,7 +7,8 @@
  * for owner safety approval, { ownerLogin, comments: [{ author: { login }, body }] }, where files is the pull
  * request's changed paths: the merge entry point derives the safety-file set from it and fails closed when it is
  * absent; body is the pull request description (a string: a stacked hold reads `Stacked on #N` from it and fails
- * closed when it is missing). The monitor uses `state: 'merged'`/`merged: true` with an optional
+ * closed when it is missing). PR body read and write come from the GitHub client passed to runQueue
+ * (getPullRequestBody / updatePullRequestBody); merge refuses when they are absent. They are not in the provider list above. The monitor uses `state: 'merged'`/`merged: true` with an optional
  * `mergeCommit` SHA to resolve a merge whose outcome was unknown, and a closed pull request must report
  * `merged: false` to be treated as unmerged. github.squashMerge resolves only after a successful squash and returns
  * { mergeCommit: <SHA> }. github.setBase(pr, base) updates the pull request's base through the provider.

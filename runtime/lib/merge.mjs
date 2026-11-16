@@ -1,5 +1,7 @@
 import { safetyFiles } from './safety.mjs';
 import { ledgerEntry } from './state.mjs';
+import { buildPrRecord, validatePrRecord, extractPrRecord, upsertPrRecord } from './pr-record.mjs';
+import { isDeepStrictEqual } from 'node:util';
 import { ciAllowsMerge } from './local-checks.mjs';
 import { MERGE_MODES } from './merge-mode.mjs';
 
@@ -16,7 +18,7 @@ export class ApprovalRequired extends Error {
 }
 
 /** The sole squash merge entry point. The injected client owns all GitHub effects. */
-export function createMergeEntryPoint({ github, gateState, store, tierOf, mode = 'dry-run', localChecks = { enabled: false } }) {
+export function createMergeEntryPoint({ github, gateState, store, tierOf, mode = 'dry-run', localChecks = { enabled: false }, pullRequestBody }) {
   if (!github || !gateState) throw new TypeError('github and gateState are required');
   const resolvedMode = MERGE_MODES.includes(mode) ? mode : 'dry-run';
   for (const name of ['getPullRequest', 'requiredGreen', 'squashMerge']) {
@@ -34,6 +36,9 @@ export function createMergeEntryPoint({ github, gateState, store, tierOf, mode =
         !required.every((gate) => evidence.passed.includes(gate) && persisted.passed?.includes(gate))) {
       throw new Error('Gate evidence is missing or stale');
     }
+    const record = buildPrRecord({ issue: evidence.issue, head: persisted.head, tree: persisted.tree, passed: persisted.passed, rounds: evidence.roundMeta, usage: evidence.usage });
+    const valid = validatePrRecord(record, { head: evidence.head, tree: evidence.tree, requiredGates: required });
+    if (!valid.ok) throw new Error(`PR record is invalid: ${valid.reason}`);
     // The merge record lives in the ledger: a replayed squash for the same head returns the recorded merge instead of merging again.
     const mergeId = `merge:${evidence.head}`;
     const dryRunId = `dry-run:${evidence.head}`;
@@ -65,6 +70,22 @@ export function createMergeEntryPoint({ github, gateState, store, tierOf, mode =
     if (resolvedMode === 'dry-run') {
       if (store) await store.append(evidence.issue, { id: dryRunId, type: 'would-merge', detail: { pr } });
       return { held: 'dry-run', mode: 'dry-run' };
+    }
+    // The body must carry this exact record before squash; a missing body fails closed.
+    const current = pullRequestBody ? await pullRequestBody.read(pr) : live.body;
+    if (typeof current !== 'string') throw new Error('PR record check failed: pull request body not supplied');
+    if (pullRequestBody) {
+      try {
+        await pullRequestBody.write(pr, upsertPrRecord(current, record));
+      } catch (error) {
+        throw new Error(`PR record update failed: ${error.message}`);
+      }
+      const reread = await pullRequestBody.read(pr);
+      if (typeof reread !== 'string' || !isDeepStrictEqual(extractPrRecord(reread), record)) {
+        throw new Error('PR record is missing or stale after the pull request body update');
+      }
+    } else if (!isDeepStrictEqual(extractPrRecord(current), record)) {
+      throw new Error('PR record is missing or stale in the pull request body');
     }
     const merged = await github.squashMerge(pr, { method: 'squash', sha: live.head });
     if (store) await store.append(evidence.issue, { id: mergeId, type: 'merged', detail: { pr } });

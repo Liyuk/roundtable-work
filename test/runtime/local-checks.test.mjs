@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { runGates } from '../../runtime/lib/gates.mjs';
 import { createMergeEntryPoint } from '../../runtime/lib/merge.mjs';
 import { loadLocalChecksConfig, localCheckEntry, localCheckPasses, ciAllowsMerge } from '../../runtime/lib/local-checks.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 const LOCAL = { enabled: true, command: 'npm run check' };
@@ -144,13 +145,14 @@ const evidence = { issue: '58', head: 'abc1234', tree: 'tree-a', highRisk: false
 
 function mergeFixture({ checks = absent, localChecks = LOCAL, ledgerEntries = [] } = {}) {
   const calls = [];
+  const body = upsertPrRecord('Closes #58', buildPrRecord({ issue: '58', head: 'abc1234', tree: 'tree-a', passed: persisted.passed }));
   const ledger = [...ledgerEntries];
   const entry = createMergeEntryPoint({
     mode: 'agent', localChecks,
     gateState: { async get() { return persisted; } },
     store: { async load() { return { ledger }; }, async append() {} },
     github: {
-      async getPullRequest() { return { body: 'Closes #58', state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
+      async getPullRequest() { return { body, state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
       async requiredGreen() { return checks; },
       async squashMerge(_pr, options) { calls.push(options); return 'merged'; },
     },

@@ -247,10 +247,10 @@ async function fixture() {
   return { root, repo, workRoot, bin, ghLog: join(root, 'gh.log'), providerLog: join(root, 'providers.log') };
 }
 
-// Fake gh: one admissible, unclaimed issue for the reads; every call is recorded.
+// Fake gh: one admissible, unclaimed issue for the reads, and a pull request body for the merge body read; every call is recorded.
 async function fakeGh({ bin, ghLog }) {
   const issue = { id: '21', number: 21, state: 'OPEN', author: { login: 'owner' }, title: '[A] cutover', body: ADMISSIBLE, createdAt: '2020-01-01', labels: [{ name: 'type:feature' }], comments: [] };
-  const answers = { 'repo view': { owner: { login: 'owner' } }, 'issue list': [issue], 'issue view': { comments: [], state: 'OPEN', labels: [] }, 'pr list': [], 'issue edit': '', 'issue comment': '' };
+  const answers = { 'repo view': { owner: { login: 'owner' } }, 'issue list': [issue], 'issue view': { comments: [], state: 'OPEN', labels: [] }, 'pr list': [], 'pr view': { body: 'Closes #21' }, 'issue edit': '', 'issue comment': '' };
   await writeFile(join(bin, 'gh'), `#!${process.execPath}
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runGates, recoverRedMain, closesLink } from '../../runtime/lib/gates.mjs';
 import { createMergeEntryPoint } from '../../runtime/lib/merge.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
@@ -39,8 +40,10 @@ function gatedRecord(overrides = {}) {
 
 const rerunCount = (ledger) => ledger.filter((entry) => entry.type === 'ci_rerun').length;
 
+const BODY = upsertPrRecord('', buildPrRecord({ issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'] }));
+
 function livePullRequest(files) {
-  return { state: 'open', draft: false, head: 'abc1234', mergeable: true, ...(files === undefined ? {} : { files }) };
+  return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, ...(files === undefined ? {} : { files }) };
 }
 
 function entryFixture({ persisted = gatedRecord(), live = livePullRequest([]) } = {}) {
@@ -104,7 +107,7 @@ test('single merge entry point rechecks persisted gates, live head, mergeability
   const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return { issue: '53', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false }; } },
     github: {
-      async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] }; },
+      async getPullRequest() { calls.push('pr'); return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files: [] }; },
       async requiredGreen() { calls.push('ci'); return true; },
       async squashMerge(_pr, options) { calls.push(['merge', options]); return 'merged'; },
     },
@@ -341,7 +344,7 @@ test('approved safety-file change records approval at gate time and merges throu
   const entry = createMergeEntryPoint({ mode: 'agent',
     gateState: { async get() { return persisted; } },
     github: {
-      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, files }; },
+      async getPullRequest() { return { state: 'open', draft: false, head: 'abc1234', mergeable: true, body: BODY, files }; },
       async requiredGreen() { return true; },
       async squashMerge(_pr, options) { return { merged: options }; },
     },

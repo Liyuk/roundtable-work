@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { runQueue } from '../../runtime/rtd.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { observeAndCheckTransition } from '../../runtime/lib/observe.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 const sha = 'a'.repeat(40);
@@ -212,7 +213,8 @@ test('finalizing runs gates before requiring current-head evidence and refuses s
         async context() { return { pr: 1, head: sha, tree: 'tree', highRisk: false, changedFiles: [] }; },
         gates: { async gate0() { gatesRan = true; return true; }, async reviewer() { return { passed: true, head: sha, rationale: RATIONALE }; } },
         github: {
-          async requiredGreen() { return true; }, async setBase() {}, async getPullRequest() { return { body: 'Closes #109', state: 'open', head: sha, mergeable: true, files: [] }; },
+          async requiredGreen() { return true; }, async setBase() {}, async getPullRequest() { return { body: `Closes #109
+${upsertPrRecord('', buildPrRecord({ issue: '109', head: sha, tree: 'tree', passed: ['gate0', 'gate1', 'ci'] }))}`, state: 'open', head: sha, mergeable: true, files: [] }; },
           async squashMerge() { squashes++; return { mergeCommit: sha }; },
         },
       };

@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMergeEntryPoint } from '../../runtime/lib/merge.mjs';
 import { readMergeConfig } from '../../runtime/lib/merge-mode.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 
 const gated = { issue: '59', head: 'abc1234', tree: 'tree-a', passed: ['gate0', 'gate1', 'gate2', 'ci'], safetyFiles: [], safetyApproved: false };
 const evidence = { issue: '59', head: 'abc1234', tree: 'tree-a', highRisk: true, passed: ['gate0', 'gate1', 'gate2', 'ci'], ciGreen: true };
-const live = { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [] };
+const body = upsertPrRecord('', buildPrRecord({ issue: '59', head: 'abc1234', tree: 'tree-a', passed: gated.passed }));
+const live = { state: 'open', draft: false, head: 'abc1234', mergeable: true, files: [], body };
 
 function fixture({ mode, checks = true, ledger = [] } = {}) {
   const calls = [];

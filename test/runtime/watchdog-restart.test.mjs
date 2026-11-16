@@ -132,6 +132,7 @@ test('the restart window rolls: restarts older than an hour no longer count', as
 });
 
 test('--alert-issue posts an outbox alert once as a marked comment; without it the alert is only enqueued', async (t) => {
+  t.mock.method(Date, 'now', () => WALL);
   const ws = await workspace(t); await beat(ws, WALL - 10_000);
   t.mock.method(Date, 'now', () => WALL); // the alert day comes from Date.now() when not restarting
   const day = dayOf(WALL);

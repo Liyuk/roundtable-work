@@ -6,6 +6,7 @@ import { runQueue } from './observation-fixture.mjs';
 import { createStateStore } from '../../runtime/lib/state.mjs';
 import { createProductionAdapter } from '../../runtime/lib/production.mjs';
 import { runGates } from '../../runtime/lib/gates.mjs';
+import { buildPrRecord, upsertPrRecord } from '../../runtime/lib/pr-record.mjs';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 const PASS = '审查结论：通过';
@@ -14,6 +15,9 @@ const BASE_SHA = 'a'.repeat(40);
 const REVERT_SHA = 'b'.repeat(40);
 const MODELS = { reviewer: 'model-review-strong', crossCheck: 'model-crosscheck' };
 const tmp = () => mkdtemp(join(process.cwd(), 'rt118-hold-'));
+// The PR body carries the record of the gates that passed for the current head and tree.
+const recordBody = (state) => upsertPrRecord('', buildPrRecord({ issue: '53', head: state.head, tree: state.tree, passed: ['gate0', 'gate1', ...(state.highRisk ? ['gate2'] : []), 'ci'] }));
+const revertBody = upsertPrRecord('', buildPrRecord({ issue: '92', head: REVERT_SHA, tree: 'reverttree', passed: ['gate0', 'gate1', 'ci'] }));
 function observationProvider() {
   let sha;
   return {
@@ -44,7 +48,8 @@ function world(overrides = {}) {
     async addLabel(_pr, label) { log(`label:${label}`); },
     async createComment(pr, body) { log(['comment', pr, body]); },
     async recordedEscalationApproval() { log('approval'); return w.state.approval; },
-    async setBase() {}, async getPullRequest() { log('pr'); return { body: 'Closes #53', state: 'open', draft: false, mergeable: true, head: w.state.head, files: w.state.changedFiles, ownerLogin: w.state.ownerLogin, comments: w.state.comments }; },
+    async setBase() {}, async getPullRequest() { log('pr'); return { state: 'open', draft: false, mergeable: true, head: w.state.head, body: `Closes #53
+${recordBody(w.state)}`, files: w.state.changedFiles, ownerLogin: w.state.ownerLogin, comments: w.state.comments }; },
     async requiredGreen() {
       log('ci');
       if (w.state.ciThrow) throw new Error('checks provider offline');
@@ -388,7 +393,9 @@ function productionWorld(overrides = {}) {
     ...w.github,
     async setBase() {}, async getPullRequest(pr) {
       w.calls.push(`pr:${pr}`);
-      return { body: pr === 90 ? 'Closes #53' : (w.state.revertBody ?? 'Closes #92'), state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : REVERT_SHA, files: w.state.changedFiles };
+      return { state: 'open', draft: false, mergeable: true, head: pr === 90 ? w.state.head : REVERT_SHA, body: pr === 90 ? `Closes #53
+${recordBody(w.state)}` : `${w.state.revertBody ?? 'Closes #92'}
+${revertBody}`, files: w.state.changedFiles };
     },
     async squashMerge(pr, options) { w.calls.push(['squash', pr, options]); return structuredClone(w.state.squashResult); },
     async mainStatus() {
