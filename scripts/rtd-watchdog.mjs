@@ -87,6 +87,7 @@ export async function watchdog({ workspace, pollMs, restart = false, unit, alert
     return finish(verdict);
   }
   if (verdict.reason !== 'stale') return finish(verdict);
+  if (existsSync(join(root, '.roundtable/state/STOP'))) return finish({ ...verdict, skipped: 'stop' });
 
   // The watchdog's own wall clock ran more than one poll ahead of its monotonic clock on the same boot: it was frozen,
   // so the stale heartbeat says nothing about the daemon.

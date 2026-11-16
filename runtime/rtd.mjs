@@ -53,6 +53,7 @@ import { ensureSelfReviewTimer, gatherInputs, runSelfJob } from './lib/self-revi
 import { loadGoals } from './lib/goals.mjs';
 import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
+import { ensurePatrolTimer, patrolCadenceMs, runPatrol } from './lib/patrol-timer.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
 import { selfMetrics } from './lib/self-metrics.mjs';
 import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
@@ -1193,6 +1194,7 @@ async function main(argv) {
   }
   const writer = createGitHubWriter({ repo: args.repo });
   const outbox = args.loop ? openOutbox(workspace) : undefined;
+  const patrolMs = args.loop ? patrolCadenceMs(process.env) : undefined;
   const reader = args.github ? createGitHubReader({ repo: args.repo }) : undefined;
   // Daily self-review (RT-S8b) runs in GitHub loop mode only; the hygiene denylist is pinned by the operator through the environment.
   const goals = args.loop ? await loadGoals() : null;
@@ -1228,6 +1230,7 @@ async function main(argv) {
       const dispatchLine = makeDispatchLine({ root: workspace, owner, policy });
       const timers = openTimers(workspace);
       if (selfReview) ensureSelfReviewTimer(timers, selfReview.goals, Date.now());
+      ensurePatrolTimer(timers, Date.now(), patrolMs);
       if (selfReview) ensureDigestTimer(timers, goals, Date.now());
       await cycleSteps({ root: workspace, inbox, timers, reader,
         dispatchLine: async (batch) => {
@@ -1243,9 +1246,10 @@ async function main(argv) {
             const text = buildDigest({ window: signals.metrics.window, metrics: signals.metrics, entries: signals.entries, merged, actions, stage: 'not computed (RT-S12)', thresholds: signals.thresholds, deadLetters: signals.deadLetters });
             await enqueueDigest({ outbox, now: Date.now(), issue: goals.reporting.digestIssue, text, hygiene: selfReview.hygiene });
           }
-          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job && event.payload.job !== 'digest') {
+          for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job && !['digest', 'patrol'].includes(event.payload.job)) {
             await runSelfJob({ root: workspace, now: Date.now(), event, goals: selfReview.goals, inputs: gatherInputs(workspace), client: selfReview.client, hygiene: selfReview.hygiene });
           }
+          for (const event of batch.events) if (event.kind === 'heartbeat' && event.payload.job === 'patrol') await runPatrol({ root: workspace, now: Date.now(), outbox });
           await dispatchLine(batch);
         } });
       await sweepAskTimeouts({ root: workspace, policy });
