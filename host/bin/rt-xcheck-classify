@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Classify Gate 2 (rt-xcheck) output.
+
+Reads a raw or already-classified xcheck transcript on stdin or from a file
+argument. Prints:
+
+  XCHECK: pass|fail
+  FINDING<TAB>severity<TAB>scope<TAB>location<TAB>summary
+  ...
+
+Merge-blocking findings are in-scope AND severity high or critical.
+If the model said fail but no FINDING line can be parsed, the output is treated
+as a single blocking finding (fail closed). The first-line verdict is recomputed
+from the classified findings; an unparseable fail cannot be downgraded to pass.
+"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+
+SEV = {"critical", "high", "medium", "low"}
+SEV_ALIASES = {
+    "crit": "critical", "severe": "critical", "p0": "critical",
+    "p1": "high", "med": "medium", "p2": "medium", "minor": "low", "p3": "low",
+}
+SCOPE_IN = {"in", "in-scope", "inscope", "in_scope", "yes", "scope-in"}
+SCOPE_OUT = {"out", "out-of-scope", "outofscope", "out_scope", "out-of_scope", "no", "scope-out"}
+
+FINDING_LINE = re.compile(
+    r"^(?:FINDING|finding)\s*"
+    r"(?:[|:]\s*|\t+|[ ]+)?"
+    r"(?:severity\s*[=:]\s*)?"
+    r"(?P<sev>critical|high|medium|low|crit|severe|p0|p1|med|p2|minor|p3)\s*"
+    r"(?:[|:]\s*|\t+|[ ]+)"
+    r"(?:scope\s*[=:]\s*)?"
+    r"(?P<scope>in(?:-?scope)?|out(?:-of-scope)?|out_scope|yes|no|scope-in|scope-out)\s*"
+    r"(?:[|:]\s*|\t+|[ ]+)"
+    r"(?:file\s*[=:]\s*|loc(?:ation)?\s*[=:]\s*)?"
+    r"(?P<loc>\S+?)\s*"
+    r"(?:[|:]\s*|\t+|[ ]+|--|—|-)\s*"
+    r"(?P<summary>.+?)\s*$",
+    re.I,
+)
+
+# "FINDING severity=high scope=in file=foo:1 summary here"
+KV_LINE = re.compile(r"^(?:FINDING|finding)\b(?P<rest>.+)$", re.I)
+KV = re.compile(r"""\b(severity|sev|scope|file|loc|location)\s*[=:]\s*["']?([^\s,;|]+)["']?""", re.I)
+
+BULLET = re.compile(
+    r"^\s*[-*]\s+`?(?P<loc>[\w./-]+(?:\.\w+)?:\d+)`?\s*(?:--|—|-|–|:)\s*(?P<summary>.+?)\s*$",
+)
+VERDICT = re.compile(r"^XCHECK:\s*(pass|fail|unavailable)\s*$", re.I)
+
+
+def norm_sev(s: str) -> str:
+    s = (s or "").strip().lower()
+    return SEV_ALIASES.get(s, s) if s not in SEV else s
+
+
+def norm_scope(s: str) -> str | None:
+    s = (s or "").strip().lower()
+    if s in SCOPE_IN:
+        return "in"
+    if s in SCOPE_OUT:
+        return "out"
+    return None
+
+
+def clean_summary(s: str) -> str:
+    s = re.sub(r"\s+", " ", (s or "").strip())
+    # never keep backticks-only wrappers
+    return s.strip(" \t\"'")
+
+
+def parse_finding_line(line: str):
+    raw = line.strip()
+    # Preferred machine format: FINDING<TAB>sev<TAB>scope<TAB>loc<TAB>summary
+    # or already-classified: FINDING<TAB>sev<TAB>scope<TAB>loc<TAB>blocking|followup<TAB>summary
+    if raw.upper().startswith("FINDING"):
+        parts = raw.split("\t")
+        if len(parts) >= 5:
+            sev, scope, loc = norm_sev(parts[1]), norm_scope(parts[2]), parts[3].strip(" `")
+            rest = parts[4:]
+            if rest and rest[0] in ("blocking", "followup"):
+                rest = rest[1:]
+            summary = clean_summary("\t".join(rest))
+            if sev in SEV and scope and loc:
+                return sev, scope, loc, summary or "(no summary)"
+    m = FINDING_LINE.match(raw)
+    if m:
+        sev = norm_sev(m.group("sev"))
+        scope = norm_scope(m.group("scope"))
+        if sev in SEV and scope:
+            return sev, scope, m.group("loc").strip(" `"), clean_summary(m.group("summary"))
+    m = KV_LINE.match(line.strip())
+    if not m:
+        return None
+    rest = m.group("rest")
+    kv = {k.lower(): v for k, v in KV.findall(rest)}
+    sev = norm_sev(kv.get("severity") or kv.get("sev") or "")
+    scope = norm_scope(kv.get("scope") or "")
+    loc = (kv.get("file") or kv.get("loc") or kv.get("location") or "").strip(" `")
+    if sev not in SEV or not scope or not loc:
+        return None
+    # summary is the remainder after removing k=v tokens
+    summary = KV.sub(" ", rest)
+    summary = re.sub(r"^(?:[|:]\s*|\s+)", "", summary)
+    return sev, scope, loc, clean_summary(summary) or "(no summary)"
+
+
+def parse_bullet(line: str):
+    m = BULLET.match(line)
+    if not m:
+        return None
+    return m.group("loc"), clean_summary(m.group("summary"))
+
+
+def blocking(sev: str, scope: str) -> bool:
+    if os.environ.get("RT_LENIENT", "0") == "1":  # owner 2026-11-12 lenient mode: only in-scope critical blocks
+        return scope == "in" and sev == "critical"
+    return scope == "in" and sev in ("high", "critical")
+
+
+# fail closed: unstructured/unparseable failures stay blocking in lenient mode too
+FAILSEV = "critical" if os.environ.get("RT_LENIENT", "0") == "1" else "high"
+
+
+def classify(text: str) -> tuple[str, list[tuple[str, str, str, str]]]:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    verdict = ""
+    findings: list[tuple[str, str, str, str]] = []
+    unstructured: list[tuple[str, str]] = []
+    for line in lines:
+        vm = VERDICT.match(line.strip())
+        if vm and not verdict:
+            verdict = vm.group(1).lower()
+            continue
+        parsed = parse_finding_line(line)
+        if parsed:
+            findings.append(parsed)
+            continue
+        b = parse_bullet(line)
+        if b:
+            unstructured.append(b)
+
+    if findings:
+        # Structured findings are authoritative; free-form bullets are treated as commentary.
+        pass
+    elif unstructured:
+        # Fail closed: model said fail -> blocking. Model said pass -> non-blocking follow-up.
+        if verdict == "fail":
+            findings = [(FAILSEV, "in", loc, sm) for loc, sm in unstructured]
+        elif verdict == "pass":
+            findings = [("medium", "out", loc, sm) for loc, sm in unstructured]
+        else:
+            findings = [(FAILSEV, "in", loc, sm) for loc, sm in unstructured]
+
+    if not findings and verdict == "fail":
+        # Completely unparseable fail: cannot be downgraded to pass.
+        findings = [(FAILSEV, "in", "unclassified", "Gate 2 reported a failure but findings were not structured; treated as in-scope high.")]
+
+    computed = "fail" if any(blocking(s, c) for s, c, _, _ in findings) else "pass"
+    if verdict == "unavailable":
+        return "unavailable", findings
+    # If the model said fail and we could not parse anything besides the synthetic row, keep fail.
+    return computed, findings
+
+
+def format_out(verdict: str, findings) -> str:
+    parts = ["XCHECK: %s" % verdict]
+    for sev, scope, loc, summary in findings:
+        tag = "blocking" if blocking(sev, scope) else "followup"
+        parts.append("FINDING\t%s\t%s\t%s\t%s\t%s" % (sev, scope, loc, tag, summary))
+    return "\n".join(parts) + "\n"
+
+
+def main(argv: list[str]) -> int:
+    if argv and argv[0] in ("-h", "--help"):
+        sys.stdout.write(__doc__.strip() + "\n")
+        return 0
+    if argv:
+        text = open(argv[0], encoding="utf-8", errors="replace").read()
+    else:
+        text = sys.stdin.read()
+    verdict, findings = classify(text)
+    sys.stdout.write(format_out(verdict, findings))
+    return 0 if verdict == "pass" else (2 if verdict == "unavailable" else 1)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

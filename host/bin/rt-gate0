@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""rt-gate0 <worktree> <base-ref> <issue-n>   -- deterministic Gate 0 (no model).
+   rt-gate0 --scan-text <file>               -- privacy scan of a text file (exit 1 on findings).
+
+Exit 0 = pass, 1 = fail. Prints one findings list; the last lines are machine readable:
+  FAILED_CHECKS: tests,privacy,...   (only when failing)
+  GATE0: pass|fail
+Findings never echo the matched secret itself, only kind + location.
+"""
+import getpass
+import ipaddress
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RT_HOME = os.environ.get("RT_HOME") or os.path.dirname(HERE)
+GH = os.environ.get("RT_GH_REAL", "/usr/bin/gh")
+REPO = os.environ.get("RT_REPO", "Liyuk/roundtable-work")
+TEST_TIMEOUT = int(os.environ.get("RT_GATE0_TEST_TIMEOUT", "900"))  # 15 min
+
+# ---------------------------------------------------------------- privacy ----
+IPV4_RE = re.compile(r"(?<![\w.])((?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})(?!\w|\.\w)")
+DOC_NETS = [ipaddress.ip_network(x) for x in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
+ALLOWED_IPS = {"127.0.0.1", "0.0.0.0"}
+
+
+def _ip_ok(s):
+    if s in ALLOWED_IPS:
+        return True
+    try:
+        ip = ipaddress.ip_address(s)
+    except ValueError:
+        return True  # not a real address (e.g. leading zeros) -> ignore
+    return any(ip in net for net in DOC_NETS)
+
+
+def _static_patterns():
+    pats = [
+        ("home path (\x2fhome\x2f)", re.compile(r"(?<![\w.~$-])\x2fhome\x2f")),
+        ("home path (\x2fUsers\x2f)", re.compile(r"(?<![\w.~$-])\x2fUsers\x2f")),
+        ("home path (\x2froot\x2f)", re.compile(r"(?<![\w.~$-])\x2froot\x2f")),
+        ("account '\x75buntu@'", re.compile(r"\x75buntu@")),
+        ("private key block", re.compile(r"-----\x42EGIN")),
+        ("token prefix gh\x70_", re.compile(r"gh\x70_")),
+        ("token prefix github_\x70at_", re.compile(r"github_\x70at_")),
+        ("token prefix sk-", re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9]")),
+    ]
+    for extra in filter(None, os.environ.get("RT_GATE0_EXTRA_HOSTS", "").split(",")):
+        pats.append(("host name '%s'" % extra.strip(), re.compile(re.escape(extra.strip()), re.I)))
+    try:
+        host = socket.gethostname().strip()
+    except Exception:
+        host = ""
+    if len(host) >= 3:
+        pats.append(("host name", re.compile(re.escape(host), re.I)))
+        short = host.split(".")[0]
+        if short != host and len(short) >= 3:
+            pats.append(("host name", re.compile(re.escape(short), re.I)))
+    try:
+        user = os.environ.get("USER") or getpass.getuser()
+    except Exception:
+        user = ""
+    if user:
+        pats.append(("home path (\x2fhome\x2f$USER)", re.compile(r"\x2fhome\x2f" + re.escape(user) + r"\b")))
+    if user and user != "ubuntu":
+        pats.append(("account '$USER@'", re.compile(re.escape(user) + "@")))
+    return pats
+
+
+PATTERNS = _static_patterns()
+
+
+# Generic secret-shaped strings are skipped for files under test/ (fixtures that check secret detection).
+# Host-specific items (hostname, $USER@, $USER home path, RT_GATE0_EXTRA_HOSTS, non-documentation public IPv4) are always flagged.
+SECRET_SHAPE_KINDS = {"private key block", "token prefix gh\x70_", "token prefix github_\x70at_", "token prefix sk-"}
+
+
+def _is_test_path(path):
+    return bool(path) and re.match(r"^tests?/", path) is not None
+
+
+def scan_line(line, path=None):
+    """Return list of finding kinds for one line of text (path = repo path of the file, if any)."""
+    kinds = []
+    for m in IPV4_RE.finditer(line):
+        if not _ip_ok(m.group(1)):
+            kinds.append("IPv4 address")
+    for kind, rx in PATTERNS:
+        if rx.search(line):
+            if kind in SECRET_SHAPE_KINDS and _is_test_path(path):
+                continue
+            kinds.append(kind)
+    return sorted(set(kinds))
+
+
+def scan_text(text, where):
+    out = []
+    for i, line in enumerate(text.splitlines(), 1):
+        for k in scan_line(line):
+            out.append("%s:%d: %s" % (where, i, k))
+    return out
+
+
+# -------------------------------------------------------------------- git ----
+def git(wt, *args, check=False):
+    r = subprocess.run(["git", "-C", wt] + list(args), capture_output=True, text=True, errors="replace")
+    if check and r.returncode != 0:
+        raise RuntimeError("git %s failed: %s" % (" ".join(args), r.stderr.strip()[:200]))
+    return r
+
+
+def parse_diff(diff_text):
+    """Yield (path, lineno_or_None, sign, text) for +/- lines of a -U0 diff."""
+    path = None
+    old_path = None
+    new_ln = 0
+    in_header = False
+    for raw in diff_text.splitlines():
+        if raw.startswith("diff --git"):
+            path = old_path = None
+            in_header = True
+            continue
+        if in_header:
+            if raw.startswith("--- "):
+                p = raw[4:]
+                old_path = None if p == "/dev/null" else (p[2:] if p.startswith("a/") else p)
+            elif raw.startswith("+++ "):
+                p = raw[4:]
+                path = old_path if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
+            elif raw.startswith("@@"):
+                in_header = False
+            else:
+                continue
+            if raw.startswith(("--- ", "+++ ")):
+                continue
+        if raw.startswith("@@"):
+            m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", raw)
+            new_ln = int(m.group(1)) if m else 0
+            continue
+        if raw.startswith("+"):
+            yield (path, new_ln, "+", raw[1:])
+            new_ln += 1
+        elif raw.startswith("-"):
+            yield (path, None, "-", raw[1:])
+
+
+def gh_json(args):
+    try:
+        r = subprocess.run([GH] + args, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+# ----------------------------------------------------------------- checks ----
+class Report:
+    def __init__(self):
+        self.lines = []
+        self.failed = []
+
+    def ok(self, name, msg=""):
+        self.lines.append("[PASS] %s%s" % (name, (": " + msg) if msg else ""))
+
+    def fail(self, name, items, headline=""):
+        self.failed.append(name)
+        self.lines.append("[FAIL] %s%s" % (name, (": " + headline) if headline else ""))
+        for it in items[:40]:
+            self.lines.append("       - " + it)
+        if len(items) > 40:
+            self.lines.append("       - ... %d more" % (len(items) - 40))
+
+    def info(self, msg):
+        self.lines.append("[info] " + msg)
+
+
+def check_tests(wt, rep):
+    try:
+        r = subprocess.run(["npm", "test"], cwd=wt, capture_output=True, text=True, errors="replace",
+                           timeout=TEST_TIMEOUT, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        rep.fail("tests", ["npm test timed out after %ds" % TEST_TIMEOUT])
+        return
+    except FileNotFoundError:
+        rep.fail("tests", ["npm not found"])
+        return
+    if r.returncode == 0:
+        rep.ok("tests", "npm test exit 0")
+    else:
+        tail = (r.stdout + r.stderr).strip().splitlines()[-15:]
+        rep.fail("tests", ["npm test exit %d" % r.returncode] + ["| " + t[:200] for t in tail])
+
+
+def pr_text(issue):
+    prs = gh_json(["pr", "list", "-R", REPO, "--head", "rt/%s-pi" % issue, "--state", "all",
+                   "--json", "number,title,body", "-L", "1"])
+    if prs is None:
+        return None
+    if not prs:
+        return ""
+    return "%s\n%s" % (prs[0].get("title", ""), prs[0].get("body", ""))
+
+
+def check_privacy(wt, mb, issue, rep, diff_added):
+    items = []
+    for path, ln, _, text in diff_added:
+        for k in scan_line(text, path):
+            items.append("%s:%s: %s" % (path or "?", ln, k))
+    # Commit messages already pushed to origin/rt/<n>-pi cannot be reworded without a force push
+    # (forbidden), and the squash merge with an empty body never carries them to main. A generic
+    # home path there (not this host's home) is downgraded to info instead of blocking forever
+    # (2026-11-15, #428: a root-home path in a pushed commit message blocked a green PR).
+    pushed_ref = "origin/rt/%s-pi" % issue
+    myhome = os.path.expanduser("~").rstrip("/") + "/"
+    has_pushed = git(wt, "rev-parse", "--verify", "-q", pushed_ref).returncode == 0
+    if has_pushed:
+        pushed = git(wt, "log", "--format=%B", "%s..%s" % (mb, pushed_ref)).stdout
+        local = git(wt, "log", "--format=%B", "%s..HEAD" % pushed_ref).stdout
+    else:
+        pushed, local = "", git(wt, "log", "--format=%B", "%s..HEAD" % mb).stdout
+    items += scan_text(local, "commit-message")
+    for f in scan_text(pushed, "commit-message(pushed)"):
+        if "home path (" in f and myhome not in f:
+            rep.info("waived (pushed commit message, dropped by squash merge): %s" % f)
+        else:
+            items.append(f)
+    pt = pr_text(issue)
+    if pt is None:
+        rep.info("PR title/body scan skipped (PR lookup unavailable)")
+    elif pt:
+        items += scan_text(pt, "PR-title/body")
+    else:
+        rep.info("no PR found for rt/%s-pi; PR text not scanned" % issue)
+    if items:
+        rep.fail("privacy", items, "%d finding(s) in added lines / commit messages / PR text" % len(items))
+    else:
+        rep.ok("privacy", "no host identifiers, IPs, home paths or secret-like strings in added text")
+
+
+def load_frozen():
+    toks = []
+    p = os.path.join(RT_HOME, "gate0-frozen.txt")
+    try:
+        for line in open(p, encoding="utf-8"):
+            line = line.rstrip("\n")
+            if line.strip() and not line.lstrip().startswith("#"):
+                toks.append(line)
+    except OSError:
+        pass
+    return toks
+
+
+def count_token(wt, ref, tok):
+    r = subprocess.run(["git", "-C", wt, "grep", "-o", "-I", "-h", "-F", "-e", tok, ref, "--"],
+                       capture_output=True, text=True, errors="replace")
+    if r.returncode not in (0, 1):
+        raise RuntimeError("git grep failed: " + r.stderr.strip()[:200])
+    return len([l for l in r.stdout.split("\n") if l != ""])
+
+
+def check_frozen(wt, mb, rep, toks):
+    drops = []
+    for t in toks:
+        b, h = count_token(wt, mb, t), count_token(wt, "HEAD", t)
+        if h < b:
+            drops.append("%r occurrences dropped %d -> %d" % (t, b, h))
+    if drops:
+        rep.fail("frozen", drops, "machine-contract tokens decreased")
+    else:
+        rep.ok("frozen", "%d frozen tokens, none decreased" % len(toks))
+
+
+CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def check_direction(wt, issue, rep, diff_lines, toks):
+    meta = gh_json(["issue", "view", str(issue), "-R", REPO, "--json", "title,body"]) or {}
+    title = meta.get("title") or os.environ.get("RT_ISSUE_TITLE", "")
+    body = meta.get("body") or ""
+    english_only = bool(re.search(r"English[- ]only", body, re.I))
+    if not ("I18N" in title.upper() or english_only):
+        rep.ok("direction", "not a translation issue; skipped")
+        return
+    def cjk(s):
+        for t in toks:
+            s = s.replace(t, "")
+        return len(CJK_RE.findall(s))
+    added = sum(cjk(t) for _, _, sg, t in diff_lines if sg == "+")
+    removed = sum(cjk(t) for _, _, sg, t in diff_lines if sg == "-")
+    net = added - removed
+    msg = "CJK chars added=%d removed=%d net=%+d (limit net<=20)" % (added, removed, net)
+    if net > 20:
+        rep.fail("direction", [msg], "direction looks reversed (English-only target, but net CJK added)")
+    else:
+        rep.ok("direction", msg)
+
+
+def check_test_weakening(wt, mb, rep, diff_added):
+    items = []
+    r = git(wt, "diff", "--name-status", "--diff-filter=D", "%s...HEAD" % mb)
+    for l in r.stdout.splitlines():
+        parts = l.split("\t", 1)
+        if len(parts) == 2 and re.match(r"^tests?/", parts[1]):
+            items.append("deleted test file: " + parts[1])
+
+    def n_tests(ref):
+        g = subprocess.run(["git", "-C", wt, "grep", "-o", "-I", "-h", "-E", r"(^|[^A-Za-z0-9_.])(test|it)\(", ref, "--", "test", "tests"],
+                           capture_output=True, text=True, errors="replace")
+        return len([l for l in g.stdout.split("\n") if l])
+    b, h = n_tests(mb), n_tests("HEAD")
+    if h < b:
+        items.append("test(/it( occurrences under test/ dropped %d -> %d" % (b, h))
+    for path, ln, _, text in diff_added:
+        if path and re.match(r"^tests?/", path) and re.search(r"\b(?:test|it|describe)\.(?:skip|only)\(|\bskip\s*:\s*true", text):
+            rep.info("WARN %s:%s adds skip/only" % (path, ln))
+    if items:
+        rep.fail("test-weakening", items, "tests removed or reduced")
+    else:
+        rep.ok("test-weakening", "test files kept; test(/it( count %d -> %d" % (b, h))
+
+
+# ------------------------------------------------------------------- main ----
+def main(argv):
+    if len(argv) >= 2 and argv[1] == "--scan-text":
+        if len(argv) != 3:
+            print("usage: rt-gate0 --scan-text <file>", file=sys.stderr)
+            return 2
+        items = scan_text(open(argv[2], encoding="utf-8", errors="replace").read(), "text")
+        for i in items:
+            print("PRIVACY " + i)
+        print("SCAN: %s" % ("fail" if items else "pass"))
+        return 1 if items else 0
+    if len(argv) != 4:
+        print("usage: rt-gate0 <worktree> <base-ref> <issue-n>", file=sys.stderr)
+        return 2
+    wt, base, issue = argv[1], argv[2], argv[3]
+    if not os.path.isdir(wt):
+        print("GATE0: fail\nworktree not found")
+        return 1
+    rep = Report()
+    mbr = git(wt, "merge-base", base, "HEAD")
+    if mbr.returncode != 0:
+        print("[FAIL] setup: cannot compute merge-base of %s and HEAD: %s" % (base, mbr.stderr.strip()[:200]))
+        print("FAILED_CHECKS: setup\nGATE0: fail")
+        return 1
+    mb = mbr.stdout.strip()
+    rep.info("base=%s merge-base=%s head=%s" % (base, mb[:10], git(wt, "rev-parse", "--short", "HEAD").stdout.strip()))
+    diff = git(wt, "diff", "-U0", "--no-color", "--no-ext-diff", "%s...HEAD" % mb, check=True).stdout
+    dlines = list(parse_diff(diff))
+    added = [d for d in dlines if d[2] == "+"]
+    toks = load_frozen()
+    check_tests(wt, rep)
+    check_privacy(wt, mb, issue, rep, added)
+    check_frozen(wt, mb, rep, toks)
+    check_direction(wt, issue, rep, dlines, toks)
+    check_test_weakening(wt, mb, rep, added)
+    print("\n".join(rep.lines))
+    if rep.failed:
+        print("FAILED_CHECKS: " + ",".join(rep.failed))
+        print("GATE0: fail")
+        return 1
+    print("GATE0: pass")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except Exception as e:  # a crashed gate is a failed gate
+        print("[FAIL] internal: %s" % e)
+        print("FAILED_CHECKS: internal\nGATE0: fail")
+        sys.exit(1)

@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+import { execSync, spawnSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repo = resolve(here, '..');
+const CI_CMD = "gh run list --branch main --limit 1 --json conclusion,status -q '.[0]'";
+const STEPS = [
+  '1. check main CI is green (RT_HOST_CI_CMD)',
+  '2. git fetch origin main; version = short sha',
+  '3. extract origin/main into host/releases/<version>/',
+  '4. run smoke suite (RT_HOST_SMOKE_CMD) in that dir; refuse on failure',
+  '5. atomically switch host/releases/active to <version>; record host/releases/previous',
+  '6. poll RT_HOST_HEARTBEAT_FILE up to 2 x RT_HOST_POLL_MS; if no fresh heartbeat, switch active back and append deploy-rollback to host/releases/ledger.jsonl',
+];
+
+export function ciGreen(out) {
+  const { status, conclusion } = JSON.parse(out);
+  return status === 'completed' && conclusion === 'success';
+}
+
+export function writeAtomic(file, text) {
+  writeFileSync(`${file}.tmp`, text);
+  renameSync(`${file}.tmp`, file);
+}
+
+function readVersion(file) {
+  return existsSync(file) ? readFileSync(file, 'utf8').trim() : null;
+}
+
+async function awaitHeartbeat({ file, since, pollMs, sleep }) {
+  for (let i = 0; i < 2; i++) {
+    await sleep(pollMs);
+    if (existsSync(file) && statSync(file).mtimeMs > since) return true;
+  }
+  return false;
+}
+
+export async function deploy(cfg) {
+  const { releases, ci, smoke, fetch, extract, heartbeat, pollMs, now, sleep } = cfg;
+  if (!ciGreen(execSync(ci, { encoding: 'utf8' }))) throw new Error('refused: main CI is not green');
+  const version = fetch();
+  const dir = join(releases, version);
+  const created = !existsSync(dir);
+  mkdirSync(dir, { recursive: true });
+  extract(version, dir);
+  if (spawnSync(smoke, { shell: true, cwd: dir, stdio: 'inherit' }).status !== 0) {
+    if (created) rmSync(dir, { recursive: true, force: true });
+    throw new Error('refused: smoke suite failed');
+  }
+  const previous = readVersion(join(releases, 'active'));
+  if (previous) writeAtomic(join(releases, 'previous'), `${previous}\n`);
+  const since = now();
+  writeAtomic(join(releases, 'active'), `${version}\n`);
+  if (await awaitHeartbeat({ file: heartbeat, since, pollMs, sleep })) return { version, rolledBack: false };
+  if (previous) {
+    writeAtomic(join(releases, 'active'), `${previous}\n`);
+    const entry = { ts: now(), kind: 'deploy-rollback', from: version, to: previous, reason: 'no fresh heartbeat' };
+    appendFileSync(join(releases, 'ledger.jsonl'), `${JSON.stringify(entry)}\n`);
+  }
+  return { version, rolledBack: Boolean(previous) };
+}
+
+function git(args) {
+  return execSync(`git ${args}`, { cwd: repo, encoding: 'utf8' }).trim();
+}
+
+function envConfig() {
+  return {
+    releases: join(here, 'releases'),
+    ci: process.env.RT_HOST_CI_CMD ?? CI_CMD,
+    smoke: process.env.RT_HOST_SMOKE_CMD ?? 'node --test host/test/*.test.mjs',
+    heartbeat: process.env.RT_HOST_HEARTBEAT_FILE,
+    pollMs: Number(process.env.RT_HOST_POLL_MS ?? 60000),
+    fetch: () => {
+      git('fetch origin main');
+      return git('rev-parse --short origin/main');
+    },
+    extract: (sha, dir) => execSync(`git archive ${sha} | tar -x -C "${dir}"`, { cwd: repo }),
+    now: Date.now,
+    sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+  };
+}
+
+if (resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.includes('--dry-run')) {
+    console.log(STEPS.join('\n'));
+  } else {
+    deploy(envConfig()).then(
+      (r) => console.log(JSON.stringify(r)),
+      (e) => {
+        console.error(e.message);
+        process.exitCode = 1;
+      },
+    );
+  }
+}

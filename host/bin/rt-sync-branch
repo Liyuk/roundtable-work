@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# rt-sync-branch <n>
+# Bring rt/<n>-pi up to date with origin/main by MERGING origin/main into it (never rebase, never force push),
+# then push normally. Prints one line `SYNC: uptodate|merged|conflict|dirty|busy|error [detail]`.
+#   conflict: merge aborted, .roundtable/state/SUPERVISOR.md describes the conflicting files (Chief must wake).
+#   dirty:    uncommitted changes in the worktree; nothing done.   busy: a worker holds locks/<n>.lock.
+# RT_SYNC_HELD=1 : the caller already holds the issue lock.   RT_DRY_RUN=1 : only report what would happen.
+set -uo pipefail
+n="${1:?issue number}"
+RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+BRANCH="rt/$n-pi"; WT="$RT_HOME/wt/$n"
+say(){ echo "SYNC: $*"; exit 0; }
+if [ -z "${RT_SYNC_HELD:-}" ] && [ -e "$RT_HOME/locks/$n.lock" ]; then
+  exec 8>"$RT_HOME/locks/$n.lock"; flock -n 8 || say busy
+fi
+WT=$("$RT_HOME/bin/rt-wt" "$n" main 2>/dev/null) || say error "worktree unavailable"
+git -C "$WT" fetch -q origin 2>/dev/null || say error "fetch failed"
+if [ -n "$(git -C "$WT" status --porcelain)" ]; then say dirty; fi
+# fast-forward to the remote branch when only the remote moved
+if git -C "$WT" rev-parse -q --verify "refs/remotes/origin/$BRANCH" >/dev/null; then
+  if ! git -C "$WT" merge-base --is-ancestor "origin/$BRANCH" HEAD; then
+    if git -C "$WT" merge-base --is-ancestor HEAD "origin/$BRANCH"; then
+      [ -n "${RT_DRY_RUN:-}" ] && say "merged (dry: would fast-forward to origin/$BRANCH)"
+      git -C "$WT" merge -q --ff-only "origin/$BRANCH" >/dev/null 2>&1 || say error "ff to origin/$BRANCH failed"
+    else say error "local and remote branch diverged"; fi
+  fi
+fi
+if git -C "$WT" merge-base --is-ancestor origin/main HEAD; then say uptodate; fi
+[ -n "${RT_DRY_RUN:-}" ] && say "merged (dry: would merge origin/main)"
+if git -C "$WT" merge --no-edit -m "Merge origin/main into $BRANCH" origin/main >/dev/null 2>&1; then
+  git -C "$WT" push -q origin "HEAD:refs/heads/$BRANCH" >/dev/null 2>&1 || say error "push failed (no force push is attempted)"
+  say merged
+fi
+files=$(git -C "$WT" diff --name-only --diff-filter=U | head -20)
+git -C "$WT" merge --abort >/dev/null 2>&1
+mkdir -p "$WT/.roundtable/state"
+cat >"$WT/.roundtable/state/SUPERVISOR.md" <<EOT
+Merging origin/main into $BRANCH conflicted (main moved on, for example because an earlier PR was squash-merged).
+The merge was aborted; the branch is unchanged. Conflicting files:
+$(printf '%s\n' "$files" | sed 's/^/- /')
+
+Resolve it: run \`git merge origin/main\` in the worktree, have a developer/fixer resolve the conflicts keeping BOTH sides' intent,
+re-run npm test, get an independent reviewer pass on the final tree, commit, push normally (no force push) to the existing PR branch,
+then write DECISION done again.
+EOT
+say conflict "$(printf '%s' "$files" | tr '\n' ' ')"

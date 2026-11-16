@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""rt-limit: shared model usage-limit / rate-limit flag for the loop ($RT_HOME/state/harness-limit.json).
+
+  rt-limit record <harness> <role> <file>...   scan failed-call output files; if they show a usage limit / 429,
+                                               write the flag for that harness (with the reset time when the
+                                               message gives one), exit 0; otherwise exit 1 and write nothing.
+  rt-limit active [since-epoch] [--harness H]  exit 0 and print the reset time when a flag is active (and, with
+                                               since-epoch, was written at or after it); exit 1 otherwise.
+                                               --harness limits the check to that harness (pi or codex).
+                                               Without --harness, any harness with an active flag matches.
+
+A limit is never a verdict: callers treat it as `wait` (no counter spent, no gate result, not blocked).
+The scheduler only pauses claims for the harness that would be started *now*; a limit on the other
+harness does not block, and there is no fallback to the other harness except when the time window
+itself changes (DeepSeek off-peak <-> peak).
+"""
+import datetime, json, os, re, sys, time
+
+HOME = os.environ.get("RT_HOME") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FLAG = os.path.join(HOME, "state", "harness-limit.json")
+PAT = re.compile(r"usage limit|rate[ -]?limit(ed)?|too many requests|\b429\b|quota exceeded|insufficient_quota|budget[ _]exhausted|try again at", re.I)
+DEFAULT_WAIT = int(os.environ.get("RT_LIMIT_DEFAULT_WAIT", "1800"))
+
+
+def until_from(text, now):
+    m = re.search(r"try again at (\d{1,2}):(\d{2})\s*([AaPp][Mm])?", text)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if m.group(3):
+            h = h % 12 + (12 if m.group(3).lower() == "pm" else 0)
+        d = datetime.datetime.fromtimestamp(now).replace(hour=h, minute=mi, second=0, microsecond=0)
+        t = d.timestamp()
+        if t <= now - 60:
+            t += 86400
+        return int(t) + 60
+    m = re.search(r"(?:try again|retry) in (\d+)\s*(s|sec|second|m|min|minute|h|hour)s?", text, re.I)
+    if m:
+        mult = {"s": 1, "sec": 1, "second": 1, "m": 60, "min": 60, "minute": 60, "h": 3600, "hour": 3600}[m.group(2).lower()]
+        return int(now + int(m.group(1)) * mult + 30)
+    m = re.search(r"retry[- ]after[\"':\s]+(\d+)", text, re.I)
+    if m:
+        return int(now + int(m.group(1)) + 30)
+    return int(now + DEFAULT_WAIT)
+
+
+def load_flag():
+    try:
+        return json.load(open(FLAG))
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def entries_of(d):
+    """Map harness -> entry, accepting the legacy single-object file."""
+    if not isinstance(d, dict):
+        return {}
+    by = d.get("by_harness")
+    if isinstance(by, dict) and by:
+        return {str(k): v for k, v in by.items() if isinstance(v, dict)}
+    if "until" in d:
+        h = str(d.get("harness") or "*")
+        return {h: d}
+    return {}
+
+
+def record(harness, role, files):
+    text = ""
+    for f in files:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                text += fh.read()[-20000:] + "\n"
+        except OSError:
+            pass
+    lines = [l for l in text.splitlines() if PAT.search(l)]
+    if not lines:
+        return 1
+    now = time.time()
+    until = until_from("\n".join(lines), now)
+    entry = {"ts": int(now), "until": until, "until_text": time.strftime("%F %T %Z", time.localtime(until)),
+             "harness": harness, "role": role, "reason": lines[-1].strip()[:200]}
+    d = load_flag()
+    by = entries_of(d)
+    by[harness] = entry
+    out = dict(entry)
+    out["by_harness"] = by
+    os.makedirs(os.path.dirname(FLAG), exist_ok=True)
+    tmp = FLAG + ".tmp%d" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(out, fh)
+    os.replace(tmp, FLAG)
+    print(entry["until_text"])
+    return 0
+
+
+def active(since=None, harness=None):
+    try:
+        d = load_flag()
+    except Exception:
+        return 1
+    now = time.time()
+    hits = []
+    for h, e in entries_of(d).items():
+        if harness and h != harness and h != "*":
+            continue
+        try:
+            if int(e["until"]) <= now:
+                continue
+            if since is not None and int(e.get("ts") or 0) < int(since):
+                continue
+        except (ValueError, KeyError, TypeError):
+            continue
+        hits.append(e)
+    if not hits:
+        return 1
+    hits.sort(key=lambda e: int(e.get("until") or 0))
+    e = hits[0]
+    print(e.get("until_text") or e["until"])
+    return 0
+
+
+if __name__ == "__main__":
+    a = sys.argv[1:]
+    if len(a) >= 3 and a[0] == "record":
+        sys.exit(record(a[1], a[2], a[3:]))
+    if a and a[0] == "active":
+        since = None
+        harness = None
+        rest = a[1:]
+        i = 0
+        while i < len(rest):
+            if rest[i] in ("--harness", "-h") and i + 1 < len(rest):
+                harness = rest[i + 1]
+                i += 2
+                continue
+            if rest[i] == "--harness=*" or rest[i].startswith("--harness="):
+                harness = rest[i].split("=", 1)[1]
+                i += 1
+                continue
+            if since is None and rest[i] and rest[i][0].isdigit():
+                since = rest[i]
+                i += 1
+                continue
+            print(__doc__, file=sys.stderr)
+            sys.exit(2)
+        sys.exit(active(since, harness))
+    print(__doc__, file=sys.stderr)
+    sys.exit(2)
