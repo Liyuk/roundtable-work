@@ -2,51 +2,64 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseVerdict } from '../lib/verdict.mjs';
 
-test('Chinese form: 通过 maps to passed', () => {
+// Legacy aliases: the Chinese words are parse-only; writers never emit them.
+test('Legacy alias: 通过 (Chinese pass) maps to passed', () => {
   assert.equal(parseVerdict('通过'), 'passed');
 });
 
-test('Chinese form: 打回 maps to rejected', () => {
+test('Legacy alias: 打回 (Chinese reject) maps to rejected', () => {
   assert.equal(parseVerdict('打回'), 'rejected');
 });
 
-test('Chinese form: 阻塞 maps to blocked', () => {
+test('Legacy alias: 阻塞 (Chinese block) maps to blocked', () => {
   assert.equal(parseVerdict('阻塞'), 'blocked');
 });
 
-test('English form: passed (lowercase)', () => {
+test('English form: pass (lowercase) maps to passed', () => {
+  assert.equal(parseVerdict('pass'), 'passed');
+});
+
+test('English form: passed (lowercase) maps to passed', () => {
   assert.equal(parseVerdict('passed'), 'passed');
 });
 
-test('English form: PASSED (uppercase)', () => {
+test('English form: PASSED (uppercase) maps to passed', () => {
   assert.equal(parseVerdict('PASSED'), 'passed');
 });
 
-test('English form: Passed (capitalized)', () => {
+test('English form: Passed (capitalized) maps to passed', () => {
   assert.equal(parseVerdict('Passed'), 'passed');
 });
 
-test('English form: rejected (lowercase)', () => {
+test('English form: reject (lowercase) maps to rejected', () => {
+  assert.equal(parseVerdict('reject'), 'rejected');
+});
+
+test('English form: rejected (lowercase) maps to rejected', () => {
   assert.equal(parseVerdict('rejected'), 'rejected');
 });
 
-test('English form: REJECTED (uppercase)', () => {
+test('English form: REJECTED (uppercase) maps to rejected', () => {
   assert.equal(parseVerdict('REJECTED'), 'rejected');
 });
 
-test('English form: blocked (lowercase)', () => {
+test('English form: block (lowercase) maps to blocked', () => {
+  assert.equal(parseVerdict('block'), 'blocked');
+});
+
+test('English form: blocked (lowercase) maps to blocked', () => {
   assert.equal(parseVerdict('blocked'), 'blocked');
 });
 
-test('English form: BLOCKED (uppercase)', () => {
+test('English form: BLOCKED (uppercase) maps to blocked', () => {
   assert.equal(parseVerdict('BLOCKED'), 'blocked');
 });
 
-test('Alias: returned maps to rejected', () => {
+test('English alias: returned maps to rejected', () => {
   assert.equal(parseVerdict('returned'), 'rejected');
 });
 
-test('Alias: RETURNED (uppercase) maps to rejected', () => {
+test('English alias: RETURNED (uppercase) maps to rejected', () => {
   assert.equal(parseVerdict('RETURNED'), 'rejected');
 });
 
@@ -74,15 +87,15 @@ test('Whitespace handling: multiple newlines and spaces', () => {
   assert.equal(parseVerdict('  \n  blocked  \n  '), 'blocked');
 });
 
-test('Backward compatibility: Chinese 通过 continues to work', () => {
+test('Legacy alias still works after the English-only switch: 通过', () => {
   assert.equal(parseVerdict('通过'), 'passed');
 });
 
-test('Backward compatibility: Chinese 打回 continues to work', () => {
+test('Legacy alias still works after the English-only switch: 打回', () => {
   assert.equal(parseVerdict('打回'), 'rejected');
 });
 
-test('Backward compatibility: Chinese 阻塞 continues to work', () => {
+test('Legacy alias still works after the English-only switch: 阻塞', () => {
   assert.equal(parseVerdict('阻塞'), 'blocked');
 });
 
@@ -128,11 +141,11 @@ test('Invalid input: wrong type (undefined) throws TypeError', () => {
   );
 });
 
-test('Mixed case: PaSSed should map to passed', () => {
+test('Mixed case: PaSSed maps to passed', () => {
   assert.equal(parseVerdict('PaSSed'), 'passed');
 });
 
-test('Mixed case: ReTuRnEd should map to rejected', () => {
+test('Mixed case: ReTuRnEd maps to rejected', () => {
   assert.equal(parseVerdict('ReTuRnEd'), 'rejected');
 });
 
