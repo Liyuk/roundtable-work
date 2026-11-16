@@ -131,7 +131,7 @@ test('the restart window rolls: restarts older than an hour no longer count', as
 });
 
 test('--alert-issue posts an outbox alert once as a marked comment; without it the alert is only enqueued', async (t) => {
-  t.mock.timers.enable({ apis: ['Date'], now: WALL }); // the alert id is dated by Date.now() when no restart sample is taken
+  t.mock.method(Date, 'now', () => WALL);
   const ws = await workspace(t); await beat(ws, WALL - 10_000);
   const missing = { requireTools: ['gh'], lookup: () => false, clock: () => sample(WALL) };
   const { posted, writer } = fakeWriter();
