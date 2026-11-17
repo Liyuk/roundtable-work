@@ -71,7 +71,7 @@ test('AC4: the retry after a provider error gets the same non-empty prompt as th
 if [ "$n" -eq 1 ]; then echo "error: api_error from provider"; echo 1005400 >"$WALL"; exit 1; fi
 exit 0`,
   });
-  const prompts = [...r.log.matchAll(/^PROMPT \d: (.*)$/gm)].map((m) => m[1]);
+  const prompts = [...r.log.matchAll(/^PROMPT +\d+: (.*)$/gm)].map((m) => m[1]);
   assert.equal(r.status, 0);
   assert.equal(prompts.length, 2);
   assert.notEqual(prompts[0], '');
