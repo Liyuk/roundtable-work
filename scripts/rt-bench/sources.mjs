@@ -25,7 +25,7 @@ function pacificOffset(ms) {
 }
 
 // Wall-clock text in a zone with the given offset function -> UTC ISO string, or null if malformed.
-function instant(text, offsetAt) {
+export function instant(text, offsetAt) {
   const m = WALL.exec(text);
   if (!m) return null;
   const [y, mo, d] = m.slice(1, 4).map(Number);
@@ -36,7 +36,7 @@ function instant(text, offsetAt) {
   return new Date(wall - offsetAt(wall - offsetAt(wall))).toISOString();
 }
 
-function readRows(text, parse) {
+export function readRows(text, parse) {
   const events = [];
   let malformed = 0;
   for (const raw of text.split('\n')) {
