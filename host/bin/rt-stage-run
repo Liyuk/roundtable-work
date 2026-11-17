@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# rt-stage-run <stage> <budget_s> <logfile> <cmd...>   (stdin is inherited; stdout/stderr are appended to <logfile>)
+# The budget counts ACTIVE seconds (/proc/uptime), which do not advance while the VM is frozen, so a freeze never
+# kills a stage. A freeze shows as wall-clock time the active clock did not see (gap > 180 s). A non-zero exit after a
+# gap whose log tail has a provider error is retried once after RT_RETRY_BACKOFF s. Returns the child's rc (124 = budget).
+set -uo pipefail
+stage=$1 budget=$2 log=$3; shift 3
+cmd=("$@")
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT; cat >"$tmp"  # read the prompt once so every attempt gets it
+wall(){ if [ -n "${RT_WALL_FILE:-}" ]; then cat "$RT_WALL_FILE"; else date +%s; fi; }
+active(){ # seconds the machine has been awake: /proc/uptime on Linux; elsewhere (macOS) a monotonic clock via perl, else wall
+  local a _ f=${RT_UPTIME_FILE:-/proc/uptime}
+  if [ -r "$f" ]; then read -r a _ <"$f"
+  else a=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%d", clock_gettime(CLOCK_MONOTONIC)' 2>/dev/null) || a=$(date +%s); fi
+  echo "${a%.*}"
+}
+
+attempt(){ # -> rc ; GAP=1 when the wall clock ran more than 180 s ahead of the active clock during this attempt
+  local w0 a0 pid rc
+  w0=$(wall); a0=$(active)
+  set -m   # job control gives the child its own process group (macOS has no setsid), so the budget kill reaches its children
+  "${cmd[@]}" <"$tmp" >>"$log" 2>&1 &
+  pid=$!; set +m
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( $(active) - a0 > budget )); then
+      kill -TERM -- "-$pid" 2>/dev/null
+      for _ in $(seq 30); do kill -0 -- "-$pid" 2>/dev/null || break; sleep 1; done
+      kill -KILL -- "-$pid" 2>/dev/null; wait "$pid"; return 124
+    fi
+    sleep "${RT_STAGE_POLL:-5}"
+  done
+  wait "$pid"; rc=$?
+  (( $(wall) - w0 - ($(active) - a0) > 180 )) && GAP=1
+  return $rc
+}
+
+GAP=0; rc=0
+for att in 1 2; do
+  GAP=0; attempt; rc=$?
+  (( rc == 0 || att == 2 )) && break
+  (( GAP )) && tail -n 50 "$log" | grep -qiE 'api_error|TLS|ECONNRESET|ETIMEDOUT|socket hang up|fetch failed' || break
+  sleep "${RT_RETRY_BACKOFF:-60}"
+done
+exit $rc
