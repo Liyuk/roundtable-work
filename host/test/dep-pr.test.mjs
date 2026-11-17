@@ -51,7 +51,7 @@ for _ in range(int(sys.argv[3])): s.cycle()
 
 test('an rt:go issue depending on a merged PR is claimable (#540)', (t) => {
   const { out } = cycle(t, { dry: true, openPrs: [], issues: [issue(20, 10)] });
-  assert.match(out, /DRY would claim #20 /);
+  assert.match(out, /DRY candidates in priority order: #20$/m);
 });
 
 test('an rt:go issue depending on an open PR is not claimed (#540)', (t) => {
