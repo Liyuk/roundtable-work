@@ -107,7 +107,7 @@ export function exitCodeFor(result) {
 /** The self-review tracker client: reads from `reader`; `search` and the writes go through the shadow fence when `shadow`. */
 export function createSelfReviewClient({ reader, writer, shadow, attempted }) {
   const out = shadow ? createShadowGitHub(writer, attempted) : writer;
-  return { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), listLinked: async () => typeof reader.listLinkedPullRequests === 'function' ? { ...await linkedPullRequests(reader), open: await reader.listOpenPullRequestTitles(await reader.getRepository()) } : {}, getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: out.createIssue, createLabel: out.createLabel, addLabel: out.addLabel, removeLabel: out.removeLabel };
+  return { listOpen: () => reader.listIssues(), listClosed: () => reader.listClosedIssues(), listLinked: async () => typeof reader.listLinkedPullRequests === 'function' ? { ...await linkedPullRequests(reader), open: await reader.listOpenPullRequestTitles(await reader.getRepository()) } : {}, getIssue: (n) => reader.getIssue(n), search: writer.searchIssues, createIssue: out.createIssue, createComment: out.createComment, createLabel: out.createLabel, addLabel: out.addLabel, removeLabel: out.removeLabel };
 }
 
 /** Appends the role's preloaded memory (capped by preload) under `## Memory`; the prompt is unchanged when there is none. */
