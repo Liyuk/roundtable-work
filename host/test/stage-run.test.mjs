@@ -124,6 +124,7 @@ function runWorker(t, { checkpoint, agent = FAKE_AGENT }) {
   mkdirSync(fakebin);
   writeFileSync(join(fakebin, 'gh'), FAKE_GH, { mode: 0o755 });
   writeFileSync(join(fakebin, 'flock'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 }); // lock is not under test; macOS has no flock
+  if (spawnSync('sh', ['-c', 'command -v sha1sum']).status !== 0) writeFileSync(join(fakebin, 'sha1sum'), '#!/usr/bin/env bash\nexec shasum -a 1 "$@"\n', { mode: 0o755 }); // macOS has no sha1sum
   // Existing worker worktree (rt-wt reuses it) with the checkpoint a killed worker leaves.
   const sd = join(root, 'wt', '521', '.roundtable', 'state');
   mkdirSync(sd, { recursive: true });
