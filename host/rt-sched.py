@@ -233,6 +233,7 @@ class Sched:
         self._resume_hold_until = 0.0
         self._gap_warned_from = None
         self._throttle_logged = {}  # reason_key -> last log epoch
+        self._unresolved_logged = {}  # (issue, dep) -> last log epoch (#540)
         for d in (self.state, self.logs, os.path.join(self.logs, "work"), os.path.join(RT_HOME, "locks"), os.path.join(self.state, "issues"),
                   os.path.join(self.state, "children"), os.path.join(self.state, "supervisor"), os.path.join(RT_HOME, "wt")):
             os.makedirs(d, exist_ok=True)
@@ -547,6 +548,7 @@ class Sched:
                                    "--json", "number,title,body,labels,createdAt"])
             allst = {i["number"]: i["state"] for i in self.gh_read(
                 ["issue", "list", "-R", self.repo, "--state", "all", "-L", "500", "--json", "number,state"])}
+            merged = {p["number"] for p in self.gh_read(["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number"])}
             prs = self.gh_read(["pr", "list", "-R", self.repo, "--state", "open", "-L", "200",
                                 "--json", "number,headRefName,baseRefName,headRefOid,labels,isDraft,title,comments"])
         except Exception as e:
@@ -692,15 +694,20 @@ class Sched:
             deferred = {x["number"] for x in issues if "rt:deferred" in x["names"]}
             for d in deps:
                 s = allst.get(d)
-                if s == "CLOSED" or d in deferred:   # deferred deps (owner-trimmed scope) do not block
+                if s == "CLOSED" or d in merged or d in deferred:   # merged PR = met (#540); deferred deps (owner-trimmed scope) do not block
                     continue
                 dp = prs_of(d)
                 rd = [p for p in dp if any(l["name"] == "rt:ready-to-merge" for l in p["labels"])]
                 held_owner = str(self.issue_state(d).get("merge_hold", "")).startswith("owner")
                 if s is not None and len(dp) == 1 and len(rd) == 1 and not held_owner:
                     ready.append((d, rd[0]))   # fallback: dep PR is ready-to-merge and only waiting for CI / merge
+                elif s is None and any(p["number"] == d for p in prs):
+                    unmet.append("#%d (open PR)" % d)
                 elif s is None:
                     unmet.append("#%d (unknown)" % d)
+                    if time.time() - self._unresolved_logged.get((n, d), 0) >= 3600:   # #540: live log, once per issue/dep per hour
+                        self.log("#%d: dependency #%d is neither a known issue nor a merged PR; not claimed" % (n, d))
+                        self._unresolved_logged[(n, d)] = time.time()
                 else:
                     unmet.append("#%d (open%s)" % (d, ", PR not ready-to-merge" if dp else ", no PR"))
             base = "main"
