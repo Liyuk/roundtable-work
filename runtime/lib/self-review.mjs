@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { benchRegressions } from './bench-regress.mjs';
 
 // Self-review proposals (RT-S8a, docs/self-supervision.md "Self-review job"). Pure: every input is data, `now` is the only clock.
 const DAY = 86_400_000;
@@ -15,7 +16,7 @@ const filed = (openIssues, fp) => openIssues.some((issue) => issue.body.includes
 const at = (entry) => Date.parse(entry.at);
 const within = (entry, now, days) => at(entry) > now - days * DAY && at(entry) <= now;
 const candidate = (rule, key, title, evidence, acceptanceHint) => ({
-  rule, fingerprint: fingerprint(rule, key), title, evidence, acceptanceHint, risk: LOW_RISK.includes(rule) ? 'low' : 'standard',
+  rule, fingerprint: fingerprint(rule, key), title, evidence, acceptanceHint, risk: LOW_RISK.includes(rule) ? 'low' : 'standard', priority: 'p2',
 });
 const unique = (list) => [...new Set(list)];
 
@@ -93,7 +94,12 @@ function t6({ cases, now }) {
     candidate('T6', `${c.file}:${item.n}`, `Case improvement not tracked: ${c.file} item ${item.n}`, [`${c.file} item ${item.n}`], 'the improvement is filed as an issue or removed from the case note')));
 }
 
-/** Pure: self-review candidates in rule order T1 to T6. */
+// B1: an rt-bench regression between the two latest snapshots; the fingerprint is the literal bench:<ID>, and `bench` is the Bench line.
+function b1({ bench = [] }) {
+  return benchRegressions(bench).map((r) => ({ ...candidate('B1', r.key, r.title, r.snapshots, 'the rt-bench value is back at or above the previous snapshot'), fingerprint: r.fingerprint, priority: r.priority, bench: r.line }));
+}
+
+/** Pure: self-review candidates in rule order T1 to T6, then B1. */
 export function proposals(input) {
-  return [...t1(input), ...t2(input), ...t3(input), ...t4(input), ...t5(input), ...t6(input)];
+  return [...t1(input), ...t2(input), ...t3(input), ...t4(input), ...t5(input), ...t6(input), ...b1(input)];
 }

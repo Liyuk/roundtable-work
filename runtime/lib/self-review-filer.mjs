@@ -14,6 +14,7 @@ import { intakeRequestIssue } from './intake-backlog.mjs';
 
 export const SELF_REVIEW_TIMER = 'self-review:daily';
 const LOG = '.roundtable/state/self-review.jsonl';
+const BENCH = '.roundtable/state/bench.jsonl';
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const LOW_LINES = 200;
@@ -33,6 +34,11 @@ export function runSelfJob({ root, now, event, goals, inputs, client, completer,
   return fileSelfReview({ root, now, goals, inputs, client, completer, hygiene });
 }
 
+// Malformed bench.jsonl lines are skipped: the file is the only input parsed here that is not written by this code.
+const readBench = (root) => (existsSync(join(root, BENCH)) ? readFileSync(join(root, BENCH), 'utf8').split('\n').flatMap((line) => {
+  try { return [JSON.parse(line)]; } catch { return []; }
+}).slice(-2) : []);
+
 /** Inputs read from the workspace; metrics, failures and cases are not yet recorded by the runtime and stay empty. */
 export function gatherInputs(root) {
   const file = join(root, 'docs/host-patch-inventory.md');
@@ -40,6 +46,7 @@ export function gatherInputs(root) {
     metrics: { mtbiHours: [], firstPassRate: [], ownerPullInsPerWeek: [] },
     failures: [],
     cases: [],
+    bench: readBench(root),
     interventions: openInterventions(root).entries().entries,
     inventory: existsSync(file) ? readFileSync(file, 'utf8') : '',
   };
@@ -66,7 +73,8 @@ function evidenceSpec(candidate) {
 function draftOf(candidate, spec) {
   const body = intakeRequestIssue({ title: candidate.title, goal: spec.goal, acceptance: spec.acceptance, outOfScope: spec.outOfScope, files: spec.files, lines: spec.lines }).body;
   const touch = spec.touchSet.length ? ['', '## Touch set', ...spec.touchSet.map((path) => `- ${path}`)] : [];
-  return { title: candidate.title, body: [body, ...touch, '', '## Evidence', ...candidate.evidence.map((item) => `- Evidence: ${item}`), '', marker(candidate.fingerprint)].join('\n') };
+  const bench = candidate.bench ? ['', candidate.bench] : [];
+  return { title: candidate.title, body: [body, ...touch, ...bench, '', '## Evidence', ...candidate.evidence.map((item) => `- Evidence: ${item}`), '', marker(candidate.fingerprint)].join('\n') };
 }
 
 const readLog = (root) => (existsSync(join(root, LOG)) ? readFileSync(join(root, LOG), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
@@ -96,6 +104,8 @@ export async function fileSelfReview({ root, now, goals, inputs, client, complet
 
   for (const candidate of proposals({ ...inputs, goals, openIssues: open, closedIssues: closed, now })) {
     const fp = candidate.fingerprint;
+    const openBench = candidate.rule === 'B1' ? open.find((issue) => issue.body.includes(marker(fp))) : undefined;
+    if (openBench) { await client.createComment(openBench.number, candidate.bench); record(candidate, 'updated', { number: openBench.number }); continue; }
     if ([...open, ...recentlyClosed].some((issue) => issue.body.includes(marker(fp)))) { record(candidate, 'skipped', { reason: 'fingerprint' }); continue; }
     if (filedToday >= maxPerDay) { record(candidate, 'deferred', { reason: 'daily-cap' }); continue; }
     if (openSelf >= maxOpen) { record(candidate, 'deferred', { reason: 'open-cap' }); continue; }
@@ -119,8 +129,8 @@ export async function fileSelfReview({ root, now, goals, inputs, client, complet
       number = found.number;
     }
     const low = candidate.risk === 'low' && safetyFiles(spec.touchSet).length === 0 && spec.lines <= LOW_LINES;
-    const type = ['T1', 'T4'].includes(candidate.rule) ? 'type:bug' : 'type:feature';
-    for (const label of ['source:self', type, 'priority:p2', low ? 'rt:go' : 'rt:hold']) await client.addLabel(number, label);
+    const type = ['T1', 'T4', 'B1'].includes(candidate.rule) ? 'type:bug' : 'type:feature';
+    for (const label of ['source:self', type, `priority:${candidate.priority}`, low ? 'rt:go' : 'rt:hold']) await client.addLabel(number, label);
     if (!low) openTimers(root).once({ id: `self-promote:${number}`, at: new Date(now + DAY).toISOString(), event: job('self-promote', { number }) });
     openInterventions(root).append({ category: 'backlog', ref: `#${number}`, reason: candidate.title, internalized: 'no', source: 'self', at: new Date(now).toISOString() }, { key: fp });
     record(candidate, 'filed', { number });
