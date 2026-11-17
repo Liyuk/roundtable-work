@@ -6,13 +6,14 @@
 set -uo pipefail
 stage=$1 budget=$2 log=$3; shift 3
 cmd=("$@")
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT; cat >"$tmp"  # read the prompt once so every attempt gets it
 wall(){ if [ -n "${RT_WALL_FILE:-}" ]; then cat "$RT_WALL_FILE"; else date +%s; fi; }
 active(){ local a _; if [ -n "${RT_UPTIME_FILE:-}" ]; then read -r a _ <"$RT_UPTIME_FILE"; else read -r a _ </proc/uptime; fi; echo "${a%.*}"; }
 
 attempt(){ # -> rc ; GAP=1 when the wall clock ran more than 180 s ahead of the active clock during this attempt
   local w0 a0 pid rc
   w0=$(wall); a0=$(active)
-  setsid "${cmd[@]}" <&0 >>"$log" 2>&1 &
+  setsid "${cmd[@]}" <"$tmp" >>"$log" 2>&1 &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if (( $(active) - a0 > budget )); then

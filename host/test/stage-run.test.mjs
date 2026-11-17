@@ -18,7 +18,7 @@ function scratch(t) {
 }
 
 // Runs rt-stage-run around a shell child. `script` is the child body; `clocks` are fake clock files.
-function stage(t, { script, budget = 600, wall, uptime, poll = 1 }) {
+function stage(t, { script, budget = 600, wall, uptime, poll = 1, input = '' }) {
   const dir = scratch(t);
   const env = { ...process.env, RT_STAGE_POLL: String(poll), RT_RETRY_BACKOFF: '0', CALLS: join(dir, 'calls') };
   delete env.RT_WALL_FILE; delete env.RT_UPTIME_FILE;
@@ -29,7 +29,7 @@ function stage(t, { script, budget = 600, wall, uptime, poll = 1 }) {
   writeFileSync(child, script);
   const log = join(dir, 'stage.log');
   const started = Date.now();
-  const r = spawnSync(STAGE_RUN, ['chief', String(budget), log, 'bash', child], { env, encoding: 'utf8', timeout: 30_000 });
+  const r = spawnSync(STAGE_RUN, ['chief', String(budget), log, 'bash', child], { env, input, encoding: 'utf8', timeout: 30_000 });
   const calls = existsSync(env.CALLS) ? readFileSync(env.CALLS, 'utf8').split('\n').filter(Boolean).length : 0;
   return { status: r.status, calls, ms: Date.now() - started, log: existsSync(log) ? readFileSync(log, 'utf8') : '' };
 }
@@ -60,6 +60,22 @@ exit 0`,
   });
   assert.equal(r.status, 0);
   assert.equal(r.calls, 2);
+});
+
+test('AC4: the retry after a provider error gets the same non-empty prompt as the first attempt', (t) => {
+  const r = stage(t, {
+    uptime: 5000,
+    wall: 1_000_000,
+    input: '[PROMPT-BODY]',
+    script: `echo x >>"$CALLS"; n=$(wc -l <"$CALLS"); echo "PROMPT $n: $(cat)"
+if [ "$n" -eq 1 ]; then echo "error: api_error from provider"; echo 1005400 >"$WALL"; exit 1; fi
+exit 0`,
+  });
+  const prompts = [...r.log.matchAll(/^PROMPT \d: (.*)$/gm)].map((m) => m[1]);
+  assert.equal(r.status, 0);
+  assert.equal(prompts.length, 2);
+  assert.notEqual(prompts[0], '');
+  assert.equal(prompts[1], prompts[0]);
 });
 
 test('AC4: after a gap, a second provider error fails the stage with its rc and exactly two invocations', (t) => {
@@ -107,6 +123,7 @@ function runWorker(t, { checkpoint, agent = FAKE_AGENT }) {
   const fakebin = join(dir, 'fakebin');
   mkdirSync(fakebin);
   writeFileSync(join(fakebin, 'gh'), FAKE_GH, { mode: 0o755 });
+  writeFileSync(join(fakebin, 'flock'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 }); // lock is not under test; macOS has no flock
   // Existing worker worktree (rt-wt reuses it) with the checkpoint a killed worker leaves.
   const sd = join(root, 'wt', '521', '.roundtable', 'state');
   mkdirSync(sd, { recursive: true });
