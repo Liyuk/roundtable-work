@@ -15,12 +15,14 @@ export function dimensionScore(levels) {
 }
 
 // Sub-metric ids start with their dimension letter (U, L, I, D).
-export function score(results, now) {
+// Veto cap (section 12): a veto row with `at` in (now - 7 d, now] caps overall at 0. Dimensions are unchanged.
+export function score(results, now, vetoes = []) {
   const scores = {};
   for (const dim of ['U', 'L', 'I', 'D']) {
     const levels = results.filter((r) => r.id[0] === dim).map((r) => measure(r, now).level);
     scores[dim] = dimensionScore(levels);
   }
-  scores.overall = Math.min(scores.U, scores.L, scores.I, scores.D);
+  const vetoed = vetoes.some(({ at }) => Date.parse(at) > now - 7 * DAY_MS && Date.parse(at) <= now);
+  scores.overall = vetoed ? 0 : Math.min(scores.U, scores.L, scores.I, scores.D);
   return scores;
 }

@@ -22,6 +22,9 @@ const threeDecimals = (v) => v.toFixed(3);
 const integer = (v) => v.toFixed(0);
 const twoDecimals = (v) => v.toFixed(2);
 
+// Closed veto kinds (docs/autonomy-benchmark.md section 12). Rows of any other kind are not veto events.
+const VETO_KINDS = ['scope-violation', 'host-leak', 'secret-leak', 'dangerous-merge'];
+
 // Sub-metric rows in doc order: [id, name, format, Level-5 target].
 const ROWS = [
   ['U1', 'MTBI', hours, '≥72 h'], ['U2', 'longest streak', hours, '≥72 h'], ['U3', 'manual starts', count, '0'],
@@ -44,10 +47,12 @@ export async function collect(io, workspace) {
   const benchText = await io.readText(join(state, 'bench.jsonl'));
   const usageText = await io.readText(join(state, 'usage.jsonl'));
   const queueText = await io.readText(join(state, 'queue-snapshot.jsonl'));
+  const vetoText = await io.readText(join(state, 'veto.jsonl'));
   const iv = ivText === null ? null : readInterventions(ivText);
   const log = logText === null ? null : readSchedLog(logText);
   const asOf = (r) => (r?.lastSeen ? Date.parse(r.lastSeen) : undefined);
   const source = (r, kind) => ({ asOf: asOf(r), events: (r?.events ?? []).filter((e) => !kind || e.kind === kind) });
+  const vetoEvents = readJsonRows(vetoText ?? '').events.filter((e) => VETO_KINDS.includes(e.kind));
   return {
     interventions: source(iv),
     sched: source(log),
@@ -57,6 +62,7 @@ export async function collect(io, workspace) {
     benchSnapshots: readBench(benchText ?? ''),
     usage: source(readJsonRows(usageText ?? '')),
     queueSnapshot: source(readJsonRows(queueText ?? '')),
+    vetoes: { asOf: vetoEvents.length ? Math.max(...vetoEvents.map((e) => Date.parse(e.at))) : undefined, events: vetoEvents },
   };
 }
 
@@ -76,7 +82,7 @@ function readBench(text) {
 
 export function runBench(sources, now) {
   const results = [...computeU({ now, sources }), ...computeLI({ now, sources }), ...computeD({ now, sources }), ...computeQ({ now, sources }), ...computeC({ now, sources })];
-  return { results, scores: score(results, now) };
+  return { results, scores: score(results, now, sources.vetoes.events) };
 }
 
 export function snapshot(results, scores, sources, now) {
