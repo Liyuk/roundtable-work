@@ -13,6 +13,7 @@ const IDS = [
   'L1', 'L2', 'L3', 'L4', 'L5',
   'I1', 'I2', 'I3', 'I4', 'I5',
   'D1', 'D2', 'D3', 'D4', 'D5',
+  'Q1', 'Q2', 'Q3',
 ];
 
 // Pacific (PST) decisions on 11-12, 11-14, 11-16: three episodes, more than 30 min apart.
@@ -61,18 +62,18 @@ test('summary table matches the doc section 9 format for the fixture', async () 
   const lines = io.out.trimEnd().split('\n');
   assert.equal(lines[0], '| Dim | Sub-metric | Current value | Level | Level-5 target |');
   assert.equal(lines[1], '|---|---|---|---|---|');
-  const rows = lines.slice(2, 23);
-  assert.equal(rows.length, 21);
+  const rows = lines.slice(2, 26);
+  assert.equal(rows.length, 24);
   rows.forEach((row, i) => assert.match(row, new RegExp(`^\\| ${IDS[i][0]} \\| ${IDS[i]} [^|]+ \\| [^|]+ \\| \\d \\| [^|]+ \\|$`)));
   // Hand-derived: U1 = 136 h / 3 episodes; U3 = 3 live starts - 1 = 2; U5 = 1 timed-out stage.
   assert.equal(rows[0], '| U | U1 MTBI | 45.3 h | 4 | ≥72 h |');
   assert.equal(rows[2], '| U | U3 manual starts | 2 | 3 | 0 |');
   assert.equal(rows[4], '| U | U5 lost stages | 1 | 4 | 0 |');
-  assert.match(lines[23], /^Scores: U \d · L \d · I \d · D \d · overall \d$/);
+  assert.match(lines[26], /^Scores: U \d · L \d · I \d · D \d · overall \d$/);
   assert.equal(io.files[join(STATE, 'bench.jsonl')], undefined);
 });
 
-test('daily writes exactly one row with the snapshot schema and 21 ids', async () => {
+test('daily writes exactly one row with the snapshot schema and 24 ids', async () => {
   const io = memoryIo(fixtureFiles);
   assert.equal(await main(['--daily', '--workspace', WS, '--now', NOW], io), 0);
   assert.equal(io.out, '');
@@ -88,7 +89,7 @@ test('daily writes exactly one row with the snapshot schema and 21 ids', async (
   assert.equal(row.ids.U3.measurable, true);
 });
 
-test('empty state: all 21 ids not measurable at level 0 and shown as n/m', async () => {
+test('empty state: all 24 ids not measurable at level 0 and shown as n/m', async () => {
   const io = memoryIo();
   await main(['--daily', '--workspace', WS, '--now', NOW], io);
   const row = JSON.parse(io.files[join(STATE, 'bench.jsonl')]);
@@ -96,8 +97,8 @@ test('empty state: all 21 ids not measurable at level 0 and shown as n/m', async
 
   const summary = memoryIo();
   await main(['--summary', '--workspace', WS, '--now', NOW], summary);
-  const rows = summary.out.split('\n').slice(2, 23);
-  assert.equal(rows.length, 21);
+  const rows = summary.out.split('\n').slice(2, 26);
+  assert.equal(rows.length, 24);
   for (const row of rows) assert.match(row, /\| n\/m \| 0 \|/);
 });
 

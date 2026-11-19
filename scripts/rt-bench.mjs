@@ -9,6 +9,7 @@ import { readSchedLog } from './rt-bench/sched-log.mjs';
 import { computeU } from './rt-bench/metrics-u.mjs';
 import { computeLI } from './rt-bench/metrics-li.mjs';
 import { computeD } from './rt-bench/metrics-d.mjs';
+import { computeQ } from './rt-bench/metrics-q.mjs';
 import { score } from './rt-bench/score.mjs';
 
 const hours = (v) => `${v.toFixed(1)} h`;
@@ -28,6 +29,7 @@ const ROWS = [
   ['I4', 'measured changes', percent, '100%'], ['I5', 'first-pass rate', threeDecimals, '≥0.95'],
   ['D1', 'decision interventions', count, '0'], ['D2', 'longest owner wait', hours, '≤4 h'], ['D3', 'self-settled', percent, '≥98%'],
   ['D4', 'rollback rate', percent, '≤2%'], ['D5', 'loop-merged share', percent, '100%'],
+  ['Q1', 'rework/revert rate', percent, '≤2%'], ['Q2', '14-day survival', percent, '≥98%'], ['Q3', 'per-issue bench delta', percent, '100%'],
 ];
 
 // Normalized sources: { asOf (epoch ms, undefined when no events), events }.
@@ -35,6 +37,7 @@ export async function collect(io, workspace) {
   const state = join(workspace, '.roundtable', 'state');
   const ivText = await io.readText(join(state, 'interventions.tsv'));
   const logText = await io.readText(join(state, 'sched.log'));
+  const benchText = await io.readText(join(state, 'bench.jsonl'));
   const iv = ivText === null ? null : readInterventions(ivText);
   const log = logText === null ? null : readSchedLog(logText);
   const asOf = (r) => (r?.lastSeen ? Date.parse(r.lastSeen) : undefined);
@@ -45,11 +48,26 @@ export async function collect(io, workspace) {
     schedStarts: source(log, 'start'),
     schedGaps: source(log, 'gap'),
     stages: source(log, 'stage'),
+    benchSnapshots: readBench(benchText ?? ''),
   };
 }
 
+// bench.jsonl: one snapshot row per line; malformed lines (bad JSON, no `at` date, no `ids`) are skipped.
+function readBench(text) {
+  const events = [];
+  for (const line of text.split('\n')) {
+    try {
+      const { at, ids } = JSON.parse(line);
+      if (Number.isFinite(Date.parse(at)) && ids) events.push({ at, ids });
+    } catch {
+      // Not a JSON row: skipped.
+    }
+  }
+  return { asOf: events.length ? Math.max(...events.map((e) => Date.parse(e.at))) : undefined, events };
+}
+
 export function runBench(sources, now) {
-  const results = [...computeU({ now, sources }), ...computeLI({ now, sources }), ...computeD({ now, sources })];
+  const results = [...computeU({ now, sources }), ...computeLI({ now, sources }), ...computeD({ now, sources }), ...computeQ({ now, sources })];
   return { results, scores: score(results, now) };
 }
 
