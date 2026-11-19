@@ -15,7 +15,8 @@
       },
       "pin": null,
       "checksum": null,
-      "fallback": "distilled-core"
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/tdd.md"
     },
     {
       "id": "diagnosing-bugs",
@@ -30,7 +31,8 @@
       },
       "pin": null,
       "checksum": null,
-      "fallback": "distilled-core"
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/diagnosing-bugs.md"
     },
     {
       "id": "prove-it-works",
@@ -43,6 +45,7 @@
       "pin": null,
       "checksum": null,
       "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/prove-it-works.md",
       "note": "verifier role; upstream source not named in issue #552"
     },
     {
@@ -56,6 +59,7 @@
       "pin": null,
       "checksum": null,
       "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/blast-radius.md",
       "note": "upstream source not named in issue #552"
     },
     {
@@ -69,6 +73,7 @@
       "pin": null,
       "checksum": null,
       "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/architect.md",
       "note": "new or cross-module design only; upstream source not named in issue #552"
     },
     {
@@ -82,6 +87,7 @@
       "pin": null,
       "checksum": null,
       "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/sequence-verifiable-units.md",
       "note": "upstream source not named in issue #552"
     },
     {
@@ -97,7 +103,8 @@
       },
       "pin": null,
       "checksum": null,
-      "fallback": "distilled-core"
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/implement.md"
     },
     {
       "id": "code-review",
@@ -112,7 +119,8 @@
       },
       "pin": null,
       "checksum": null,
-      "fallback": "distilled-core"
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/code-review.md"
     },
     {
       "id": "correct",
@@ -125,6 +133,7 @@
       "pin": null,
       "checksum": null,
       "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/correct.md",
       "note": "idle sourcer; upstream source not named in issue #552"
     },
     {
@@ -138,6 +147,7 @@
       "pin": null,
       "checksum": null,
       "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/show-me-your-work.md",
       "note": "decision trace; role list not given in issue #552; upstream source not named in issue #552"
     },
     {

@@ -17,7 +17,7 @@ Roundtable Work does not vendor upstream skill trees. [`practice/skills/manifest
 | `checksum` | `sha256:` digest of the skill directory at that pin, or `null`. |
 | `fallback` | `distilled-core` for required skills; `skip` for optional skills. |
 
-An entry with `pin: null` is never installed. The doctor reports it and uses the fallback.
+An entry with `pin: null` is never installed. The doctor reports it and uses the fallback. The in-repo fallback texts for required skills live in [`practice/fallback/`](../practice/fallback/), named by each entry's `fallbackFile`.
 
 ## Standard skill directories
 
