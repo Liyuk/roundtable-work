@@ -116,7 +116,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
     if (typeof gates.crossCheck !== 'function') return failed('gate2', 'High-risk diff has no cross-check implementation');
     if (!crossCheckModel) return failed('gate2', 'High-risk diff has no configured cross-check model');
     let result;
-    try { result = await gates.crossCheck({ issue: id, head, tree, model: crossCheckModel, ...(routing && { routing, role: routing.facts.roles.crosscheck }), changedFiles }); }
+    try { result = await gates.crossCheck({ issue: id, head, tree, model: crossCheckModel, ...(routing && { routing, role: routing.facts.roles.reviewer }), changedFiles }); }
     catch (error) { return failed('gate2', error.message, true); }
     if (!PASS(result)) {
       const reason = result?.reason ?? 'Cross-check failed';
@@ -125,7 +125,7 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
       await escalation({ issue: id, head, tree, model: modelRouter?.('escalation'), disagreement: { gate1: 'pass', gate2: 'fail', reason } });
       return { ...await failed('gate2', reason), escalated: true };
     }
-    if (routing) roundMeta.gate2 = { role: 'crosscheck', harness: result.harness ?? routing.facts.roles.crosscheck.harness, model: crossCheckModel };
+    if (routing) roundMeta.gate2 = { role: 'crosscheck', harness: result.harness ?? routing.facts.roles.reviewer.harness, model: crossCheckModel };
     await persist('gate2');
   }
   if (gatedSafetyFiles.length) {

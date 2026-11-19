@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  ROLES, RoutingError, activeWindow, createModelRouter, escalationAttemptBudget, formatRoutingFacts, loadRouting, renderRolePrompt, routingFacts, validateRouting,
+  ROLES, RoutingError, activeWindow, createModelRouter, escalationAttemptBudget, formatRoutingFacts, loadRouting, renderRolePrompt, resolveRole, routingFacts, validateRouting,
 } from '../../runtime/lib/routing.mjs';
 
 
@@ -68,7 +68,8 @@ const roles = () => ({
   fixer: entry('model-fix'),
   reviewer: entry('model-review-strong', 'strong'),
   researcher: entry('model-research'),
-  crosscheck: entry('model-crosscheck', 'strong'),
+  verifier: entry('model-verify'),
+  security: entry('model-security', 'strong'),
 });
 const table = () => ({ version: 1, windows: [{ ...WINDOW, roles: roles() }] });
 
@@ -119,20 +120,73 @@ test('reviewer and fixer tiers must be at least the developer tier', () => {
   }
 });
 
-for (const tier of ['economy', 'standard']) {
-  test(`crosscheck tier ${tier} is rejected with the window and role`, () => {
-    const config = table();
-    config.windows[0].roles.crosscheck.tier = tier;
-    assert.throws(() => validateRouting(config), (error) => (
-      error instanceof RoutingError && error.message.includes('2026-11')
-      && error.message.includes('crosscheck') && error.message.includes('strong')
-    ));
-  });
-}
+test('reviewer tier standard is rejected with the window and role', () => {
+  const config = table();
+  config.windows[0].roles.reviewer.tier = 'standard';
+  assert.throws(() => validateRouting(config), (error) => (
+    error instanceof RoutingError && error.message.includes('2026-11')
+    && error.message.includes('reviewer') && error.message.includes('strong')
+  ));
+});
 
-test('crosscheck tier strong is accepted', () => {
+test('reviewer tier strong is accepted', () => {
   const config = table();
   assert.equal(validateRouting(config), config);
+});
+
+test('ROLES is the seven canonical names in order', () => {
+  assert.deepEqual(ROLES, ['chief', 'researcher', 'developer', 'fixer', 'reviewer', 'verifier', 'security']);
+});
+
+test('each legacy alias resolves to its canonical role', () => {
+  assert.equal(resolveRole('opus-fix'), 'fixer');
+  assert.equal(resolveRole('xcheck'), 'reviewer');
+  assert.equal(resolveRole('crosscheck'), 'reviewer');
+  assert.equal(resolveRole('cross-reviewer'), 'reviewer');
+  assert.equal(resolveRole('decider'), 'verifier');
+  assert.equal(resolveRole('acceptor'), 'verifier');
+  assert.equal(resolveRole('tester'), 'verifier');
+  assert.equal(resolveRole('threat'), 'security');
+  assert.equal(resolveRole('exploit'), 'security');
+  assert.equal(resolveRole('threat-modeler'), 'security');
+  assert.equal(resolveRole('red-teamer'), 'security');
+});
+
+test('canonical role names resolve to themselves', () => {
+  for (const role of ROLES) assert.equal(resolveRole(role), role);
+});
+
+test('unknown and prototype role names are a ROUTING_INVALID RoutingError', () => {
+  for (const name of ['deployer', 'toString', 'constructor', '__proto__']) {
+    assert.throws(() => resolveRole(name), (error) => error instanceof RoutingError && error.code === 'ROUTING_INVALID');
+  }
+});
+
+test('the routing facts block lists exactly the seven canonical roles', () => {
+  const lines = formatRoutingFacts(routingFacts(validateRouting(table()), NOW)).split('\n').filter((line) => line.startsWith('- '));
+  assert.deepEqual(lines.map((line) => line.slice(2).split(':')[0]), ['chief', 'researcher', 'developer', 'fixer', 'reviewer', 'verifier', 'security']);
+});
+
+test('legacy role keys are canonicalized in place and the same object is returned', () => {
+  const config = table();
+  const roles = config.windows[0].roles;
+  roles.crosscheck = roles.reviewer; delete roles.reviewer;
+  roles['threat-modeler'] = roles.security; delete roles.security;
+  assert.equal(validateRouting(config), config);
+  assert.equal(roles.reviewer.model, 'model-review-strong');
+  assert.equal(roles.security.model, 'model-security');
+  assert.deepEqual(Object.keys(roles).sort(), [...ROLES].sort());
+});
+
+test('a legacy key beside its canonical key, or two keys for one role, is a RoutingError', () => {
+  const both = table();
+  both.windows[0].roles.crosscheck = entry('model-cc', 'strong');
+  assert.throws(() => validateRouting(both), (error) => error instanceof RoutingError && error.message.includes('reviewer'));
+  const twoLegacy = table();
+  delete twoLegacy.windows[0].roles.reviewer;
+  twoLegacy.windows[0].roles.crosscheck = entry('model-cc', 'strong');
+  twoLegacy.windows[0].roles.xcheck = entry('model-x', 'strong');
+  assert.throws(() => validateRouting(twoLegacy), (error) => error instanceof RoutingError && error.message.includes('reviewer'));
 });
 
 test('a valid table is returned unchanged and produces the routing facts block', () => {
@@ -172,7 +226,7 @@ test('an invalid routing table makes the CLI exit non-zero before any pass', asy
   try {
     const file = join(root, 'routing.json');
     const config = table();
-    delete config.windows[0].roles.crosscheck;
+    delete config.windows[0].roles.verifier;
     await writeFile(file, JSON.stringify(config));
     const result = spawnSync(process.execPath, [
       'runtime/rtd.mjs', '--work-root', root, '--queue', join(root, 'queue.json'),
@@ -181,7 +235,7 @@ test('an invalid routing table makes the CLI exit non-zero before any pass', asy
     assert.equal(result.status, 2);
     assert.match(result.stderr, /^routing: /);
     assert.match(result.stderr, /2026-11/);
-    assert.match(result.stderr, /crosscheck/);
+    assert.match(result.stderr, /verifier/);
     assert.equal(result.stdout, '');
     assert.equal((await readdir(root)).includes('.roundtable'), false, 'no queue or lock work started');
   } finally { await rm(root, { recursive: true, force: true }); }
