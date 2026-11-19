@@ -224,6 +224,8 @@ class Sched:
         c = self.cfg
         self.repo = c.get("RT_REPO", "Liyuk/roundtable-work")
         self.owner = c.get("RT_OWNER", "Liyuk")
+        raw = c.get("RT_AUTHOR_ALLOWLIST", "").strip() or self.owner   # issue authors the scheduler claims
+        self.authors = {a.strip() for a in raw.split(",") if a.strip()}
         self.workers_max = int(c.get("RT_WORKERS", "2"))
         self.poll = int(c.get("RT_POLL", "300"))
         self.handsoff = {int(x) for x in re.split(r"[\s,]+", c.get("RT_HANDS_OFF_PRS", "")) if x.isdigit()}
@@ -604,8 +606,9 @@ class Sched:
             self.check_main()
             return
         try:
-            issues = self.gh_read(["issue", "list", "-R", self.repo, "--state", "open", "--author", self.owner, "-L", "200",
-                                   "--json", "number,title,body,labels,createdAt"])
+            issues = [i for a in sorted(self.authors) for i in self.gh_read(
+                ["issue", "list", "-R", self.repo, "--state", "open", "--author", a, "-L", "200",
+                 "--json", "number,title,body,labels,createdAt"])]
             allst = {i["number"]: i["state"] for i in self.gh_read(
                 ["issue", "list", "-R", self.repo, "--state", "all", "-L", "500", "--json", "number,state"])}
             merged = {p["number"] for p in self.gh_read(["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number"])}
