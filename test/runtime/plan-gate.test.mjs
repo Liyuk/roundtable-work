@@ -16,7 +16,7 @@ async function run({ outputs = [], planGate } = {}) {
   const handler = async ({ phase, plan: planTurn }) => {
     calls.push({ phase, plan: planTurn?.prompt ?? null });
     if (planTurn) return { exitCode: 0, output: outputs.shift() ?? '' };
-    return { exitCode: 0, output: phase === 'reviewing' ? '审查结论：通过' : 'ok' };
+    return { exitCode: 0, output: phase === 'reviewing' ? 'Verdict: pass' : 'ok' };
   };
   try {
     const result = await runQueue({ workRoot: root, queue: ['7'], handler, ...(planGate === undefined ? {} : { planGate }) });
