@@ -1,0 +1,4 @@
+{
+  "enabled": false,
+  "description": "Technical-plan gate before execute. When true, the developer phase first asks for a fenced rt-plan JSON block: one re-ask when it is missing or invalid, then execute continues degraded. It never opens an owner stop."
+}
