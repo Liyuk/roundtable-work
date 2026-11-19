@@ -125,3 +125,27 @@ test('missing source, or asOf missing or older than 24 h, gives level 0 and not 
   const stale = run('U5', { stages: { asOf: NOW - DAY - 1, events: [] } });
   assert.deepEqual([stale.measurable, stale.level], [false, 0]);
 });
+
+// Effective time (section 2): pauses and idle queue snapshots are removed from the windows.
+test('idle queue time does not lengthen the U2 gap it sits in', () => {
+  // Interventions at -160 h and -10 h; the gap between them is 150 h. Idle covers -150 h..-20 h (130 h), so it is 20 h.
+  const ivs = fresh([{ at: iso(NOW - 160 * HOUR) }, { at: iso(NOW - 10 * HOUR) }]);
+  const queue = fresh([{ at: iso(NOW - 150 * HOUR), running: 0, claimable: 0 }, { at: iso(NOW - 20 * HOUR), running: 1, claimable: 0 }]);
+  assert.equal(run('U2', { interventions: ivs }).value, 150);
+  assert.equal(run('U2', { interventions: ivs, queue }).value, 20);
+});
+
+test('environment pause is excluded from U1 and U2', () => {
+  const pauses = { asOf: NOW - MIN, events: [{ start: iso(NOW - 24 * HOUR), end: iso(NOW) }] };
+  assert.equal(run('U2', { pauses }).value, 144); // 168 h window minus 24 h pause
+  assert.equal(run('U1', { pauses }).value, 144); // no episodes: the effective window
+  // Episodes are not excluded: 144 effective h over the 84 episodes from the 2 h series.
+  assert.equal(run('U1', { interventions: fresh(series(84, 2 * HOUR)), pauses }).value, 144 / 84);
+});
+
+test('an idle-only stretch is not success: U2 and U1 do not grow across it', () => {
+  // Empty queue from -100 h to now: only the first 68 h of the window is effective.
+  const queue = fresh([{ at: iso(NOW - 100 * HOUR), running: 0, claimable: 0 }]);
+  assert.equal(run('U2', { queue }).value, 68); // 168 h window minus the 100 h idle tail
+  assert.equal(run('U1', { queue }).value, 68);
+});
