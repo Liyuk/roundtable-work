@@ -14,6 +14,7 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
 const UNBLOCK = '2020-01-01T00:05:00Z';
 const AT = Date.parse(UNBLOCK);
 const WAIT = { decision: 'wait', event: 'resume', unblockAt: UNBLOCK };
+const NO_FLOCK = spawnSync('sh', ['-c', 'command -v flock']).status !== 0;
 const SKIP = new Set(['releases', 'test', 'deploy', 'config.env', 'state', 'logs', 'locks', 'status.tsv']);
 
 const withRoot = (fn) => {
@@ -93,7 +94,7 @@ printf 'wait\\nawaiting CI\\nunblock_at %s\\n' "$UNBLOCK" > "$RT_HOME/wt/5/.roun
   return { home, base, env, ghLog };
 }
 
-test('a worker wait writes a due timer, exits without a second wake, and frees its slot and lock', (t) => {
+test('a worker wait writes a due timer, exits without a second wake, and frees its slot and lock', { skip: NO_FLOCK ? 'flock(1) is not installed on this platform (e.g. macOS)' : false }, (t) => {
   const { home, env } = sandbox(t);
   const r = spawnSync('bash', [join(home, 'rt-work.sh'), '5'], { env, encoding: 'utf8', timeout: 60_000 });
   assert.equal(r.status, 0, r.stderr + r.stdout);
