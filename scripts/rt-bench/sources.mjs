@@ -64,3 +64,18 @@ export function readMerges(text) {
     return at && ref ? { at, kind: 'merge', ref } : null;
   });
 }
+
+// JSON rows (usage.jsonl, queue-snapshot.jsonl): one object per line; a row without a parsable `at` or with bad JSON is malformed.
+// `at` is kept as UTC ISO.
+export function readJsonRows(text) {
+  return readRows(text, (raw) => {
+    let row;
+    try {
+      row = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    const ms = Date.parse(row?.at);
+    return Number.isFinite(ms) ? { ...row, at: new Date(ms).toISOString() } : null;
+  });
+}

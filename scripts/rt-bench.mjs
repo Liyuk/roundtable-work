@@ -4,12 +4,13 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { readInterventions } from './rt-bench/sources.mjs';
+import { readInterventions, readJsonRows } from './rt-bench/sources.mjs';
 import { readSchedLog } from './rt-bench/sched-log.mjs';
 import { computeU } from './rt-bench/metrics-u.mjs';
 import { computeLI } from './rt-bench/metrics-li.mjs';
 import { computeD } from './rt-bench/metrics-d.mjs';
 import { computeQ } from './rt-bench/metrics-q.mjs';
+import { computeC } from './rt-bench/metrics-cost.mjs';
 import { score } from './rt-bench/score.mjs';
 
 const hours = (v) => `${v.toFixed(1)} h`;
@@ -18,6 +19,8 @@ const count = (v) => `${v}`;
 const ratio7 = (v) => `${v}/7`;
 const oneDecimal = (v) => v.toFixed(1);
 const threeDecimals = (v) => v.toFixed(3);
+const integer = (v) => v.toFixed(0);
+const twoDecimals = (v) => v.toFixed(2);
 
 // Sub-metric rows in doc order: [id, name, format, Level-5 target].
 const ROWS = [
@@ -30,6 +33,7 @@ const ROWS = [
   ['D1', 'decision interventions', count, '0'], ['D2', 'longest owner wait', hours, '≤4 h'], ['D3', 'self-settled', percent, '≥98%'],
   ['D4', 'rollback rate', percent, '≤2%'], ['D5', 'loop-merged share', percent, '100%'],
   ['Q1', 'rework/revert rate', percent, '≤2%'], ['Q2', '14-day survival', percent, '≥98%'], ['Q3', 'per-issue bench delta', percent, '100%'],
+  ['C1', 'tokens per completed issue', integer, '≤100k'], ['C2', 'cost per completed issue', twoDecimals, '≤0.20'], ['C3', 'idle overhead tokens', integer, '≤10k'],
 ];
 
 // Normalized sources: { asOf (epoch ms, undefined when no events), events }.
@@ -38,6 +42,8 @@ export async function collect(io, workspace) {
   const ivText = await io.readText(join(state, 'interventions.tsv'));
   const logText = await io.readText(join(state, 'sched.log'));
   const benchText = await io.readText(join(state, 'bench.jsonl'));
+  const usageText = await io.readText(join(state, 'usage.jsonl'));
+  const queueText = await io.readText(join(state, 'queue-snapshot.jsonl'));
   const iv = ivText === null ? null : readInterventions(ivText);
   const log = logText === null ? null : readSchedLog(logText);
   const asOf = (r) => (r?.lastSeen ? Date.parse(r.lastSeen) : undefined);
@@ -49,6 +55,8 @@ export async function collect(io, workspace) {
     schedGaps: source(log, 'gap'),
     stages: source(log, 'stage'),
     benchSnapshots: readBench(benchText ?? ''),
+    usage: source(readJsonRows(usageText ?? '')),
+    queueSnapshot: source(readJsonRows(queueText ?? '')),
   };
 }
 
@@ -67,7 +75,7 @@ function readBench(text) {
 }
 
 export function runBench(sources, now) {
-  const results = [...computeU({ now, sources }), ...computeLI({ now, sources }), ...computeD({ now, sources }), ...computeQ({ now, sources })];
+  const results = [...computeU({ now, sources }), ...computeLI({ now, sources }), ...computeD({ now, sources }), ...computeQ({ now, sources }), ...computeC({ now, sources })];
   return { results, scores: score(results, now) };
 }
 
