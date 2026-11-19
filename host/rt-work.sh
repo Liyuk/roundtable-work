@@ -76,6 +76,7 @@ setstatus(){ # n state wake detail   (shares state/status.lock with rt-sched.py)
 }
 fp(){ (cd "$WT" && git rev-parse HEAD; git status --porcelain; git rev-parse -q --verify "refs/remotes/origin/$BRANCH"; cat .roundtable/state/checkpoint.md 2>/dev/null; ls -l .roundtable/state/subissues 2>/dev/null) | sha1sum | cut -c1-12; }
 stopped(){ [ -e "$RT_HOME/STOP" ]; }
+pick(){ [ -f "$RT_HOME/$1" ] && echo "$RT_HOME/$1" || echo "$(dirname "$BRIDGE_JS")/$1"; }   # RT_HOME override wins, else the copy shipped next to this script
 render(){ # file -> stdout with placeholders replaced
   sed -e "s|__N__|$n|g" -e "s|__WAKE__|${wake:-0}|g" -e "s|__MAXWAKE__|$MAXWAKE|g" -e "s|__TS__|$(date '+%F %T %Z')|g" \
       -e "s|__BRANCH__|$BRANCH|g" -e "s|__WT__|$WT|g" -e "s|__MODEL__|$CHIEF_MODEL|g" -e "s|__HARNESS__|$RT_HARNESS|g" -e "s|__HARNESS_EFF__|$HARNESS_EFF|g" -e "s|__LENIENT__|$LENIENT|g" -e "s|__BASE__|${BASE:-main}|g" \
@@ -252,7 +253,7 @@ log "worker start pid=$$ slot=${RT_SLOT:-0} base=$BASE harness=$HARNESS_EFF mode
 git -C "$REPO_DIR" fetch -q origin 2>/dev/null || { sleep 2; git -C "$REPO_DIR" fetch -q origin 2>/dev/null; } || log "WARN git fetch failed"   # retry once: parallel workers share the repo
 "$RT_HOME/bin/rt-wt" "$n" "$BASE" >/dev/null || { log "worktree setup failed"; setstatus "$n" error 0 "worktree setup failed"; exit 1; }
 mkdir -p "$SD" "$WT/.roundtable/tickets" "$WT/.roundtable/scratch"
-render "$RT_HOME/policy.md" >"$WT/.roundtable/policy.md"   # refresh policy each run
+render "$(pick policy.md)" >"$WT/.roundtable/policy.md"   # refresh policy each run
 if [ -s "$STATE/supervisor/$n.md" ]; then mv "$STATE/supervisor/$n.md" "$SD/SUPERVISOR.md"; log "picked up pending SUPERVISOR.md"; fi
 THREAT_REWRITE=0
 if wants_threat_model; then
@@ -1149,7 +1150,7 @@ while [ "$run_loop" = 1 ]; do
   before=$(fp); rm -f "$SD/DECISION"; echo "chief $wake $used" >"$SD/chief-stage"
   setstatus "$n" running "$wake" "chief wake $wake (budget $used/$MAXWAKE)"
   clog="$RT_HOME/logs/chief/$n-wake$wake-$(date +%Y%m%d-%H%M%S).log"
-  prompt=$(render "$RT_HOME/chief-prompt.md")
+  prompt=$(render "$(pick chief-prompt.md)")
   log "wake $wake start log=$clog"
   t0=$(date +%s)
   (printf "%s" "$prompt" | "$RT_HOME/bin/rt-stage-run" chief "$CHIEF_TMO" "$clog" "$AGENT" chief "$WT" "$clog" --session-dir "$RT_HOME/sessions/$n" 2>>"$clog.agent")
