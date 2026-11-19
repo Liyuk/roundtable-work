@@ -59,3 +59,8 @@ test('a stale sub-metric drags its dimension to zero through level 0', () => {
   const stale = baselineResults.map((r) => (r.id === 'D5' ? { ...r, source: { asOf: NOW - DAY - 1 } } : r));
   assert.equal(score(stale, NOW).D, 1); // D levels 1,3,1,4,0: mean 1.8 -> 1; min+1 = 1
 });
+
+test('L6-L8 are owner-proposed: level 0 results do not change the L dimension score', () => {
+  const withSelf = [...baselineResults, ...['L6', 'L7', 'L8'].map((id) => ({ id, level: 0, source: FRESH }))];
+  assert.deepEqual(score(withSelf, NOW), { U: 0, L: 1, I: 1, D: 2, overall: 0 });
+});
