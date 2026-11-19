@@ -6,7 +6,7 @@
 set -uo pipefail
 n="${1:?issue number}"; base="${2:-main}"
 RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-REPO_DIR="${RT_REPO_DIR:-$HOME/roundtable-work}"
+REPO_DIR="${RT_REPO_DIR:-$(dirname "$RT_HOME")/roundtable-work}"
 BRANCH="rt/$n-pi"; WT="$RT_HOME/wt/$n"
 if [ ! -d "$WT" ]; then
   git -C "$REPO_DIR" rev-parse -q --verify "refs/remotes/origin/$base" >/dev/null || { echo "base branch origin/$base not found" >&2; exit 1; }
