@@ -1,6 +1,6 @@
 #!/bin/sh
-# Prune temp/lock leftovers from roundtable test runs (host safeguard until the repo fix lands).
-find /tmp -maxdepth 1 \( -name 'rt-lock-*' -o -name 'rt-hard-*' -o -name 'rt-recovery-*' -o -name 'rt-renewal-*' \) -mmin +30 -print0 2>/dev/null | xargs -0 -r rm -rf
-S="$HOME/.local/state/roundtable/locks"
+# Prune temp entries under TMPDIR and this instance's state lock dir; RT_HOME contents are never pruned (live locks).
+find "${TMPDIR:-/tmp}" -maxdepth 1 \( -name 'rt-lock-*' -o -name 'rt-hard-*' -o -name 'rt-recovery-*' -o -name 'rt-renewal-*' \) -mmin +30 -print0 2>/dev/null | xargs -0 -r rm -rf
+S="${RTW_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/roundtable}/locks"
 [ -d "$S" ] && find "$S" -mindepth 1 -maxdepth 1 -mmin +120 -print0 2>/dev/null | xargs -0 -r rm -rf
 exit 0
