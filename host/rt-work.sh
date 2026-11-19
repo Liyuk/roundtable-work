@@ -15,6 +15,7 @@ for a in "$@"; do
 done
 [[ "$n" =~ ^[0-9]+$ ]] || { echo "usage: rt-work.sh <issue-n> [base-branch] [--gate-only]" >&2; exit 2; }
 RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"; export RT_HOME
+BRIDGE_JS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/outbox-bridge.mjs"
 set -a; . "$RT_HOME/config.env"; set +a
 export RT_MODEL RT_DECIDER_MODEL RT_XCHECK_MODEL RT_OWNER RT_REPO
 export RT_HARNESS="${RT_HARNESS:-pi}"
@@ -86,8 +87,8 @@ render(){ # file -> stdout with placeholders replaced
 label(){ # issue|pr num add|rm label
   # `gh pr edit` fails on this repo because of a Projects classic GraphQL error.
   # Labels are issue-level; `gh issue edit` works for both issues and pull requests.
-  local kind=$1 num=$2 op=$3 l=$4 flag=--add-label; [ "$op" = rm ] && flag=--remove-label
-  "$GH" issue edit "$num" -R "$RT_REPO" "$flag" "$l" >/dev/null 2>&1 || log "WARN label $op '$l' on $kind #$num failed (label missing? run bin/rt-labels-init)"
+  local kind=$1 num=$2 op=$3 l=$4
+  node "$BRIDGE_JS" "$WT" "$RT_REPO" label "$num" "$op" "$l" >/dev/null 2>&1 || log "WARN label $op '$l' on $kind #$num failed (label missing? run bin/rt-labels-init)"
 }
 gh_comment(){ # issue|pr num marker bodyfile [fallback-text] : privacy-scanned before posting
   local kind=$1 num=$2 marker=$3 bf=$4 fb="${5:-}" tmp body
@@ -98,7 +99,7 @@ gh_comment(){ # issue|pr num marker bodyfile [fallback-text] : privacy-scanned b
     body="${fb:-Update from the roundtable loop. The detailed message was withheld by the privacy scan; see the worker log on the host.}"
   fi
   printf '%s\n%s\n' "$marker" "$body" >"$tmp"
-  "$GH" "$kind" comment "$num" -R "$RT_REPO" --body-file "$tmp" >/dev/null 2>&1 || log "WARN $kind comment on #$num failed"
+  node "$BRIDGE_JS" "$WT" "$RT_REPO" comment "$num" "$tmp" >/dev/null 2>&1 || log "WARN $kind comment on #$num failed"
   rm -f "$tmp"
 }
 say(){ # issue|pr num marker text...
