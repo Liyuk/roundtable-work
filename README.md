@@ -57,13 +57,13 @@ To try it inside this repository: `.claude/skills/roundtable-work` is already a 
 There is no single shipped configuration file, and no model is set as a default. Configuration lives in three places:
 
 - **Deployment policy** (`.roundtable/policy.md`, `team.md`): authorizations, budget, roles, and stop conditions. The install script creates them from templates; you own them. The templates set defaults such as 2 attempts per assignment and 2 review rejection rounds, after which only blocking findings stop the work and the rest are listed in the PR body.
-- **Routing table** (a JSON file passed as `rtd --routing FILE`): maps each role (`chief`, `developer`, `fixer`, `reviewer`, `researcher`, `crosscheck`) to a harness, a model, and a tier, for one time window. The example in [17 Model Routing](docs/17-model-routing.md) uses placeholder names; deployments must put in model IDs they have verified.
+- **Routing table** (a JSON file passed as `rtd --routing FILE`): maps each role (`chief`, `researcher`, `developer`, `fixer`, `reviewer`, `verifier`, `security`) to a harness, a model, and a tier, for one time window. The example in [17 Model Routing](docs/17-model-routing.md) uses placeholder names; deployments must put in model IDs they have verified.
 - **Environment keys** for the runtime's model router (`RT_ALLOWED_MODELS`, `RT_MODEL`, `RT_REVIEWER_MODEL`, `RT_CROSSCHECK_MODEL`, `RT_DECIDER_MODEL`, and others), listed in [SETUP](SETUP.md#model-and-reviewer-environment-keys). `RT_ALLOWED_MODELS` is required; there is no built-in default.
 
 Roles and tiers in the routing table are the only routing source for prompts. Model names that appear in older practice records are not configuration.
 
 - **Reviewer**: Gate 1 is given the reviewer role's model from the routing table and runs as a separate process.
-- **Cross-check (optional)**: Gate 2 runs only for high-risk or triggered diffs, and needs the `crosscheck` role. The code does not choose a harness for it.
+- **Cross-check (optional)**: Gate 2 runs only for high-risk or triggered diffs, and uses the `reviewer` role. The code does not choose a harness for it.
 - **Escalation (optional)**: the decider model (`RT_DECIDER_MODEL`) is used only when a handler exports an escalation adapter, for example after a Gate 2 disagreement. Its attempt budget is `RT_DECIDE_MAX` (default 2).
 - **GitHub access**: the runtime calls the `gh` command with the login already present on the host (`scripts/github-read.mjs`). The repository stores no credentials. A GitHub run is in shadow mode unless `--live` is given.
 

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ADAPTERS, createAdapterLauncher } from './agent-adapter.mjs';
-import { ROLES, routingFacts } from './routing.mjs';
+import { ROLES, canonicalizeRoles, routingFacts } from './routing.mjs';
 import { recordUsageRow } from './usage-ledger.mjs';
 
 export const HARNESS_CONFIG = fileURLToPath(new URL('../harness.config.json', import.meta.url));
@@ -28,6 +28,7 @@ export function selectHarness(name) {
 /** Reads the in-repo harness config. Every role's harness name must be a known harness; an unknown name throws. */
 export async function loadHarnessConfig(file = HARNESS_CONFIG, read = readFile) {
   const config = JSON.parse(await read(file, 'utf8'));
+  canonicalizeRoles(config.roles, 'harness config');
   for (const role of ROLES) selectHarness(config.roles[role]);
   return config;
 }

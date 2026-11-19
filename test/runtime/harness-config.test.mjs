@@ -47,6 +47,17 @@ test('the in-repo config names a known harness for every role and routes the imp
   assert.equal(config.implementerRole, 'developer');
 });
 
+test('the config accepts a legacy role key and canonicalizes it to the new name', withDir(async (dir) => {
+  const file = await configWith(dir, 'pi');
+  const config = JSON.parse(await readFile(file, 'utf8'));
+  delete config.roles.reviewer;
+  config.roles.crosscheck = 'pi';
+  await writeFile(file, JSON.stringify(config));
+  const loaded = await loadHarnessConfig(file);
+  assert.equal(loaded.roles.reviewer, 'pi');
+  assert.equal(Object.hasOwn(loaded.roles, 'crosscheck'), false);
+}));
+
 test('an unknown harness name in the config fails closed, naming the harness', withDir(async (dir) => {
   const file = await configWith(dir, 'deepseek');
   await assert.rejects(loadHarnessConfig(file), /unknown harness: deepseek/);
