@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { exists, harnessDirs, skillSource, skillVersion } from './install.mjs';
 import { classifyProbeResult } from './probe.mjs';
+import { askConsent, checkSkills, loadManifest, MANIFEST } from './skill-deps.mjs';
 import { CANDIDATES_FILE, HARNESS_CONFIG, HARNESSES, loadHarnessConfig, validateCandidates } from '../runtime/lib/harness.mjs';
 import { loadRouting } from '../runtime/lib/routing.mjs';
 
@@ -84,7 +85,10 @@ const report = {
   persistentDelegation: 'unverified',
   modelAuthentication: 'not-checked',
 };
-if (values.target) report.installation = await inspect(resolve(values.target), values.routing ? await loadRouting(resolve(values.routing)) : null);
+if (values.target) {
+  report.installation = await inspect(resolve(values.target), values.routing ? await loadRouting(resolve(values.routing)) : null);
+  report.skillDependencies = await checkSkills({ manifest: await loadManifest(MANIFEST), target: resolve(values.target), consent: askConsent });
+}
 
 if (values.json) console.log(JSON.stringify(report, null, 2));
 else {
@@ -102,6 +106,11 @@ else {
     console.log(`  Claude Code subagents: ${agents.length ? agents.join(', ') : 'none'}`);
     console.log(`  .roundtable/team.md: ${inst.config.team ? 'present' : 'missing'} · policy.md: ${inst.config.policy ? 'present' : 'missing'}`);
     if (inst.candidates) for (const [role, list] of Object.entries(inst.candidates)) console.log(`  candidates ${role}: ${list.join(' → ')}`);
+  }
+  const deps = report.skillDependencies;
+  if (deps) {
+    for (const s of deps.skills) console.log(`  skill ${s.id} (${s.requirement}): ${s.status}${s.reason ? ` — ${s.reason}` : ''}${s.install ? ` · install: ${s.install}` : ''}`);
+    console.log(deps.fallbackUsed ? 'Required skills missing or unverified: fallback will be used; the loop keeps running.' : 'Required skills verified at pin.');
   }
   console.log('Background wake-up and persistent delegation: not verified.');
   console.log('Model authentication: not checked. This does not install or start a team.');
