@@ -32,8 +32,7 @@ GH="${RT_GH_REAL:-/usr/bin/gh}"
 WINDOW="$RT_HOME/bin/rt-window"
 HARNESS=$("$WINDOW" --harness 2>/dev/null || echo "${RT_HARNESS:-codex}")
 case "$HARNESS" in pi|codex) ;; *) HARNESS=codex;; esac
-MODEL=$("$WINDOW" --model xcheck 2>/dev/null || true)
-[ -n "$MODEL" ] || MODEL="${RT_XCHECK_MODEL:-}"
+MODEL=$("$WINDOW" --model reviewer 2>/dev/null || true)
 [ -n "$MODEL" ] || unavailable "no Gate 2 model configured"
 CODEX="${RT_CODEX:-codex}"
 if [ "$HARNESS" = codex ]; then

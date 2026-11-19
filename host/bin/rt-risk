@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# rt-risk <worktree> <base-ref> <issue-title>
+# Gate 2 trigger: prints one reason line when the diff is high-risk, nothing when it is low-risk. Read-only; never calls gh.
+# Classes are documented in host/README-v2.md ("Gate 2").
+set -uo pipefail
+wt="$1"; base="$2"; title="${3:-}"
+mb=$(git -C "$wt" merge-base "$base" HEAD) || exit 0
+files=$(git -C "$wt" diff --name-only "$mb"...HEAD)
+if grep -qE '^(scripts/|\.github/|runtime/|\.agents/skills/|profiles/)|(^|/)templates/' <<<"$files"; then echo "touches scripts/.github/runtime/skills/profiles/templates"; exit 0; fi
+hit=$(grep -oiE 'auth|secret|credential|token|deploy|network|proxy|webhook|intake' <<<"$files" | head -1)
+if [ -n "$hit" ]; then echo "high-risk path: $hit"; exit 0; fi
+lines=$(git -C "$wt" diff --numstat "$mb"...HEAD | awk '$1!="-"{s+=$1+$2} END{print s+0}')
+if [ "$lines" -gt 400 ]; then echo "$lines changed lines (>400)"; exit 0; fi
+if grep -qi 'I18N' <<<"$title"; then echo "I18N issue"; fi

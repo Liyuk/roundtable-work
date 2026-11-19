@@ -544,14 +544,8 @@ gate1_current(){ # sets G1=pass|fail|unavailable and G1_FINDINGS. A verdict only
   done
   G1=unavailable
 }
-high_risk(){ # prints a reason when the diff is high-risk (Gate 2 required)
-  local mb files lines
-  mb=$(git -C "$WT" merge-base "origin/$BASE" HEAD) || return 0
-  files=$(git -C "$WT" diff --name-only "$mb"...HEAD)
-  if grep -qE '^(scripts/|\.github/|runtime/|\.agents/skills/|profiles/)|(^|/)templates/' <<<"$files"; then echo "touches scripts/.github/runtime/skills/profiles/templates"; return; fi
-  lines=$(git -C "$WT" diff --numstat "$mb"...HEAD | awk '$1!="-"{s+=$1+$2} END{print s+0}')
-  if [ "$lines" -gt 400 ]; then echo "$lines changed lines (>400)"; return; fi
-  if grep -qi 'I18N' <<<"$ISSUE_TITLE"; then echo "I18N issue"; fi
+high_risk(){ # prints a reason when the diff is high-risk (Gate 2 required); rules in bin/rt-risk
+  "$RT_HOME/bin/rt-risk" "$WT" "origin/$BASE" "$ISSUE_TITLE"
 }
 gate2_downgrade_active(){ # 0 when a not-exploitable stamp matches the current HEAD
   local head; [ -f "$SD/gate2-downgrade.json" ] || return 1
