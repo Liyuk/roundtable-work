@@ -55,6 +55,8 @@ import { createWakeSignal } from './lib/event-wake.mjs';
 import { openOutbox, dispatch } from './lib/outbox.mjs';
 import { ensurePatrolTimer, patrolCadenceMs, runPatrol } from './lib/patrol-timer.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
+import { loadImRouter, withIm } from './lib/outbox-im.mjs';
+import { fetchTransport } from '../scripts/im-transport.mjs';
 import { selfMetrics } from './lib/self-metrics.mjs';
 import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
@@ -1266,9 +1268,10 @@ async function main(argv) {
       await sweepAskTimeouts({ root: workspace, policy });
       // A closed disk budget (admit false) starts no new queue run; running inbox and outbox work still go on.
       if (admit) console.log(JSON.stringify(await pass(workers, claimHold)));
-      // End of each cycle: raise anomaly alerts, then flush the outbox. IM providers are not implemented yet, so the GitHub provider is the only one.
+      // End of each cycle: raise anomaly alerts, then flush the outbox. Notifications also go to the IM channels routed for their subtype in .roundtable/im-routes.json (none when it is missing); a shadow run sends nothing to IM.
       if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
-      await dispatch({ outbox, provider: createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue }), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+      const github = createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue });
+      await dispatch({ outbox, provider: withIm(github, shadow ? null : loadImRouter({ root: workspace, send: fetchTransport })), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
     }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }

@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openOutbox, dispatch } from '../../runtime/lib/outbox.mjs';
-import { createWebhookProvider, createSlackProvider, createTelegramProvider, createImRouter, loadRoutes, SENT_PATH } from '../../runtime/lib/outbox-im.mjs';
+import { createGitHubOutboxProvider } from '../../runtime/lib/outbox-github.mjs';
+import { createWebhookProvider, createSlackProvider, createTelegramProvider, createImRouter, loadRoutes, loadImRouter, withIm, SENT_PATH } from '../../runtime/lib/outbox-im.mjs';
 
 const env = { RT_HOOK_URL: 'https://hooks.example.test/in', RT_SLACK_URL: 'https://slack.example.test/in', RT_TG_TOKEN: '123:FAKE-TOKEN', RT_TG_CHAT: '-4242' };
 
@@ -156,4 +157,85 @@ test('the router fans a notification out to every channel routed for its subtype
     assert.equal(hook.calls.length, 1);
     assert.equal(slack.calls.length, 1);
   });
+});
+
+// Routes table at <root>/.roundtable/im-routes.json; the file names env variables, never values.
+const writeRoutes = (root, table) => {
+  mkdirSync(join(root, '.roundtable'), { recursive: true });
+  writeFileSync(join(root, '.roundtable', 'im-routes.json'), JSON.stringify(table));
+};
+const HOOK = { type: 'webhook', urlEnv: 'RT_HOOK_URL' };
+const SLACK = { type: 'slack', urlEnv: 'RT_SLACK_URL' };
+const TELEGRAM = { type: 'telegram', tokenEnv: 'RT_TG_TOKEN', chatEnv: 'RT_TG_CHAT' };
+const stallAlert = (id = 'alert:stall:12') => ({ id, kind: 'notification', issue: 12, payload: { subtype: 'stall-alert', of: 'the worker' } });
+
+test('with no routes file or empty routes, nothing is sent to IM', async () => {
+  await withRoot(async (root) => {
+    const { send, calls } = fakeSend();
+    assert.deepEqual(await loadImRouter({ root, send, env }).deliver(notice()), { ok: true, channels: [] });
+    writeRoutes(root, { channels: {}, routes: {} });
+    assert.deepEqual(await loadImRouter({ root, send, env }).deliver(notice()), { ok: true, channels: [] });
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('one subtype routed to one channel sends once, to the URL named by the table', async () => {
+  await withRoot(async (root) => {
+    writeRoutes(root, { channels: { slack: SLACK }, routes: { 'merge-notice': ['slack'] } });
+    const { send, calls } = fakeSend();
+    assert.deepEqual(await loadImRouter({ root, send, env }).deliver(notice()), { ok: true, channels: ['slack'] });
+    assert.deepEqual(calls, [{ url: env.RT_SLACK_URL, body: { text: 'PR #12 merged at abc123' }, method: 'POST' }]);
+  });
+});
+
+test('one subtype routed to several channels sends to each of them', async () => {
+  await withRoot(async (root) => {
+    writeRoutes(root, { channels: { hook: HOOK, slack: SLACK, tg: TELEGRAM }, routes: { 'merge-notice': ['hook', 'slack', 'tg'] } });
+    const { send, calls } = fakeSend();
+    await loadImRouter({ root, send, env }).deliver(notice());
+    assert.deepEqual(calls.map((c) => c.url), [env.RT_HOOK_URL, env.RT_SLACK_URL, 'https://api.telegram.org/bot123:FAKE-TOKEN/sendMessage']);
+  });
+});
+
+test('a repeated item id is not sent again, including by a router loaded on a later dispatch', async () => {
+  await withRoot(async (root) => {
+    writeRoutes(root, { channels: { slack: SLACK }, routes: { 'merge-notice': ['slack'] } });
+    const { send, calls } = fakeSend();
+    const router = loadImRouter({ root, send, env });
+    await router.deliver(notice());
+    await router.deliver(notice());
+    await loadImRouter({ root, send, env }).deliver(notice());
+    assert.equal(calls.length, 1);
+  });
+});
+
+test('a failed IM send fails the item; the next dispatch delivers it to IM once and posts the GitHub comment once', async () => {
+  await withRoot(async (root) => {
+    writeRoutes(root, { channels: { slack: SLACK }, routes: { 'stall-alert': ['slack'] } });
+    const outbox = openOutbox(root);
+    const item = stallAlert();
+    outbox.enqueue(item);
+    const sent = [];
+    let status = 500;
+    const send = async (url) => { if (status < 300) sent.push(url); return { ok: status < 300, status }; };
+    const comments = [];
+    const writer = { listComments: async () => comments, createComment: (issue, body) => { comments.push({ body }); } };
+    const provider = withIm(createGitHubOutboxProvider({ writer }), loadImRouter({ root, send, env }));
+    assert.deepEqual(await dispatch({ outbox, provider, maxAttempts: 1 }), { delivered: [], failed: [item.id] });
+    status = 200;
+    assert.deepEqual(await dispatch({ outbox, provider }), { delivered: [item.id], failed: [] });
+    assert.deepEqual(sent, [env.RT_SLACK_URL]);
+    assert.equal(comments.length, 1);
+  });
+});
+
+test('withIm sends only notifications to IM, after the GitHub provider; a null router sends nothing to IM', async () => {
+  const seen = [];
+  const github = { deliver: async (item) => { seen.push(['github', item.kind]); return { ok: true }; } };
+  const im = { deliver: async (item) => { seen.push(['im', item.kind]); return { ok: true }; } };
+  const comment = { id: 'c:1', kind: 'comment', issue: 1, payload: { body: 'x' } };
+  await withIm(github, im).deliver(stallAlert());
+  await withIm(github, im).deliver(comment);
+  await withIm(github, null).deliver(stallAlert());
+  assert.deepEqual(seen, [['github', 'notification'], ['im', 'notification'], ['github', 'comment'], ['github', 'notification']]);
 });
