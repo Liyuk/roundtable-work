@@ -27,6 +27,11 @@ GitHub intake + autonomous decisions + parallel workers. `rt-loop.sh` / `queue.t
 ## Model routing (`config.env`)
 The only source of model routing is `config.env`. At each role start, `bin/rt-agent` generates the "routing facts" block (each role's harness and model, plus `RT_NOFUNDS_MODEL` for when DeepSeek has no funds) and injects it into the system prompt. `bin/rt-agent --routing-facts` shows it; `bin/rt-agent --check` verifies that every role has a model configured (start-box.sh runs it before startup). Prompts and policy files only name tiers (developer tier, reviewer tier, decider tier), never model names.
 
+## Role memory preload (#605)
+`RT_ROLE_MEMORY=1` makes `bin/rt-agent` append the role's preloaded memory to the prompt of each new role start, under a `## Memory` heading. The section is what `rtd` appends for the same role (`appendMemory` in `runtime/rtd.mjs`, `preload` in `runtime/lib/role-memory.mjs`): active layer-3 rules, then layer-2 index lines, capped at `LIMITS.preloadChars` (2000 characters). `bin/rt-role-memory.mjs` is the host helper; it has no copy of the cap or the heading format.
+- Default: `0` (off). With `0`, or when the store is empty or missing, the prompt is unchanged and the launch is unaffected. If the helper fails, rt-agent prints a warning and launches with the original prompt.
+- `RT_ROLE_MEMORY_DIR`: the store directory (`memory.jsonl`). Empty means `$RT_HOME/state`, the same `<work-root>/state` that `rtd` uses. `rtd` and the host share the store when both point at the same state directory.
+
 ## Deployment (done by the deployer; not executed in this directory)
 1. `bin/rt-labels-init -n` to see the list, then `bin/rt-labels-init` to create the labels.
 2. First run `RT_HOME=$PWD ./rt-sched.py --dry-run --once` to see the decisions (read-only, writes nothing to GitHub).

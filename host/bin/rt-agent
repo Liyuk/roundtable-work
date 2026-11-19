@@ -80,6 +80,9 @@ done
 model=$(model_for "$role")
 [ -n "$model" ] || { echo "rt-agent: no model configured for role $role (harness $H)" >&2; : >"$out"; exit 2; }
 prompt=$(cat)
+if [ "${RT_ROLE_MEMORY:-0}" = 1 ]; then   # #605: same memory section rtd appends; a failure keeps the prompt (launch proceeds)
+  prompt2=$(printf '%s' "$prompt" | "$RT_HOME/bin/rt-role-memory.mjs" "$role") && prompt=$prompt2 || echo "[rt-agent] role memory preload failed; launching without it" >&2
+fi
 cd "$wd" || { : >"$out"; exit 2; }
 # Inject the routing facts for this start (new starts only; a call already running keeps its prompt).
 rf="$out.routing.md"; routing_facts "$role" >"$rf" 2>/dev/null && [ -s "$rf" ] && sys+=("$rf")
