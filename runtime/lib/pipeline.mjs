@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 /** Pipeline stages in execution order. */
 export const STAGES = Object.freeze(['design', 'plan', 'decompose', 'goal', 'execute', 'review', 'e2e', 'accept']);
 
@@ -35,6 +37,11 @@ export function executeGate(text, { reasked }) {
   const plan = parsePlan(text);
   if (plan) return { action: 'execute', plan };
   return reasked ? { action: 'execute', degraded: true } : { action: 're-ask' };
+}
+
+/** Whether `runtime/plan-gate.config.json` enables the technical-plan gate (default off: the file says false). */
+export async function planGateEnabled(path = new URL('../plan-gate.config.json', import.meta.url)) {
+  return JSON.parse(await readFile(path, 'utf8')).enabled === true;
 }
 
 /** Run the repository e2e command on `head` via the injected `exec(command, { timeoutMs, head })` -> { code, timedOut }. */
