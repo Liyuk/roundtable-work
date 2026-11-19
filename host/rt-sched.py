@@ -25,6 +25,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 RT_HOME = os.path.abspath(os.path.expanduser(os.environ.get("RT_HOME") or HERE))
 GH = os.environ.get("RT_GH_REAL", "/usr/bin/gh")
+BRIDGE = os.path.join(HERE, "outbox-bridge.mjs")
 
 TERMINAL = {"done", "stop", "error", "out-of-scope"}
 EXCLUDE_LABELS = ["rt:owner", "rt:running", "rt:ask", "rt:ready-to-merge", "rt:blocked", "rt:hold", "rt:merged", "rt:deferred"]
@@ -267,14 +268,26 @@ class Sched:
             return False
         return True
 
+    def gh_outbox(self, args, what, stdin=None):
+        """Labels and comments go through the durable outbox (host/outbox-bridge.mjs); in dry-run nothing is executed."""
+        if self.dry:
+            self.log("DRY would %s" % what)
+            return True
+        r = subprocess.run(["node", BRIDGE, RT_HOME, self.repo] + args, capture_output=True, text=True, input=stdin, timeout=120,
+                           env=dict(os.environ, RT_GH_REAL=GH))
+        if r.returncode != 0:
+            self.log("WARN gh write failed (%s): %s" % (what, r.stderr.strip()[:200]))
+            return False
+        return True
+
     def add_label(self, n, label):
-        return self.gh_write(["issue", "edit", str(n), "-R", self.repo, "--add-label", label], "add label %s to #%d" % (label, n))
+        return self.gh_outbox(["label", str(n), "add", label], "add label %s to #%d" % (label, n))
 
     def rm_label(self, n, label):
-        return self.gh_write(["issue", "edit", str(n), "-R", self.repo, "--remove-label", label], "remove label %s from #%d" % (label, n))
+        return self.gh_outbox(["label", str(n), "rm", label], "remove label %s from #%d" % (label, n))
 
     def comment(self, n, body):
-        return self.gh_write(["issue", "comment", str(n), "-R", self.repo, "--body-file", "-"], "comment on #%d" % n, stdin=body)
+        return self.gh_outbox(["comment", str(n), "-"], "comment on #%d" % n, stdin=body)
 
     def comments(self, n):
         d = self.gh_read(["issue", "view", str(n), "-R", self.repo, "--json", "comments"])
