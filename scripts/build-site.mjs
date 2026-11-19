@@ -185,28 +185,28 @@ const LINKS = ['Events', 'Wakes', 'Done', 'Sends']; // arrow labels between lane
 // Authored one-or-two-sentence descriptions, restating docs/architecture.md. Keyed by module id.
 const DESCRIPTIONS = {
   'intake-requirements': 'The front Chief turns a conversation into an issue with a goal and acceptance, through the intake backlog.',
-  'intake-feedback': 'Plugins that turn feedback from X, Discord and GitHub into inbox events. Open work.',
-  'intake-webhook': 'A listener that passes signed webhooks to the verifier and writes inbox events. The HTTP listener itself is new work.',
+  'intake-feedback': 'Turns GitHub issues into inbox events through a source adapter and a config file. X and Discord plugins are not built.',
+  'intake-webhook': 'A loopback listener that checks signed webhooks and writes them to the inbox. It is library code, and nothing starts it by default.',
   'intake-decision-chain': 'Decides how a line continues after each turn and follows up on its own decisions.',
   'intake-intervention': 'Human commands such as /rt and owner comments enter as events. Merging stays refused as a command.',
-  inbox: 'A durable, de-duplicated, replayable record of what happened, and the only path that wakes or resumes a line. The daemon does not call it yet.',
+  inbox: 'A durable, de-duplicated, replayable record of what happened, and the only path that wakes or resumes a line. The daemon cycle drains it on each cycle.',
   timers: 'Every \u201Cdo this later\u201D is a due timer that writes an inbox event, so no process sleeps for a business reason.',
   'pipeline-design': 'Turns a request into a goal with numbered acceptance. Admission refuses a body that lacks a goal, acceptance, scope limits, dependencies or a size estimate.',
-  'pipeline-plan': 'A technical plan written before execution. No plan artifact exists yet.',
+  'pipeline-plan': 'A technical plan written before execution. The parser exists in the library; the loop does not call it yet.',
   'pipeline-decompose': 'Splits oversized work into sized children with dependencies, on size, acceptance-count and risk triggers.',
   'pipeline-execute': 'Workers run the task in its own git worktree through a harness adapter.',
   'pipeline-review': 'Gates 0, 1 and 2, run only on a clean committed head. Follow-ups are created only for in-scope high or critical findings.',
-  'pipeline-e2e': 'An optional end-to-end command run on the final head after review. Today only the acceptance commands run.',
+  'pipeline-e2e': 'An optional end-to-end command run on the final head after review. The runner exists in the library; the loop does not call it yet.',
   'pipeline-accept': 'Checks acceptance, closes finished parents and handles aftercare.',
-  'merge-tiers': 'Decides per change whether to act silently, act and notify, or ask first. Approval for safety files exists today; the tier function is specified, not built.',
-  outbox: 'Every outward side effect is first an outbox item, then delivered by a dispatcher. A tested library; GitHub writes still go through a host shim.',
-  'outbox-im': 'Adapters that route notices to chat channels through fixed templates and an allow-list. Not built.',
+  'merge-tiers': 'Decides per change whether to act silently, act and notify, or ask first. The tier function exists and decides on the ask path; merges are not tiered yet.',
+  outbox: 'Every outward side effect is first an outbox item, then delivered by a dispatcher in the daemon cycle. The host loop sends its comments, labels and merges through it.',
+  'outbox-im': 'Adapters that route notices to chat channels through fixed templates and an allow-list. A library with tests; no IM provider is passed to the daemon yet.',
   'approval-realtime': 'Approve-first: the action is not performed and only that line is suspended. The owner\u2019s reply returns as an event and resumes the same session.',
-  'approval-deferred': 'Execute by default: act now with the default plan, record it in an action journal, then let the owner confirm, amend or roll back. The journal does not exist yet.',
-  scheduler: 'Runs eligible issues in parallel with per-issue locks, dependency and touch-set checks, and an adaptive worker cap. The series suffix rule is still missing in the runtime.',
+  'approval-deferred': 'Execute by default: act now with the default plan, record it in an action journal, then let the owner confirm, amend or roll back. The journal and the /rt replies run in the daemon cycle; merge confirmation is still open.',
+  scheduler: 'Runs eligible issues in parallel with per-issue locks, dependency and touch-set checks, and an adaptive worker cap. The series suffix rule is applied; freeze intervals are not yet excluded from stall checks.',
   monitoring: 'Supervisor, stall signals, diagnosis and a usage ledger, so \u201Cwhy did it do that\u201D can be answered from files.',
-  memory: 'Preloads active rules and a short index into each role prompt and records lessons. A tested library that the daemon does not call yet.',
-  daemon: 'One cycle that fires timers, drains the inbox, schedules work, flushes the outbox and waits. Today the daemon runs a single pass and exits.',
+  memory: 'Preloads active rules and a short index into each role prompt and records lessons. The daemon applies it to role prompts only; the host loop does not.',
+  daemon: 'One cycle that fires timers, drains the inbox, schedules work, flushes the outbox and waits, until stopped.',
 };
 
 // Checks that the document, the layout and the descriptions describe exactly the same set of modules.
@@ -354,7 +354,7 @@ ${cards}
 <ol class="rules">
 ${TIER_RULES.map((r) => `<li>${esc(r)}</li>`).join('\n')}
 </ol>
-<p class="callout"><strong>Fixed by design.</strong> No configuration can move a safety-file change out of <code>approve-first</code>, and a revert PR is never <code>auto-silent</code>. The tier function is specified in the architecture document and is not built yet; only the approval path for safety files exists today.</p>
+<p class="callout"><strong>Fixed by design.</strong> No configuration can move a safety-file change out of <code>approve-first</code>, and a revert PR is never <code>auto-silent</code>. The tier function exists and decides on the ask path. Merges are not tiered yet; the approval path for safety files exists today.</p>
 </section>`;
 }
 
@@ -387,7 +387,7 @@ function executeSection(byId) {
 <li class="card"><h4>Amend</h4><p>The line re-enters execution with the owner\u2019s text. A merged change is amended by a follow-up PR, never by rewriting history.</p></li>
 <li class="card"><h4>Roll back</h4><p>The recorded revert steps run in order, each one idempotent. If a step fails the line is held and the owner is asked.</p></li>
 </ul>
-<p class="callout"><strong>Planned, not built.</strong> The action journal and the owner replies (<code>/rt confirm</code>, <code>/rt amend</code>, <code>/rt rollback</code>) are open work. If no revert recipe can be built, the action is irreversible and the tier is <code>approve-first</code>. A pending action that is never answered expires after a time limit and is reported in a digest. It is never reverted on its own.</p>
+<p class="callout"><strong>Partly built.</strong> The action journal and the owner replies (<code>/rt confirm</code>, <code>/rt amend</code>, <code>/rt rollback</code>) run in the daemon cycle. Merge confirmation is open work. If no revert recipe can be built, the action is irreversible and the tier is <code>approve-first</code>. A pending action that is never answered expires after a time limit and is reported in a digest. It is never reverted on its own.</p>
 </section>`;
 }
 
@@ -402,7 +402,7 @@ function productionSection(modules) {
   const counts = Object.fromEntries(MODULE_STATUSES.map((st) => [st, modules.filter((m) => m.status === st).length]));
   return `<section id="production" aria-labelledby="prod-h">
 <h2 id="prod-h">Where production runs today</h2>
-<p class="callout callout-strong"><strong>The cutover is not done.</strong> Production still runs on the host scripts <code>rt-sched.py</code> and <code>rt-work.sh</code>, which are not part of this repository. They poll GitHub every 300 seconds and run several workers.</p>
+<p class="callout callout-strong"><strong>The cutover is not done.</strong> Production still runs on the host scripts <code>rt-sched.py</code> and <code>rt-work.sh</code>, which live under <code>host/</code>. They poll GitHub every 300 seconds and run several workers.</p>
 <div class="compare">
 <article class="card" aria-labelledby="prod-host-h">
 <h3 id="prod-host-h">Live path</h3>
@@ -410,7 +410,7 @@ function productionSection(modules) {
 </article>
 <article class="card" aria-labelledby="prod-lib-h">
 <h3 id="prod-lib-h">Libraries being wired in</h3>
-<p>The inbox, timers, outbox, memory, decision cards and liveness libraries exist with tests. <code>runtime/rtd.mjs</code> imports none of them yet and runs one pass instead of a loop. Wiring them in is the work tracked under #374.</p>
+<p>The inbox, timers, outbox, memory and decision cards run in the daemon cycle of <code>runtime/rtd.mjs --loop</code>. The host loop already fires timers and uses the outbox; the rest of the inbox port and role memory are not in it yet. Finishing the cutover is the work tracked under #374.</p>
 </article>
 </div>
 <p>Across the ${modules.length} modules: ${MODULE_STATUSES.map((st) => `${counts[st]} ${STATUS[st].label.toLowerCase()}`).join(', ')}.</p>

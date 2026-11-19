@@ -44,10 +44,10 @@
 <div class="arch-head">
 <h2 id="arch-h">How the loop is built</h2>
 <ul class="legend-row" role="list" aria-label="Number of modules per status">
-<li><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span>7</span></li>
-<li><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span>4</span></li>
-<li><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span> <span>5</span></li>
-<li><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span>7</span></li>
+<li><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span>11</span></li>
+<li><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span>8</span></li>
+<li><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span> <span>4</span></li>
+<li><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span>0</span></li>
 </ul>
 </div>
 <noscript><p class="banner" role="note">JavaScript is off. The diagram is still shown, but selecting a module needs JavaScript. Every module is described in the table below the diagram.</p></noscript>
@@ -61,13 +61,13 @@
 <span class="mod-name"><span class="mod-prefix visually-hidden">Intake: </span><span class="mod-label">requirements</span></span>
 <span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
-<li><button type="button" class="mod" data-module="intake-feedback" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="intake-feedback" data-status="partial" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Intake: </span><span class="mod-label">feedback plugins</span></span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-partial"><span aria-hidden="true">◐</span> Partial</span>
 </button></li>
-<li><button type="button" class="mod" data-module="intake-webhook" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="intake-webhook" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Intake: </span><span class="mod-label">webhook listener</span></span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
 </button></li>
 <li><button type="button" class="mod" data-module="intake-decision-chain" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Intake: </span><span class="mod-label">decision chain</span></span>
@@ -83,13 +83,13 @@
 <div class="lane lane-wake" role="group" aria-labelledby="lane-wake-h">
 <h3 class="lane-title" id="lane-wake-h"><span class="lane-no" aria-hidden="true">2</span> Inbox and timers</h3>
 <ul class="mods" role="list">
-<li><button type="button" class="mod" data-module="inbox" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="inbox" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name">Event inbox and claims</span>
-<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
+<span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
-<li><button type="button" class="mod" data-module="timers" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="timers" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name">Due timers</span>
-<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
+<span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
 </ul>
 </div>
@@ -101,9 +101,9 @@
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">requirements design and goal</span></span>
 <span class="mod-status st-partial"><span aria-hidden="true">◐</span> Partial</span>
 </button></li>
-<li><button type="button" class="mod" data-module="pipeline-plan" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="pipeline-plan" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">technical plan</span></span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
 </button></li>
 <li><button type="button" class="mod" data-module="pipeline-decompose" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">decomposition</span></span>
@@ -117,9 +117,9 @@
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">review</span></span>
 <span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
-<li><button type="button" class="mod" data-module="pipeline-e2e" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="pipeline-e2e" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">e2e tests</span></span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
 </button></li>
 <li><button type="button" class="mod" data-module="pipeline-accept" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">acceptance</span></span>
@@ -136,14 +136,14 @@
 <span class="mod-name">Completion tiers</span>
 <span class="mod-status st-partial"><span aria-hidden="true">◐</span> Partial</span>
 </button>
-<ul class="chips" role="list" aria-label="The three completion tiers"><li class="st-missing"><span aria-hidden="true">○</span> <code>auto-silent</code> <span class="visually-hidden">(Missing)</span></li><li class="st-missing"><span aria-hidden="true">○</span> <code>auto-notify</code> <span class="visually-hidden">(Missing)</span></li><li class="st-partial"><span aria-hidden="true">◐</span> <code>approve-first</code> <span class="visually-hidden">(Partial)</span></li></ul></li>
-<li><button type="button" class="mod" data-module="approval-realtime" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
+<ul class="chips" role="list" aria-label="The three completion tiers"><li class="st-partial"><span aria-hidden="true">◐</span> <code>auto-silent</code> <span class="visually-hidden">(Partial)</span></li><li class="st-partial"><span aria-hidden="true">◐</span> <code>auto-notify</code> <span class="visually-hidden">(Partial)</span></li><li class="st-partial"><span aria-hidden="true">◐</span> <code>approve-first</code> <span class="visually-hidden">(Partial)</span></li></ul></li>
+<li><button type="button" class="mod" data-module="approval-realtime" data-status="partial" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Approval: </span><span class="mod-label">real-time</span></span>
-<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
+<span class="mod-status st-partial"><span aria-hidden="true">◐</span> Partial</span>
 </button></li>
-<li><button type="button" class="mod" data-module="approval-deferred" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="approval-deferred" data-status="partial" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Approval: </span><span class="mod-label">deferred, execute by default</span></span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-partial"><span aria-hidden="true">◐</span> Partial</span>
 </button></li>
 </ul>
 </div>
@@ -151,13 +151,13 @@
 <div class="lane lane-deliver" role="group" aria-labelledby="lane-deliver-h">
 <h3 class="lane-title" id="lane-deliver-h"><span class="lane-no" aria-hidden="true">5</span> Outbox</h3>
 <ul class="mods" role="list">
-<li><button type="button" class="mod" data-module="outbox" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="outbox" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name">Outbox and dispatcher</span>
-<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
+<span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
-<li><button type="button" class="mod" data-module="outbox-im" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="outbox-im" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Outbox: </span><span class="mod-label">IM adapters</span></span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
 </button></li>
 </ul>
 </div>
@@ -174,13 +174,13 @@
 <span class="mod-name">Monitoring and justification</span>
 <span class="mod-status st-partial"><span aria-hidden="true">◐</span> Partial</span>
 </button></li>
-<li><button type="button" class="mod" data-module="memory" data-status="library-only" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="memory" data-status="partial" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name">Role memory</span>
-<span class="mod-status st-library-only"><span aria-hidden="true">◇</span> Library only</span>
+<span class="mod-status st-partial"><span aria-hidden="true">◐</span> Partial</span>
 </button></li>
-<li><button type="button" class="mod" data-module="daemon" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="daemon" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name">Daemon cycle loop</span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
 </ul>
 </div>
@@ -192,10 +192,10 @@
 <details class="module-index" id="module-index" open>
 <summary>All 23 modules as a table</summary>
 <ul class="key" role="list" aria-label="Status key">
-<li class="key-item st-implemented"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span class="key-count">7 of 23</span> <span class="key-meaning">Built and on the live path.</span></li>
-<li class="key-item st-partial"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span class="key-count">4 of 23</span> <span class="key-meaning">Some of it is built; the rest is open work.</span></li>
-<li class="key-item st-library-only"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span> <span class="key-count">5 of 23</span> <span class="key-meaning">A library with tests that the daemon and the host loop do not call yet.</span></li>
-<li class="key-item st-missing"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span class="key-count">7 of 23</span> <span class="key-meaning">Not built yet.</span></li>
+<li class="key-item st-implemented"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span class="key-count">11 of 23</span> <span class="key-meaning">Built and on the live path.</span></li>
+<li class="key-item st-partial"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span class="key-count">8 of 23</span> <span class="key-meaning">Some of it is built; the rest is open work.</span></li>
+<li class="key-item st-library-only"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span> <span class="key-count">4 of 23</span> <span class="key-meaning">A library with tests that the daemon and the host loop do not call yet.</span></li>
+<li class="key-item st-missing"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span class="key-count">0 of 23</span> <span class="key-meaning">Not built yet.</span></li>
 </ul>
 <table class="grid" role="table" data-modules>
 <caption>Module status, read from docs/architecture.md</caption>
@@ -204,28 +204,28 @@
 </thead>
 <tbody role="rowgroup">
 <tr role="row" data-module="intake-requirements" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Intake: requirements</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">The front Chief turns a conversation into an issue with a goal and acceptance, through the intake backlog.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>intake-backlog.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>front-chief.mjs</code></li><li><code>bin/<wbr>rt-chief.mjs</code></li></ul></td><td role="cell" data-label="Issues">#261, #263</td></tr>
-<tr role="row" data-module="intake-feedback" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Intake: feedback plugins</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">Plugins that turn feedback from X, Discord and GitHub into inbox events. Open work.</td><td role="cell" data-label="Code">No code yet</td><td role="cell" data-label="Issues">#207, #366, #367, #368, #369</td></tr>
-<tr role="row" data-module="intake-webhook" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Intake: webhook listener</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">A listener that passes signed webhooks to the verifier and writes inbox events. The HTTP listener itself is new work.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>event-inbox.mjs</code></li></ul></td><td role="cell" data-label="Issues">#367</td></tr>
+<tr role="row" data-module="intake-feedback" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Intake: feedback plugins</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Turns GitHub issues into inbox events through a source adapter and a config file. X and Discord plugins are not built.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>intake-sources.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>intake-adapters/<wbr>github-issues.mjs</code></li><li><code>runtime/<wbr>intake-sources.config.json</code></li></ul></td><td role="cell" data-label="Issues">#207, #366, #369</td></tr>
+<tr role="row" data-module="intake-webhook" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Intake: webhook listener</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">A loopback listener that checks signed webhooks and writes them to the inbox. It is library code, and nothing starts it by default.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>webhook-listener.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>intake-triggers.mjs</code></li></ul></td><td role="cell" data-label="Issues">#367, #383</td></tr>
 <tr role="row" data-module="intake-decision-chain" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Intake: decision chain</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Decides how a line continues after each turn and follows up on its own decisions.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>decide.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>machine.mjs</code></li></ul></td><td role="cell" data-label="Issues">#29</td></tr>
 <tr role="row" data-module="intake-intervention" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Intake: human intervention</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Human commands such as /rt and owner comments enter as events. Merging stays refused as a command.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>rt-commands.mjs</code></li></ul></td><td role="cell" data-label="Issues">#267</td></tr>
-<tr role="row" data-module="inbox" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Event inbox and claims</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">A durable, de-duplicated, replayable record of what happened, and the only path that wakes or resumes a line. The daemon does not call it yet.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>event-inbox.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>event-claim.mjs</code></li></ul></td><td role="cell" data-label="Issues">#266, #268</td></tr>
-<tr role="row" data-module="timers" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Due timers</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">Every “do this later” is a due timer that writes an inbox event, so no process sleeps for a business reason.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>event-timers.mjs</code></li></ul></td><td role="cell" data-label="Issues">#269, #309</td></tr>
+<tr role="row" data-module="inbox" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Event inbox and claims</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">A durable, de-duplicated, replayable record of what happened, and the only path that wakes or resumes a line. The daemon cycle drains it on each cycle.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>event-inbox.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>event-claim.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>daemon-loop.mjs</code></li></ul></td><td role="cell" data-label="Issues">#266, #268, #378, #384, #569</td></tr>
+<tr role="row" data-module="timers" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Due timers</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Every “do this later” is a due timer that writes an inbox event, so no process sleeps for a business reason.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>event-timers.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>daemon-loop.mjs</code></li><li><code>host/<wbr>rt-sched.py</code></li><li><code>host/<wbr>bin/<wbr>rt-timers.mjs</code></li></ul></td><td role="cell" data-label="Issues">#269, #309, #384, #575, #577</td></tr>
 <tr role="row" data-module="pipeline-design" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Pipeline: requirements design and goal</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Turns a request into a goal with numbered acceptance. Admission refuses a body that lacks a goal, acceptance, scope limits, dependencies or a size estimate.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>intake-backlog.mjs</code></li></ul></td><td role="cell" data-label="Issues">None recorded</td></tr>
-<tr role="row" data-module="pipeline-plan" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Pipeline: technical plan</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">A technical plan written before execution. No plan artifact exists yet.</td><td role="cell" data-label="Code">No code yet</td><td role="cell" data-label="Issues">None recorded</td></tr>
+<tr role="row" data-module="pipeline-plan" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Pipeline: technical plan</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">A technical plan written before execution. The parser exists in the library; the loop does not call it yet.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>pipeline.mjs</code></li></ul></td><td role="cell" data-label="Issues">#382</td></tr>
 <tr role="row" data-module="pipeline-decompose" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: decomposition</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Splits oversized work into sized children with dependencies, on size, acceptance-count and risk triggers.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>decisions.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>decompose-triggers.mjs</code></li></ul></td><td role="cell" data-label="Issues">#97, #331, #332</td></tr>
 <tr role="row" data-module="pipeline-execute" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: execution</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Workers run the task in its own git worktree through a harness adapter.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>workers.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>worktree.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>harness.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>agent-adapter.mjs</code></li></ul></td><td role="cell" data-label="Issues">#302, #303, #311</td></tr>
 <tr role="row" data-module="pipeline-review" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: review</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Gates 0, 1 and 2, run only on a clean committed head. Follow-ups are created only for in-scope high or critical findings.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>gates.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>review-precondition.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>review-ledger.mjs</code></li></ul></td><td role="cell" data-label="Issues">#338, #341</td></tr>
-<tr role="row" data-module="pipeline-e2e" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Pipeline: e2e tests</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">An optional end-to-end command run on the final head after review. Today only the acceptance commands run.</td><td role="cell" data-label="Code">No code yet</td><td role="cell" data-label="Issues">None recorded</td></tr>
+<tr role="row" data-module="pipeline-e2e" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Pipeline: e2e tests</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">An optional end-to-end command run on the final head after review. The runner exists in the library; the loop does not call it yet.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>pipeline.mjs</code></li></ul></td><td role="cell" data-label="Issues">#382</td></tr>
 <tr role="row" data-module="pipeline-accept" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: acceptance</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Checks acceptance, closes finished parents and handles aftercare.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>accept.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>parent-close.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>aftercare.mjs</code></li></ul></td><td role="cell" data-label="Issues">None recorded</td></tr>
-<tr role="row" data-module="merge-tiers" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Completion tiers</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Decides per change whether to act silently, act and notify, or ask first. Approval for safety files exists today; the tier function is specified, not built.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>merge.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-risk.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-decision.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-order.mjs</code></li></ul></td><td role="cell" data-label="Issues">#273, #312</td></tr>
-<tr role="row" data-module="outbox" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Outbox and dispatcher</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">Every outward side effect is first an outbox item, then delivered by a dispatcher. A tested library; GitHub writes still go through a host shim.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>outbox.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>gh-write-proxy.mjs</code></li></ul></td><td role="cell" data-label="Issues">#285, #286</td></tr>
-<tr role="row" data-module="outbox-im" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Outbox: IM adapters</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">Adapters that route notices to chat channels through fixed templates and an allow-list. Not built.</td><td role="cell" data-label="Code">No code yet</td><td role="cell" data-label="Issues">None recorded</td></tr>
-<tr role="row" data-module="approval-realtime" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Approval: real-time</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">Approve-first: the action is not performed and only that line is suspended. The owner’s reply returns as an event and resumes the same session.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>decision-cards.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-decision.mjs</code></li></ul></td><td role="cell" data-label="Issues">#262</td></tr>
-<tr role="row" data-module="approval-deferred" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Approval: deferred, execute by default</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">Execute by default: act now with the default plan, record it in an action journal, then let the owner confirm, amend or roll back. The journal does not exist yet.</td><td role="cell" data-label="Code">No code yet</td><td role="cell" data-label="Issues">None recorded</td></tr>
-<tr role="row" data-module="scheduler" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Concurrent queue and dynamic scheduling</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Runs eligible issues in parallel with per-issue locks, dependency and touch-set checks, and an adaptive worker cap. The series suffix rule is still missing in the runtime.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>workers.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>touch-set.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>liveness.mjs</code></li></ul></td><td role="cell" data-label="Issues">#310, #333, #308, #309</td></tr>
+<tr role="row" data-module="merge-tiers" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Completion tiers</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Decides per change whether to act silently, act and notify, or ask first. The tier function exists and decides on the ask path; merges are not tiered yet.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>autonomy.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-risk.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-decision.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-order.mjs</code></li></ul></td><td role="cell" data-label="Issues">#273, #312, #380</td></tr>
+<tr role="row" data-module="outbox" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Outbox and dispatcher</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Every outward side effect is first an outbox item, then delivered by a dispatcher in the daemon cycle. The host loop sends its comments, labels and merges through it.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>outbox.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>outbox-github.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>gh-write-proxy.mjs</code></li><li><code>host/<wbr>outbox-bridge.mjs</code></li></ul></td><td role="cell" data-label="Issues">#285, #286, #385, #570, #578</td></tr>
+<tr role="row" data-module="outbox-im" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Outbox: IM adapters</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">Adapters that route notices to chat channels through fixed templates and an allow-list. A library with tests; no IM provider is passed to the daemon yet.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>outbox-im.mjs</code></li></ul></td><td role="cell" data-label="Issues">#381</td></tr>
+<tr role="row" data-module="approval-realtime" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Approval: real-time</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Approve-first: the action is not performed and only that line is suspended. The owner’s reply returns as an event and resumes the same session.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>decision-cards.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>daemon-cards.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-decision.mjs</code></li></ul></td><td role="cell" data-label="Issues">#262, #387</td></tr>
+<tr role="row" data-module="approval-deferred" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Approval: deferred, execute by default</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Execute by default: act now with the default plan, record it in an action journal, then let the owner confirm, amend or roll back. The journal and the /rt replies run in the daemon cycle; merge confirmation is still open.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>action-journal.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>action-replies.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>autonomy.mjs</code></li></ul></td><td role="cell" data-label="Issues">#389, #390, #579</td></tr>
+<tr role="row" data-module="scheduler" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Concurrent queue and dynamic scheduling</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Runs eligible issues in parallel with per-issue locks, dependency and touch-set checks, and an adaptive worker cap. The series suffix rule is applied; freeze intervals are not yet excluded from stall checks.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>workers.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>touch-set.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>series-key.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>liveness.mjs</code></li></ul></td><td role="cell" data-label="Issues">#310, #333, #308, #309, #379</td></tr>
 <tr role="row" data-module="monitoring" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Monitoring and justification</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Supervisor, stall signals, diagnosis and a usage ledger, so “why did it do that” can be answered from files.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>stall.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>diagnose.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>usage-ledger.mjs</code></li><li><code>runtime/<wbr>supervise.mjs</code></li></ul></td><td role="cell" data-label="Issues">#218, #336, #337, #340</td></tr>
-<tr role="row" data-module="memory" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Role memory</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">Preloads active rules and a short index into each role prompt and records lessons. A tested library that the daemon does not call yet.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>role-memory.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>reflect.mjs</code></li></ul></td><td role="cell" data-label="Issues">#265</td></tr>
-<tr role="row" data-module="daemon" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Daemon cycle loop</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">One cycle that fires timers, drains the inbox, schedules work, flushes the outbox and waits. Today the daemon runs a single pass and exits.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>rtd.mjs</code></li></ul></td><td role="cell" data-label="Issues">#290</td></tr>
+<tr role="row" data-module="memory" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Role memory</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Preloads active rules and a short index into each role prompt and records lessons. The daemon applies it to role prompts only; the host loop does not.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>role-memory.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>reflect.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>memory-store.mjs</code></li></ul></td><td role="cell" data-label="Issues">#265, #386</td></tr>
+<tr role="row" data-module="daemon" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Daemon cycle loop</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">One cycle that fires timers, drains the inbox, schedules work, flushes the outbox and waits, until stopped.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>daemon-loop.mjs</code></li><li><code>runtime/<wbr>rtd.mjs</code></li><li><code>runtime/<wbr>supervisor/<wbr>heartbeat.mjs</code></li></ul></td><td role="cell" data-label="Issues">#377</td></tr>
 </tbody>
 </table>
 </details>
@@ -250,7 +250,7 @@
 <ul class="cards cards-3" role="list">
 <li class="card tier tier-auto-silent">
 <h3><code>auto-silent</code></h3>
-<p><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></p>
+<p><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></p>
 <p class="tier-lead">Act now and say nothing.</p>
 <dl class="facts-grid">
 <div><dt>Acts now</dt><dd>Yes</dd></div>
@@ -262,7 +262,7 @@
 </li>
 <li class="card tier tier-auto-notify">
 <h3><code>auto-notify</code></h3>
-<p><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></p>
+<p><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></p>
 <p class="tier-lead">Act now with the default plan, then tell the owner.</p>
 <dl class="facts-grid">
 <div><dt>Acts now</dt><dd>Yes, with the default plan</dd></div>
@@ -297,7 +297,7 @@
 <li>The kind and every path are on the silent lists and the risk is low: act silently.</li>
 <li>Anything else: act and notify.</li>
 </ol>
-<p class="callout"><strong>Fixed by design.</strong> No configuration can move a safety-file change out of <code>approve-first</code>, and a revert PR is never <code>auto-silent</code>. The tier function is specified in the architecture document and is not built yet; only the approval path for safety files exists today.</p>
+<p class="callout"><strong>Fixed by design.</strong> No configuration can move a safety-file change out of <code>approve-first</code>, and a revert PR is never <code>auto-silent</code>. The tier function exists and decides on the ask path. Merges are not tiered yet; the approval path for safety files exists today.</p>
 </section>
 
 <section id="execute" aria-labelledby="execute-h">
@@ -306,12 +306,12 @@
 <div class="compare">
 <article class="card" aria-labelledby="mode-real-h">
 <h3 id="mode-real-h">Real-time approval</h3>
-<p><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span> <span class="muted">Tier <code>approve-first</code></span></p>
+<p><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span class="muted">Tier <code>approve-first</code></span></p>
 <p>The action is not performed. Only that line is suspended and other lines keep running. An approval request goes to the outbox. The owner’s reply arrives as an inbox event and resumes the same session.</p>
 </article>
 <article class="card" aria-labelledby="mode-def-h">
 <h3 id="mode-def-h">Deferred approval</h3>
-<p><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span class="muted">Tier <code>auto-notify</code></span></p>
+<p><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span class="muted">Tier <code>auto-notify</code></span></p>
 <p>The action is performed now with the default plan and written to an append-only action journal before it runs. A notice says what was done. The owner can confirm, amend or roll back later.</p>
 </article>
 </div>
@@ -326,12 +326,12 @@
 <li class="card"><h4>Amend</h4><p>The line re-enters execution with the owner’s text. A merged change is amended by a follow-up PR, never by rewriting history.</p></li>
 <li class="card"><h4>Roll back</h4><p>The recorded revert steps run in order, each one idempotent. If a step fails the line is held and the owner is asked.</p></li>
 </ul>
-<p class="callout"><strong>Planned, not built.</strong> The action journal and the owner replies (<code>/rt confirm</code>, <code>/rt amend</code>, <code>/rt rollback</code>) are open work. If no revert recipe can be built, the action is irreversible and the tier is <code>approve-first</code>. A pending action that is never answered expires after a time limit and is reported in a digest. It is never reverted on its own.</p>
+<p class="callout"><strong>Partly built.</strong> The action journal and the owner replies (<code>/rt confirm</code>, <code>/rt amend</code>, <code>/rt rollback</code>) run in the daemon cycle. Merge confirmation is open work. If no revert recipe can be built, the action is irreversible and the tier is <code>approve-first</code>. A pending action that is never answered expires after a time limit and is reported in a digest. It is never reverted on its own.</p>
 </section>
 
 <section id="production" aria-labelledby="prod-h">
 <h2 id="prod-h">Where production runs today</h2>
-<p class="callout callout-strong"><strong>The cutover is not done.</strong> Production still runs on the host scripts <code>rt-sched.py</code> and <code>rt-work.sh</code>, which are not part of this repository. They poll GitHub every 300 seconds and run several workers.</p>
+<p class="callout callout-strong"><strong>The cutover is not done.</strong> Production still runs on the host scripts <code>rt-sched.py</code> and <code>rt-work.sh</code>, which live under <code>host/</code>. They poll GitHub every 300 seconds and run several workers.</p>
 <div class="compare">
 <article class="card" aria-labelledby="prod-host-h">
 <h3 id="prod-host-h">Live path</h3>
@@ -339,10 +339,10 @@
 </article>
 <article class="card" aria-labelledby="prod-lib-h">
 <h3 id="prod-lib-h">Libraries being wired in</h3>
-<p>The inbox, timers, outbox, memory, decision cards and liveness libraries exist with tests. <code>runtime/rtd.mjs</code> imports none of them yet and runs one pass instead of a loop. Wiring them in is the work tracked under #374.</p>
+<p>The inbox, timers, outbox, memory and decision cards run in the daemon cycle of <code>runtime/rtd.mjs --loop</code>. The host loop already fires timers and uses the outbox; the rest of the inbox port and role memory are not in it yet. Finishing the cutover is the work tracked under #374.</p>
 </article>
 </div>
-<p>Across the 23 modules: 7 implemented, 4 partial, 5 library only, 7 missing.</p>
+<p>Across the 23 modules: 11 implemented, 8 partial, 4 library only, 0 missing.</p>
 <h3>Cutover plan</h3>
 <p>Four phases. Nothing changes on the host until phase 3, which is an owner-only step.</p>
 <ol class="phases">

@@ -1,6 +1,6 @@
 # Architecture: a Haiku-stable 7x24 loop
 
-Status: canonical target architecture, 2026-11-15. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue #374 [RT-B] (see [Work items](#work-items)). The layer that lets this loop run without the external assistant is designed in [Self-supervision](self-supervision.md) (#414 [RT-S]).
+Status: canonical target architecture, 2026-11-20. It describes what exists on `main`, what is a library that nothing calls yet, and what is missing. It does not claim that the production cutover is done. Work items are tracked under the parent issue #374 [RT-B] (see [Work items](#work-items)). The layer that lets this loop run without the external assistant is designed in [Self-supervision](self-supervision.md) (#414 [RT-S]).
 
 ## Why this redesign
 
@@ -24,7 +24,7 @@ The five always-on primitives already exist as tested libraries under `runtime/l
 - `gh-write-proxy.mjs` (credential-isolating write proxy, wired only into `bin/rt-chief.mjs`);
 - and, since #333 and #312, `liveness.mjs` (bounded wait, freeze classification, adaptive cap) and `merge-order.mjs` (dependency-ordered merges).
 
-`runtime/rtd.mjs` imports none of them. It is a single pass (`runQueue`) with no cycle loop, and `deploy/systemd/rtd.service` is an uninstalled template that runs it in shadow mode (no `--live`). The production loop is still the host scripts `rt-sched.py` and `rt-work.sh` (not in this repository): a 300 s GitHub issue poll with several workers. #290 / PR #321 delivered the cutover switch (shadow by default, config-only `--live`), not a cutover. Even if `rtd.mjs` were started today, it would not consume the primitives. Closing this gap is the point of this document.
+`runtime/rtd.mjs --loop` runs the daemon cycle (#377) and consumes most of them: due timers, the inbox, the outbox, role memory, decision cards and the liveness cap. `deploy/systemd/rtd.service` is an uninstalled template that runs `rtd.mjs --loop` without `--live`, so it runs in shadow mode. The production loop is still the host scripts `host/rt-sched.py` and `host/rt-work.sh`: a 300 s GitHub issue poll with several workers. Each host cycle fires due timers into the inbox (`host/bin/rt-timers.mjs`, #575), a worker's `wait` decision writes a due timer and frees its slot (`wait_release` in `host/rt-work.sh`, #577), and `resume_waits` in `host/rt-sched.py` requeues a waiting issue when an unacked inbox event routes to it. Porting the rest of the inbox into the host loop is still open (#569). The host sends its comments, labels and merges through the durable outbox (`host/outbox-bridge.mjs`, #578, #579). #290 / PR #321 delivered the cutover switch (shadow by default, config-only `--live`), not a cutover. Closing the remaining gap to a cutover is the point of this document.
 
 ## System diagram
 
@@ -39,46 +39,46 @@ flowchart LR
 
   subgraph INTAKE["1 Intake"]
     REQ["Requirements: front Chief, intake-backlog (implemented)"]:::impl
-    FB["Feedback plugins X / Discord / GitHub (#207, #366-#369; missing)"]:::missing
-    WH["Webhook HTTP listener (missing)"]:::missing
+    FB["Feedback plugins: GitHub issues adapter only; X and Discord missing (#207, #366, #369; partial)"]:::partial
+    WH["Webhook listener: loopback, not started by default (#383; library-only)"]:::lib
     DEC["Decision chain: decide, machine (implemented)"]:::impl
     HUM["Human intervention: /rt commands, owner comments (implemented)"]:::impl
   end
 
-  INBOX["2 Event inbox: event-inbox, event-claim (library-only)"]:::lib
-  TIMERS["Due timers: event-timers (library-only)"]:::lib
-  WAKE["Wake signal (missing)"]:::missing
+  INBOX["2 Event inbox: event-inbox, event-claim (implemented in the daemon cycle)"]:::impl
+  TIMERS["Due timers: event-timers, fired in the daemon cycle (implemented)"]:::impl
+  WAKE["Wake signal: an inbox write ends the wait (implemented)"]:::impl
 
   subgraph PIPE["3 Single-task pipeline"]
     P1["Requirements design and goal (partial)"]:::partial
-    P2["Technical plan (missing)"]:::missing
+    P2["Technical plan: parsePlan in pipeline.mjs (library-only)"]:::lib
     P3["Decomposition (implemented)"]:::impl
     P4["Execution: workers, worktree, harness (implemented)"]:::impl
     P5["Review: gates 0/1/2 (implemented)"]:::impl
-    P6["e2e tests (missing)"]:::missing
+    P6["e2e tests: runE2e in pipeline.mjs (library-only)"]:::lib
     P7["Acceptance: accept, parent-close (implemented)"]:::impl
   end
 
   subgraph TIERS["4 Completion tiers"]
-    T1["auto-silent (missing)"]:::missing
-    T2["auto-notify: execute by default (missing)"]:::missing
-    T3["approve-first, then notify (partial: safety-file approval)"]:::partial
+    T1["auto-silent: tier function (partial)"]:::partial
+    T2["auto-notify: default plan and action journal (partial)"]:::partial
+    T3["approve-first: ask path and safety-file approval (partial)"]:::partial
   end
 
   subgraph APPROVAL["6 Human approval"]
-    RT["Real-time: decision cards suspend one line (library-only)"]:::lib
-    DF["Deferred: action journal, confirm / amend / rollback (missing)"]:::missing
+    RT["Real-time: decision cards in the daemon cycle, no card provider (partial)"]:::partial
+    DF["Deferred: action journal, /rt confirm, amend, rollback (partial)"]:::partial
   end
 
-  OUTBOX["5 Outbox and dispatcher (library-only)"]:::lib
-  IM["IM adapters (missing)"]:::missing
+  OUTBOX["5 Outbox and dispatcher, dispatched in the daemon cycle (implemented)"]:::impl
+  IM["IM adapters: outbox-im (library-only)"]:::lib
   GHW["GitHub writes: gh shim on host, gh-write-proxy (partial)"]:::partial
 
   subgraph SCHED["7 Concurrent queue, monitoring, dynamic scheduling"]
-    Q["Workers, touch-set, series, deps (implemented, series suffix rule missing)"]:::partial
-    LV["Liveness: bounded wait, freeze ledger, adaptive cap (library-only)"]:::lib
+    Q["Workers, touch-set, series, deps, adaptive cap (partial: freezes not excluded from stall checks)"]:::partial
+    LV["Liveness: bounded wait, freeze ledger, adaptive cap (implemented in the daemon cycle)"]:::impl
     MON["Supervisor, stall, diagnose, usage ledger (partial)"]:::partial
-    MEM["Role memory preload and reflect (library-only)"]:::lib
+    MEM["Role memory preload and reflect (partial: role prompts in rtd only)"]:::partial
   end
 
   REQ --> INBOX
@@ -115,45 +115,47 @@ The machine-readable status of each module (read by the Pages site follow-up) is
 ```json
 [
   { "id": "intake-requirements", "name": "Intake: requirements", "status": "implemented", "code": ["runtime/lib/intake-backlog.mjs", "runtime/lib/front-chief.mjs", "bin/rt-chief.mjs"], "issues": [261, 263] },
-  { "id": "intake-feedback", "name": "Intake: feedback plugins", "status": "missing", "code": [], "issues": [207, 366, 367, 368, 369] },
-  { "id": "intake-webhook", "name": "Intake: webhook listener", "status": "missing", "code": ["runtime/lib/event-inbox.mjs"], "issues": [367] },
+  { "id": "intake-feedback", "name": "Intake: feedback plugins", "status": "partial", "code": ["runtime/lib/intake-sources.mjs", "runtime/lib/intake-adapters/github-issues.mjs", "runtime/intake-sources.config.json"], "issues": [207, 366, 369] },
+  { "id": "intake-webhook", "name": "Intake: webhook listener", "status": "library-only", "code": ["runtime/lib/webhook-listener.mjs", "runtime/lib/intake-triggers.mjs"], "issues": [367, 383] },
   { "id": "intake-decision-chain", "name": "Intake: decision chain", "status": "implemented", "code": ["runtime/lib/decide.mjs", "runtime/lib/machine.mjs"], "issues": [29] },
   { "id": "intake-intervention", "name": "Intake: human intervention", "status": "implemented", "code": ["runtime/lib/rt-commands.mjs"], "issues": [267] },
-  { "id": "inbox", "name": "Event inbox and claims", "status": "library-only", "code": ["runtime/lib/event-inbox.mjs", "runtime/lib/event-claim.mjs"], "issues": [266, 268] },
-  { "id": "timers", "name": "Due timers", "status": "library-only", "code": ["runtime/lib/event-timers.mjs"], "issues": [269, 309] },
+  { "id": "inbox", "name": "Event inbox and claims", "status": "implemented", "code": ["runtime/lib/event-inbox.mjs", "runtime/lib/event-claim.mjs", "runtime/lib/daemon-loop.mjs"], "issues": [266, 268, 378, 384, 569] },
+  { "id": "timers", "name": "Due timers", "status": "implemented", "code": ["runtime/lib/event-timers.mjs", "runtime/lib/daemon-loop.mjs", "host/rt-sched.py", "host/bin/rt-timers.mjs"], "issues": [269, 309, 384, 575, 577] },
   { "id": "pipeline-design", "name": "Pipeline: requirements design and goal", "status": "partial", "code": ["runtime/lib/intake-backlog.mjs"], "issues": [] },
-  { "id": "pipeline-plan", "name": "Pipeline: technical plan", "status": "missing", "code": [], "issues": [] },
+  { "id": "pipeline-plan", "name": "Pipeline: technical plan", "status": "library-only", "code": ["runtime/lib/pipeline.mjs"], "issues": [382] },
   { "id": "pipeline-decompose", "name": "Pipeline: decomposition", "status": "implemented", "code": ["runtime/lib/decisions.mjs", "runtime/lib/decompose-triggers.mjs"], "issues": [97, 331, 332] },
   { "id": "pipeline-execute", "name": "Pipeline: execution", "status": "implemented", "code": ["runtime/lib/workers.mjs", "runtime/lib/worktree.mjs", "runtime/lib/harness.mjs", "runtime/lib/agent-adapter.mjs"], "issues": [302, 303, 311] },
   { "id": "pipeline-review", "name": "Pipeline: review", "status": "implemented", "code": ["runtime/lib/gates.mjs", "runtime/lib/review-precondition.mjs", "runtime/lib/review-ledger.mjs"], "issues": [338, 341] },
-  { "id": "pipeline-e2e", "name": "Pipeline: e2e tests", "status": "missing", "code": [], "issues": [] },
+  { "id": "pipeline-e2e", "name": "Pipeline: e2e tests", "status": "library-only", "code": ["runtime/lib/pipeline.mjs"], "issues": [382] },
   { "id": "pipeline-accept", "name": "Pipeline: acceptance", "status": "implemented", "code": ["runtime/lib/accept.mjs", "runtime/lib/parent-close.mjs", "runtime/lib/aftercare.mjs"], "issues": [] },
-  { "id": "merge-tiers", "name": "Completion tiers", "status": "partial", "code": ["runtime/lib/merge.mjs", "runtime/lib/merge-risk.mjs", "runtime/lib/merge-decision.mjs", "runtime/lib/merge-order.mjs"], "issues": [273, 312] },
-  { "id": "outbox", "name": "Outbox and dispatcher", "status": "library-only", "code": ["runtime/lib/outbox.mjs", "runtime/lib/gh-write-proxy.mjs"], "issues": [285, 286] },
-  { "id": "outbox-im", "name": "Outbox: IM adapters", "status": "missing", "code": [], "issues": [] },
-  { "id": "approval-realtime", "name": "Approval: real-time", "status": "library-only", "code": ["runtime/lib/decision-cards.mjs", "runtime/lib/merge-decision.mjs"], "issues": [262] },
-  { "id": "approval-deferred", "name": "Approval: deferred, execute by default", "status": "missing", "code": [], "issues": [] },
-  { "id": "scheduler", "name": "Concurrent queue and dynamic scheduling", "status": "partial", "code": ["runtime/lib/workers.mjs", "runtime/lib/touch-set.mjs", "runtime/lib/liveness.mjs"], "issues": [310, 333, 308, 309] },
+  { "id": "merge-tiers", "name": "Completion tiers", "status": "partial", "code": ["runtime/lib/autonomy.mjs", "runtime/lib/merge.mjs", "runtime/lib/merge-risk.mjs", "runtime/lib/merge-decision.mjs", "runtime/lib/merge-order.mjs"], "issues": [273, 312, 380] },
+  { "id": "outbox", "name": "Outbox and dispatcher", "status": "implemented", "code": ["runtime/lib/outbox.mjs", "runtime/lib/outbox-github.mjs", "runtime/lib/gh-write-proxy.mjs", "host/outbox-bridge.mjs"], "issues": [285, 286, 385, 570, 578] },
+  { "id": "outbox-im", "name": "Outbox: IM adapters", "status": "library-only", "code": ["runtime/lib/outbox-im.mjs"], "issues": [381] },
+  { "id": "approval-realtime", "name": "Approval: real-time", "status": "partial", "code": ["runtime/lib/decision-cards.mjs", "runtime/lib/daemon-cards.mjs", "runtime/lib/merge-decision.mjs"], "issues": [262, 387] },
+  { "id": "approval-deferred", "name": "Approval: deferred, execute by default", "status": "partial", "code": ["runtime/lib/action-journal.mjs", "runtime/lib/action-replies.mjs", "runtime/lib/autonomy.mjs"], "issues": [389, 390, 579] },
+  { "id": "scheduler", "name": "Concurrent queue and dynamic scheduling", "status": "partial", "code": ["runtime/lib/workers.mjs", "runtime/lib/touch-set.mjs", "runtime/lib/series-key.mjs", "runtime/lib/liveness.mjs"], "issues": [310, 333, 308, 309, 379] },
   { "id": "monitoring", "name": "Monitoring and justification", "status": "partial", "code": ["runtime/lib/stall.mjs", "runtime/lib/diagnose.mjs", "runtime/lib/usage-ledger.mjs", "runtime/supervise.mjs"], "issues": [218, 336, 337, 340] },
-  { "id": "memory", "name": "Role memory", "status": "library-only", "code": ["runtime/lib/role-memory.mjs", "runtime/lib/reflect.mjs"], "issues": [265] },
-  { "id": "daemon", "name": "Daemon cycle loop", "status": "missing", "code": ["runtime/rtd.mjs"], "issues": [290] }
+  { "id": "memory", "name": "Role memory", "status": "partial", "code": ["runtime/lib/role-memory.mjs", "runtime/lib/reflect.mjs", "runtime/lib/memory-store.mjs"], "issues": [265, 386] },
+  { "id": "daemon", "name": "Daemon cycle loop", "status": "implemented", "code": ["runtime/lib/daemon-loop.mjs", "runtime/rtd.mjs", "runtime/supervisor/heartbeat.mjs"], "issues": [377] }
 ]
 ```
 
+CI checks this catalog and the site on every pull request and on `main`: `npm run check:architecture-refs` (every code path exists in the tree and every issue number exists in the repository, see `scripts/check-architecture-refs.mjs`) and `npm run build:site -- --check` (`site/` equals a fresh build of this block). After editing the block, run `npm run build:site` and commit `site/`.
+
 ## The daemon cycle
 
-Everything below hangs off one loop. Today `rtd.mjs` runs `runQueue` once and exits. The target is `rtd.mjs --loop`, which runs this cycle until stopped. Each step is a call to an existing library function, or to a function this document names as an extension.
+`rtd.mjs --loop` (#377) runs this cycle until stopped; `runLoop` in `runtime/lib/daemon-loop.mjs` owns it. Before #377 the process ran one `runQueue` pass and exited. Each step is a call to an existing library function, or to a function this document names as an extension.
 
-1. `const t0 = { wall: Date.now(), mono: performance.now() }`; write the heartbeat (`writeHeartbeat` in `runtime/supervisor/heartbeat.mjs`, today called by nothing) with `daemon.state = 'running'` and `daemon.lastCycleAt` of the previous cycle.
+1. `runLoop` takes the cycle start from both clocks (`Date.now()` and `performance.now()`) and writes the heartbeat (`writeHeartbeat` in `runtime/supervisor/heartbeat.mjs`) with `daemon.state = 'running'` and `daemon.lastCycleAt` set to the cycle start. A throwing pass writes `stopped` and rethrows.
 2. Classify the gap since the previous cycle: `recordCycleGap({ ledger, pollMs, start, end, wallDeltaMs, monoDeltaMs })` over a file-backed freeze ledger (`.roundtable/state/freeze-ledger.jsonl`). The ledger store is new; `liveness.mjs` takes it by injection.
 3. Fire due timers: `openTimers(root).fire(Date.now())`. Each firing becomes one inbox event `timer:<id>:<at>`.
-4. Produce inbox events from observations: owner comments, CI completions and new or relabelled issues seen by the GitHub reader become `owner_comment`, `ci` and `intake` events with stable `source_event_id`s (for example `gh-comment:<id>`, `gh-check:<suite id>:<conclusion>`, `gh-issue:<n>:<updated_at>`). Polling stays as a fallback producer; the webhook listener is a second producer of the same events.
-5. Drain the inbox: `processPending(root, dispatch)`. `dispatch(batch)` routes the batch to its line: a decision-card reply goes to `resumeFromApproval`, an action reply goes to the action journal, and anything else wakes the line's next pipeline step through the existing per-issue worker path (`runWorkers`).
-6. Schedule work: `runQueue` with `workers` passed as a function, `() => effectiveCap({ base, ledger, now: Date.now(), state })`. `runWorkers` already accepts a number or a `() => number` evaluated on each pass.
-7. Flush side effects: `dispatch({ outbox, provider })` with the GitHub provider (through `gh-write-proxy.mjs`) and the IM providers.
-8. Wait: `boundedWait({ pollMs, sleep })`, where `sleep` resolves early when the inbox wake signal fires. The whole cycle runs under a cycle deadline (`withTimeout`, already in `rtd.mjs`); when it is exceeded the process logs `cycle-deadline` and exits non-zero so the unit restarts it.
+4. Produce inbox events from observations: `cycleSteps` calls `produceEvents` (`daemon-events.mjs`) on the GitHub reader. Owner comments, CI checks and new or updated issues become `owner_comment`, `ci` and `intake` events with stable `source_event_id`s (for example `gh-comment:<id>`, `gh-check:<suite id>:<conclusion>`, `gh-issue:<n>:<updated_at>`). Polling (`github-poll.mjs`, the `poll` option of `cycleSteps`) exists but `rtd.mjs` does not pass it yet, so polled sources are not read in the cycle. The webhook listener (`webhook-listener.mjs`, #383) would be a second producer of the same events; nothing starts it by default.
+5. Drain the inbox: `processPending(root, dispatch)`. `rtd.mjs` passes `makeDispatchLine` as the dispatcher, after `applyActionReply` has applied any `/rt confirm`, `amend` or `rollback` to the action journal. A decision-card reply goes to `resumeFromApproval`, an ask is routed as a card, and anything else goes to the line's pipeline through the pass that follows. A line that throws is classified by the recovery table (`recover`, #388): a `wait` writes a due timer, any other class enqueues a `stall-alert`.
+6. Schedule work: the pass runs `runQueue` with `workers` as a function, `() => Math.min(effectiveCap({ base, ledger, now, state }), governorCap)`, so the cap is evaluated on each pass. The resource governor can hold claims (`claimHold`) and stop new queue runs (`admit`) under host pressure; running work is not touched.
+7. Flush side effects: `dispatch({ outbox, provider })` with the GitHub provider (`outbox-github.mjs`), after anomaly alerts are enqueued. No IM provider is passed yet: `outbox-im.mjs` is library-only (#381).
+8. Wait: `wake.wait(pollMs)` when the wake signal exists, otherwise `boundedWait({ pollMs, sleep })`; both end early on shutdown. The whole cycle runs under a cycle deadline (`cycleDeadlineMs`, default 60 minutes; the pass is raced against it). When it is exceeded the heartbeat is written as `stopped`, the process prints `cycle deadline exceeded` and exits with code 77 (`EXIT_CYCLE_DEADLINE`) so the unit restarts it.
 
-A write to the inbox raises the wake signal, so the worker starts within one tick instead of after the 300 s poll. Without a signal the poll still drains the inbox.
+A write to the inbox raises the wake signal (`createWakeSignal`), so the next cycle starts within one tick instead of after the 300 s poll. Without a signal the poll still drains the inbox.
 
 ## Modules
 
@@ -161,9 +163,9 @@ A write to the inbox raises the wake signal, so the worker starts within one tic
 
 **Responsibility.** Turn every input into a validated inbox event: requirements (front Chief conversation to issue), feedback (plugins), webhooks, the decision chain's own follow-ups, and human intervention.
 
-**Interface.** Producers call `openInbox(root).accept({ source_event_id, kind, issue, payload, receivedAt })`. `kind` is one of `heartbeat`, `ci`, `owner_comment`, `intake`, `webhook` (`KINDS` in `event-inbox.mjs`). The front Chief already opens issues (`bin/rt-chief.mjs`, `intake-backlog.mjs`); feedback adapters are #207 and its children #366 (adapter contract, poll runner feeding the inbox), #367 (signed webhook verification, explicitly without an HTTP listener), #368 and #369. The HTTP listener that calls #367's verifier is a new child (see Work items). External text never expands permissions: the payload is data, and the deep checks (prompt injection, scope) run inside the line, not in the handler.
+**Interface.** Producers call `openInbox(root).accept({ source_event_id, kind, issue, payload, receivedAt })`. `kind` is one of `heartbeat`, `ci`, `owner_comment`, `intake`, `webhook` (`KINDS` in `event-inbox.mjs`). The front Chief already opens issues (`bin/rt-chief.mjs`, `intake-backlog.mjs`); The feedback adapters are #207 and its children #366 (adapter contract, poll runner feeding the inbox), #367 (signed webhook verification, `verifySignature` in `intake-triggers.mjs`), #368 and #369. The loopback HTTP listener that calls #367's verifier is `webhook-listener.mjs` (#383, child B8). External text never expands permissions: the payload is data, and the deep checks (prompt injection, scope) run inside the line, not in the handler.
 
-**Status.** Requirements, decision chain and intervention are implemented. Feedback and webhook are open work.
+**Status.** Requirements, decision chain and intervention are implemented. Feedback is partial: the adapter contract, the GitHub issues adapter and `runtime/intake-sources.config.json` exist (#366, #369), but the poll is not passed to the daemon cycle and there is no X or Discord adapter. The webhook verifier and listener are library-only: the listener binds to 127.0.0.1 unless told otherwise and nothing starts it by default (#367, #383).
 
 ### 2. Event inbox
 
@@ -171,7 +173,7 @@ A write to the inbox raises the wake signal, so the worker starts within one tic
 
 **Interface (exists).** `openInbox(root)` returns `{ events(), accept(event) }`; `accept` returns `false` for a known `source_event_id`. `processPending(root, dispatch)` claims every event that is not acked, coalesces them, awaits `dispatch(batch)` and writes `applied` and `acked` markers. `coalesce(events)` groups by `kind` and `issue`.
 
-**Interface (extension, child B2).** Each record gains `when` (`receivedAt`), `what` (a one-line summary derived from kind and payload), `session` (`issue:<n>`, `chat:<id>` or `none`) and an explicit status, appended as status records (`{ type: 'status', id, status, at }`) so the file stays append-only. `accept` of a known id appends a `dropped` record pointing at the original and still returns `false`. `coalesce` groups by `session`, so all events for one issue produce one run. A wake signal is raised after the durable write. `processPending` must release its own claim when `dispatch` throws: today a throwing dispatch leaves a claim file owned by the live daemon pid, so `claim` returns `already_claimed` on every later cycle and the event is stuck until restart.
+**Interface (extension, child B2).** Each record gains `when` (`receivedAt`), `what` (a one-line summary derived from kind and payload), `session` (`issue:<n>`, `chat:<id>` or `none`) and an explicit status, appended as status records (`{ type: 'status', id, status, at }`) so the file stays append-only. `accept` of a known id appends a `dropped` record pointing at the original and still returns `false`. `coalesce` groups by `session`, so all events for one issue produce one run. A wake signal is raised after the durable write. **Interface (extension, child B2, #378).** `processPending` releases the unfinished claims when `dispatch` throws, so the events are dispatched again on the next call.
 
 **State machine.**
 
@@ -207,18 +209,18 @@ Records written before the extension have no status field; they are read as `don
 | Stage | Today | Code |
 | --- | --- | --- |
 | Requirements design and goal | Partial: the intake draft carries a goal and numbered acceptance; the admission check refuses a body without Goal, Acceptance (Run and Expected), Out of scope, Dependencies and Size estimate. | `intake-backlog.mjs`, `intake.mjs` `admission` |
-| Technical plan | Missing: no plan artifact before execute. | — |
+| Technical plan | Library only: `parsePlan` in `pipeline.mjs` (#382) is not imported by the loop; no plan artifact is written before execute. | `pipeline.mjs` |
 | Decomposition | Implemented: size, acceptance-count and risk triggers at triage and after repeated gate failures (#331); two-phase child creation with search-verified retry and sibling title tags (#332). | `decisions.mjs`, `decompose-triggers.mjs` |
 | Execution | Implemented. | `workers.mjs`, `worktree.mjs`, `harness.mjs`, `agent-adapter.mjs` |
 | Review | Implemented: Gate 0/1/2, review only on a clean committed head (#341), follow-ups only for in-scope high or critical findings, de-duplicated (#338). | `gates.mjs`, `review-precondition.mjs`, `review-ledger.mjs` |
-| e2e tests | Missing: only acceptance commands run. | — |
+| e2e tests | Library only: `runE2e` in `pipeline.mjs` (#382) is not imported by the loop; only acceptance commands run. | `pipeline.mjs` |
 | Acceptance | Implemented. | `accept.mjs`, `parent-close.mjs`, `aftercare.mjs` |
 
-Only the two missing stages are new work (child B10): a plan artifact written to the line state before `execute`, and an optional `e2e.command` run on the final head after review. The other stages are not redone.
+The two library-only stages are not wired into the loop yet (child B10, #382): the loop must write the plan artifact to the line state before `execute`, and run the optional `e2e.command` on the final head after review, using `pipeline.mjs`. The other stages are not redone.
 
 ### 5. Completion tiers
 
-See [Decision rules](#decision-rules-tiers-and-approval-modes). Mechanically: `merge.mjs` stays the sole squash entry point and keeps every existing check (gate evidence bound to head and tree, live safety-file set, CI green, replay guard `merge:<head>`). The tier function runs before it and decides whether to call it now (auto-silent, auto-notify) or only after an approval (approve-first). Dependency-ordered merging with base re-sync and re-check is #312 (`merge-order.mjs`; stacked-branch convention in [stacked-branches.md](stacked-branches.md)); the tier applies to each PR that it merges.
+See [Decision rules](#decision-rules-tiers-and-approval-modes). Mechanically: `merge.mjs` stays the sole squash entry point and keeps every existing check (gate evidence bound to head and tree, live safety-file set, CI green, replay guard `merge:<head>`). The tier function runs before it and decides whether to call it now (auto-silent, auto-notify) or only after an approval (approve-first). Today `autonomyTier` (`autonomy.mjs`, #380) decides on the ask path (`daemon-asks.mjs`, `ask-timeout.mjs`). `createMergeEntryPoint` has a `tierOf` hook that `rtd.mjs` does not pass, so merges are not tiered yet. Dependency-ordered merging with base re-sync and re-check is #312 (`merge-order.mjs`; stacked-branch convention in [stacked-branches.md](stacked-branches.md)); the tier applies to each PR that it merges.
 
 ### 6. Outbox
 
@@ -226,7 +228,7 @@ See [Decision rules](#decision-rules-tiers-and-approval-modes). Mechanically: `m
 
 **Interface (exists).** `openOutbox(root)` returns `{ enqueue(item), items(), pending(), receipts(), markDelivered(id, receipt), recordFailure(id, message) }`; `dispatch({ outbox, provider, maxAttempts = 3 })`. `kind` is one of `comment`, `label`, `merge`, `notification`. Providers must be idempotent by item id.
 
-**Interface (extension, child B4).** Per-item backoff (`nextAttemptAt` derived from the failure records) so a GitHub outage does not retry every item every cycle; a dead-letter state after a configured number of total failures, which raises one `notification` of subtype `stall-alert`; and item ids derived from the cause (`notice:merge:<pr>:<head>`, `notice:action:<actionId>:<state>`) so a replayed cycle never enqueues a second notice.
+**Interface (extension, child B4, #385, in the daemon cycle).** Per-item backoff (`nextAttemptAt` derived from the failure records) so a GitHub outage does not retry every item every cycle; a dead-letter state after a configured number of total failures, which raises one `notification` of subtype `stall-alert`; and item ids derived from the cause (`notice:merge:<pr>:<head>`, `notice:action:<actionId>:<state>`) so a replayed cycle never enqueues a second notice.
 
 **State machine.** `enqueued → delivered` (receipt) | `enqueued → failed-attempt → enqueued` (backoff) | `enqueued → dead-letter` (after N failures; alert raised once).
 
@@ -239,21 +241,21 @@ Two modes, decided by the [rules below](#decision-rules-tiers-and-approval-modes
 - **Real-time (approve-first).** The action is not performed. The line is suspended with `routeCard` (closed category, invalid provider choice or provider error) or held for `APPROVE-MERGE` / `REJECT-MERGE` (`merge-decision.mjs`). An `approval-request` notice goes to the outbox. Other lines keep running. The owner's reply arrives as an `owner_comment` inbox event and `resumeFromApproval` resumes the same `sessionId`.
 - **Deferred (execute by default).** The action is performed now with the default plan, recorded in the action journal as `executed_pending_confirmation`, and an `action-pending-confirmation` notice goes to the outbox. The owner may later confirm, request a change, or roll back.
 
-The action journal is new (children B7b, B7c). It is an append-only file `.roundtable/state/actions.jsonl` with one record per action and one record per state change. Its contract is in [Execute by default](#execute-by-default-confirm-amend-roll-back).
+The action journal exists (`action-journal.mjs`, child B7b, #389), and owner replies are applied in `rtd --loop` (`action-replies.mjs`, child B7c, #390). The real-time path has no card provider in the daemon yet, so a non-closed card suspends its line. The journal is an append-only file `.roundtable/state/actions.jsonl` with one record per action and one record per state change. Its contract is in [Execute by default](#execute-by-default-confirm-amend-roll-back).
 
 ### 8. Concurrent queue, monitoring, dynamic scheduling
 
 **Queue.** `runWorkers` runs eligible issues with cross-process per-issue locks and in-process exclusion, checked in order: dependency, touch-set overlap, series fallback (`conflictReason` in `workers.mjs`, touch sets from #310). Series is only a fallback when a touch set is missing or unparseable.
 
-**Series rule (must hold).** The series key is the full first bracket tag minus a trailing letter suffix: `[RT-B7a]` and `[RT-B7b]` share series `RT-B7`; `[RT-B1]` and `[RT-B2]` are independent; `[RT-F-1c]` is `RT-F-1`. Only mutually dependent siblings share a number with letter suffixes. The host scheduler applies this rule (patched after the `RT` collapse). The runtime does not yet: `seriesOf` in `workers.mjs` and the `series` field in `intake.mjs` keep the trailing letter, so `[RT-B7a]` and `[RT-B7b]` would not serialize. Child B11 ports the rule with one shared helper.
+**Series rule (must hold).** The series key is the full first bracket tag minus a trailing letter suffix: `[RT-B7a]` and `[RT-B7b]` share series `RT-B7`; `[RT-B1]` and `[RT-B2]` are independent; `[RT-F-1c]` is `RT-F-1`. Only mutually dependent siblings share a number with letter suffixes. The host scheduler applies this rule (patched after the `RT` collapse). The runtime applies it too: `series-key.mjs` (#379, child B11) is the one shared helper, used by `workers.mjs` and `intake.mjs`.
 
-**Dynamic scheduling.** The cap passed to `runWorkers` comes from `effectiveCap` (#333): one step down per new freeze once the 6 h window holds 3 freezes, one step up per freeze-free window, floor 1. The daemon must also pass `excludedIntervals(ledger)` to stall detection so a line is not charged for time the host was frozen (B12).
+**Dynamic scheduling.** The cap passed to `runWorkers` comes from `effectiveCap` (#333): one step down per new freeze once the 6 h window holds 3 freezes, one step up per freeze-free window, floor 1. `excludedIntervals(ledger)` exists in `liveness.mjs`, but `rtd.mjs` does not pass it to stall detection yet, so a line can still be charged for time the host was frozen (B12).
 
 **Monitoring and justification.** The heartbeat (written each cycle), the supervisor (`runtime/supervise.mjs`, observe mode; `restart-daemon` is an allowed actuator action), stall signals (`stall.mjs`), diagnosis (`diagnose.mjs`), the usage ledger (every harness, #336), loop health metrics (#337), and the machine-readable record on each PR (#340). Every decision the daemon takes is written with its inputs and rule (the tier reasons, the recovery rule, the decision source), so "why did it do that" is answerable from files.
 
 ### 9. Memory
 
-`role-memory.mjs` `preload({ store, role })` returns active layer-3 rules and a layer-2 index under 2000 characters; `fetchEntry` is on demand and logged; `reflect.mjs` writes candidates. The daemon must prepend `preload` output to each role prompt it renders (`renderRolePrompt` today renders routing facts only) and call `reflect` on delivery, failure and rework (child B5). Memory stores only what cannot be looked up again (lessons, decisions), and pointers (issue, PR, commit) for the rest.
+`role-memory.mjs` `preload({ store, role })` returns active layer-3 rules and a layer-2 index under 2000 characters; `fetchEntry` is on demand and logged; `reflect.mjs` writes candidates. `rtd.mjs` prepends the `preload` output to each role prompt it renders (`appendMemory`, after `renderRolePrompt`) and calls `reflect` on the events it handles (`reflectOnce`, child B5, #386). The host loop calls neither. Memory stores only what cannot be looked up again (lessons, decisions), and pointers (issue, PR, commit) for the rest.
 
 ## Decision rules: tiers and approval modes
 
@@ -271,7 +273,7 @@ The action journal is new (children B7b, B7c). It is an append-only file `.round
 | `labels` | Issue labels, including the owner override `rt:tier-approve`. |
 | `autonomy` | The autonomy allow-list `runtime/defaults/autonomy.json`, tightened by an optional host file (same tighten-only merge as `guard.mjs` `loadLimits`). |
 
-The autonomy allow-list (new, child B7a) holds `kinds` (action kinds the loop may perform at all), `silentKinds`, `silentPaths` (globs, for example `docs/**`, `test/**`), `notifyTtlDays` (default 7) and `safetyApprover` (`decider`, the current behaviour with `merge-decision.mjs`, or `owner`). The host file may only remove kinds and paths, lower the TTL, or change `safetyApprover` from `decider` to `owner`.
+The autonomy allow-list (`runtime/defaults/autonomy.json`, child B7a, #380) holds `kinds` (action kinds the loop may perform at all), `silentKinds`, `silentPaths` (globs, for example `docs/**`, `test/**`), `notifyTtlDays` (default 7) and `safetyApprover` (`decider`, the current behaviour with `merge-decision.mjs`, or `owner`). The host file may only remove kinds and paths, lower the TTL, or change `safetyApprover` from `decider` to `owner`.
 
 ### Tier function
 
@@ -300,7 +302,7 @@ Consequences, each a test case: a docs-only green PR is `auto-silent`; a 500-lin
 
 ### Autonomous scope
 
-An action is inside the autonomous scope exactly when `autonomyTier` returns `auto-silent` or `auto-notify`. Everything else blocks and waits. The scope is therefore defined by the allow-list file, the existing safety-file rules (`safety.mjs`, which `merge.mjs` already enforces on the live file list), the existing risk labels (`merge-risk.mjs`), the closed ask categories and production detection (`machine.mjs`), and reversibility. What must be added: the allow-list file and its loader (B7a), and the `revert` input, which comes from the recipe builder (B7b).
+An action is inside the autonomous scope exactly when `autonomyTier` returns `auto-silent` or `auto-notify`. Everything else blocks and waits. The scope is therefore defined by the allow-list file, the existing safety-file rules (`safety.mjs`, which `merge.mjs` already enforces on the live file list), the existing risk labels (`merge-risk.mjs`), the closed ask categories and production detection (`machine.mjs`), and reversibility. What is built: the allow-list file and its loader (B7a), and the `revert` input, which comes from the recipe builder (B7b).
 
 ### Default plan
 
@@ -369,7 +371,7 @@ These constraints are what make a Haiku-class model safe to run unattended. Each
 | Idempotency | Every effect has a key: inbox `source_event_id`, outbox item id, merge ledger `merge:<head>`, action id, claim files, timer firing ids. A replayed cycle repeats nothing. | `event-inbox.mjs`, `outbox.mjs`, `merge.mjs`, `event-claim.mjs` |
 | Timeouts and watchdog | Per-phase and queue timeouts and the lock lease (existing in `rtd.mjs`); the bounded inter-cycle wait (`boundedWait`); a cycle deadline that exits the process; `Restart=always` on the unit; an external watchdog that reads the heartbeat and restarts the unit when `lastCycleAt` is older than 3 polls and the gap is not classified as a host freeze. | `rtd.mjs`, `liveness.mjs`, `supervisor/heartbeat.mjs` |
 | Budgets | Per-issue wake, developer-attempt, reviewer-unavailable and escalation budgets; quota and provider failures do not spend them (#308, #339). | `budget.mjs`, `status.mjs` `RUNTIME_DEFAULTS`, `routing.mjs` |
-| Recovery by failure mode | A pure table maps each classified failure to one action (below). The model is not asked what to do about infrastructure. | new `recovery.mjs` (child B12) |
+| Recovery by failure mode | A pure table maps each classified failure to one action (below). The model is not asked what to do about infrastructure. | `recovery.mjs` (child B12) |
 | Bounded context | Memory preload capped at 2000 characters; full entries on demand. | `role-memory.mjs` |
 | No credentials in the agent | Children get no `GH_` or `GITHUB_` environment; writes go through the proxy, which refuses merge, close, force push and pushes to `main`. | `agent-adapter.mjs` `childEnv`, `gh-write-proxy.mjs` |
 
@@ -394,17 +396,17 @@ These constraints are what make a Haiku-class model safe to run unattended. Each
 
 | # | Failure | Mechanism | Covered by |
 | --- | --- | --- | --- |
-| 1 | Whole-host freezes, 6 to 9 h a day | `classifyGap` separates host freeze (wall vs monotonic delta) from scheduler stall and normal slowness; freeze ledger; `effectiveCap`; freeze intervals excluded from stall checks. | Library merged in #333; wiring into the daemon cycle is B1. No new scope for #333. |
+| 1 | Whole-host freezes, 6 to 9 h a day | `classifyGap` separates host freeze (wall vs monotonic delta) from scheduler stall and normal slowness; freeze ledger; `effectiveCap`; freeze intervals excluded from stall checks. | Library merged in #333; wired into the daemon cycle by B1 (#377). |
 | 2 | Scheduler alive but stuck in its wait loop for about 4 h | `boundedWait` ends when either clock covers the poll; cycle deadline exits the process; `Restart=always`; external heartbeat watchdog. The host wait-guard is reproduced by these, and the cutover readiness check (B13) refuses to go live without them. | #333 (library), B1, B13 |
-| 3 | Quota / 402 `budget_exhausted` idle spinning, 7.3 h | A `wait` decision writes a due timer and frees the slot; recovery probes fire from timers; no wake and no budget is spent; never `rt:blocked`. | #308, #309 (open); timers firing in the cycle is B3 |
+| 3 | Quota / 402 `budget_exhausted` idle spinning, 7.3 h | A `wait` decision writes a due timer and frees the slot; recovery probes fire from timers; no wake and no budget is spent; never `rt:blocked`. | #308, #309 (closed); timers fire in the daemon cycle (#384) |
 | 4 | Decomposition too late (#28: 24 h, 19 dispatches, 9 fix rounds) | Early triggers at triage and after repeated gate failures. | #331 (merged) |
 | 5 | Sibling dependencies dropped during decompose | Two-phase child creation, `Depends on sub:NN` resolved after all children exist. | #332 (merged) |
-| 6 | `series_key` collapsed every `[RT-*]` issue into `RT` | Series is the full tag minus a trailing letter; independent siblings get distinct numbers. | Host patched; #332 for sibling tags; runtime port of the suffix rule is B11 |
+| 6 | `series_key` collapsed every `[RT-*]` issue into `RT` | Series is the full tag minus a trailing letter; independent siblings get distinct numbers. | Host patched; #332 for sibling tags; the suffix rule is in `series-key.mjs` (B11, #379) |
 | 7 | Gate rework loops | Follow-ups only for in-scope high or critical findings, de-duplicated; review only on a clean committed head. | #338, #341 (merged) |
 | 8 | 36 classes of hand-applied host patches | Inventory with a test that each row is ported, superseded or explained. Remaining gap: the live loop still runs on the host scripts. The cutover readiness check (B13) refuses while a row is "not ported" without a stated reason why the daemon does not need it. | #334 / PR #361 (merged), B13 |
 | 9 | Tests leaked `/tmp/rt-lock-*` and wrote into the real state directory | Per-run state and temp directories, cleanup and a leak check. | #320 and its children #322-#329 (open) |
 | 10 | Sub-issue creation failed during a freeze with no retry | Search-verified create retry. | #332 (merged) |
-| 11 | UTF-8 truncation in `status.tsv` crashed the scheduler | Readers decode with replacement and runtime truncation cuts on code points (#361). The writer that truncates by bytes is the host script `rt-work.sh` (`cut -c1-300`), which is not in this repository and is still unfixed there. The runtime has no `status.tsv`; after the cutover status is JSON. B1 requires every text field the daemon truncates (heartbeat, status detail) to use code-point slicing, with a multi-byte test. | #334 / #361, B1, cutover B13 |
+| 11 | UTF-8 truncation in `status.tsv` crashed the scheduler | Readers decode with replacement and runtime truncation cuts on code points (#361). The writer that truncates by bytes is the host script `host/rt-work.sh` (`cut -c1-300`), and it is still unfixed there. The runtime has no `status.tsv`; after the cutover status is JSON. B1 requires every text field the daemon truncates (heartbeat, status detail) to use code-point slicing, with a multi-byte test. | #334 / #361, B1, cutover B13 |
 | 12 | Safety record written and immediately read back as missing | Recorded-approval read is retried before it can become a rejection. | Ported in PR #299 ([RT-U2c]), inventoried as `recordretry` in #334 / #361 |
 | 13 | Owner pull-backs (17 on 11-12, 1 on 11-14) | Measured as a health metric. | #337 (open) |
 | 14 | pi sessions did not record token usage | Usage from every harness adapter into the usage ledger. | #336 (open, running) |
@@ -413,7 +415,7 @@ These constraints are what make a Haiku-class model safe to run unattended. Each
 
 The cutover is not done. Today the host scripts are the only live loop.
 
-**Phase 1: wire in the repository (tests only).** B1 (cycle loop, liveness, heartbeat, watchdog), B2 (inbox shape and claim release), B3 (inbox and timers in the cycle), B4 (outbox in the cycle), B5 (memory), B6 (decision cards), B11 (series rule), B12 (recovery table). Each is merged on its own with fake providers. Nothing changes on the host.
+**Phase 1: wire in the repository (tests only).** Done: B1 (cycle loop, liveness, heartbeat, watchdog), B2 (inbox shape and claim release), B3 (inbox and timers in the cycle), B4 (outbox in the cycle), B5 (memory), B6 (decision cards), B11 (series rule), B12 (recovery table). Each was merged on its own with fake providers. Nothing changes on the host.
 
 **Phase 2: shadow next to the host.** The owner installs the unit with `--loop` and without `--live`, with its own work root and its own token (read-only is enough in shadow). The host loop keeps running. `rtd` writes `shadow/cycle-<n>.jsonl` against the host decisions exported to `--live-decisions` (B13 adds a read-only exporter over a copy of the host state). Readiness (B13 `scripts/cutover-check.mjs`, exit 0 only when all hold): at least 48 h of shadow cycles; no unexplained decision differences in the last 24 h; heartbeat present with no `scheduler-stall` entries in the last 24 h; every host-patch inventory row resolved; the inbox, timers and outbox show activity in the shadow work root.
 
