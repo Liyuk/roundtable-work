@@ -243,8 +243,11 @@ class Sched:
         self._gap_warned_from = None
         self._throttle_logged = {}  # reason_key -> last log epoch
         self._unresolved_logged = {}  # (issue, dep) -> last log epoch (#540)
-        for d in (self.state, self.logs, os.path.join(self.logs, "work"), os.path.join(RT_HOME, "locks"), os.path.join(self.state, "issues"),
-                  os.path.join(self.state, "children"), os.path.join(self.state, "supervisor"), os.path.join(RT_HOME, "wt")):
+        dirs = [self.logs, os.path.join(self.logs, "work")]   # logs are allowed in dry-run
+        if not dry:
+            dirs += [self.state, os.path.join(RT_HOME, "locks"), os.path.join(self.state, "issues"),
+                     os.path.join(self.state, "children"), os.path.join(self.state, "supervisor"), os.path.join(RT_HOME, "wt")]
+        for d in dirs:
             os.makedirs(d, exist_ok=True)
 
     # ---- logging
@@ -552,7 +555,7 @@ class Sched:
 
     def fire_timers(self):
         """Fire due timers into the event inbox (rt-timers.mjs). Skipped on STOP or during a cycle-gap hold."""
-        if os.path.exists(os.path.join(RT_HOME, "STOP")) or time.time() < self._resume_hold_until:
+        if self.dry or os.path.exists(os.path.join(RT_HOME, "STOP")) or time.time() < self._resume_hold_until:
             return
         try:
             r = subprocess.run(["node", TIMER_CLI, RT_HOME], capture_output=True, text=True, timeout=60)
@@ -588,10 +591,11 @@ class Sched:
         self.reload_cfg()
         self.note_cycle_gap()
         self.fire_timers()
-        try:
-            subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'rt-tmpclean')], timeout=120)
-        except Exception:
-            pass
+        if not self.dry:
+            try:
+                subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'rt-tmpclean')], timeout=120)
+            except Exception:
+                pass
         act = self.reap()
         lim = self.limit_active()
         if lim:
@@ -1034,11 +1038,13 @@ class Sched:
 
     # ---- heartbeat
     def heartbeat(self, act):
+        if self.dry:   # dry-run writes no state (status.sh shows no DRY heartbeat)
+            return
         ws = ",".join("%d:%d:%d" % (n, a["slot"], a["pid"]) for n, a in sorted(act.items()))
         now = time.time()
-        txt = "ts=%s\nepoch=%d\npid=%d\ndry=%d\nslots=%d\nrunning=%d\nmain_red=%d\nworkers=%s\n" % (
-            time.strftime("%F %T %Z"), now, os.getpid(), 1 if self.dry else 0, self.workers_max, len(act), 1 if self.main_red else 0, ws)
-        path = os.path.join(self.state, "heartbeat.dry" if self.dry else "heartbeat")
+        txt = "ts=%s\nepoch=%d\npid=%d\ndry=0\nslots=%d\nrunning=%d\nmain_red=%d\nworkers=%s\n" % (
+            time.strftime("%F %T %Z"), now, os.getpid(), self.workers_max, len(act), 1 if self.main_red else 0, ws)
+        path = os.path.join(self.state, "heartbeat")
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             f.write(txt)
