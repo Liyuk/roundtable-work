@@ -58,6 +58,7 @@ import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
 import { selfMetrics } from './lib/self-metrics.mjs';
 import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
+import { executeGate, planGateEnabled } from './lib/pipeline.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /**
@@ -90,6 +91,15 @@ function supervisionSignals({ workspace, goals, outbox, now }) {
 }
 /** Sent in the same session when a finalizing wake ends without a usable DECISION; the wake budget is not spent. */
 const DECISION_REASK = 'Your DECISION was missing or invalid. Reply with only the decision file for this turn, starting with the DECISION=<do|continue|ask|out-of-scope|decompose|done> line, then its required lines. Do no other work.';
+const PLAN_PROMPT = 'Before any edit, write the technical plan for this issue as one fenced block opening with ```rt-plan: a JSON object with a non-empty "approach" string and array fields "files", "risks" and "tests". Do no other work.';
+const PLAN_REASK = 'Your rt-plan was missing or invalid. Reply with only the fenced ```rt-plan JSON block described above. Do no other work.';
+/** Technical-plan gate before execute: one re-ask for a missing or invalid plan, then degraded. Records the plan or the degraded flag on the line; never stops the issue. */
+async function runPlanGate(call, store, id) {
+  const turn = async (prompt) => (await call({ plan: { prompt } }))?.output ?? '';
+  let gate = executeGate(await turn(PLAN_PROMPT), { reasked: false });
+  if (gate.action === 're-ask') gate = executeGate(await turn(PLAN_REASK), { reasked: true });
+  await store.update(id, (s) => { s.plan = gate.plan ?? { degraded: true }; });
+}
 const parsesAsDecision = (raw) => { try { typeof raw === 'string' ? parseDecisionFile(raw) : validateDecision(raw); return true; } catch { return false; } };
 export const EXIT_LOCKED = 75;
 export const EXIT_LOCK_LOST = 76;
@@ -217,7 +227,7 @@ export async function runQueue({
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
-  candidates, probe, probeIntervalMs, claimHold = false,
+  candidates, probe, probeIntervalMs, claimHold = false, planGate = false,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -797,6 +807,7 @@ export async function runQueue({
             const routeType = { developing: 'development', testing: 'verification', reviewing: 'review', finalizing: 'chief' }[phase];
             const call = (extra, candidate) => handler({ item, phase, stage: STAGE[phase], role, state, heartbeat, recordArtifacts, signal, routing,
               ...(candidate ? { candidate, model: candidate.model } : modelRouter ? { model: modelRouter(routeType) } : {}), ...extra });
+            if (planGate && phase === 'developing') await runPlanGate(call, store, id);
             let result;
             if (candidateRouter && phase === 'developing') {
               // The developer round runs over the candidates; a quota wait leaves the round open and writes the due timer.
@@ -1206,7 +1217,7 @@ async function main(argv) {
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers, claimHold) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, claimHold, ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, claimHold, planGate: await planGateEnabled(), ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });

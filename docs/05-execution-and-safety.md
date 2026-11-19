@@ -38,6 +38,22 @@ Every squash merge goes through the single merge entry point (`runtime/lib/merge
 
 A missing, unreadable, malformed, or unknown `mergeMode` resolves to `dry-run` (fail closed). In `owner` and `dry-run` modes the merge is never called, including for revert merges; a finalizing issue waits with a `merge-mode` hold instead of failing.
 
+## Technical-Plan Gate
+
+Optional gate before `execute`, set in `runtime/plan-gate.config.json` (`"enabled": false` by default). It is read once per pass by the CLI and passed to `runQueue`, so the worker and daemon paths share it. Parsing lives only in `runtime/lib/pipeline.mjs` (`parsePlan`, `executeGate`).
+
+When enabled, each developing phase first asks the handler for a plan turn (`plan: { prompt }` in the handler input). The reply must contain one fenced block:
+
+````
+```rt-plan
+{ "approach": "one sentence", "files": ["path"], "risks": [], "tests": ["check"] }
+```
+````
+
+`approach` must be a non-empty string; `files`, `risks` and `tests` must be arrays. A missing or invalid block gets one re-ask in the same turn. If the re-ask is also invalid, the line continues degraded: execute still runs, and the state records `plan: { degraded: true }`. A valid plan is recorded as `plan` on the line before execute starts. The gate never opens an owner stop.
+
+When disabled (or the key is absent or not `true`), execute runs with no plan turn and nothing is recorded.
+
 ## Cancelled-Only Required CI
 
 A required CI answer is cancelled-only when the CI provider returns `{ green: false, status: 'cancelled' }`: the provider decides that no required job concluded `failure` or `timed_out`, and the runtime never infers that from partial data. When the provider also exposes the optional `ci.rerunCancelled(pr)` capability, `runGates` requests one re-run and holds the issue as `waiting_external` instead of failing into the fixer chain. The budget is two re-runs per issue + head (`MAX_CI_RERUNS`), persisted as `ciReruns` on the gate record before the side effect is requested; a new head or tree resets it. Once the budget is used up, or when the provider exposes no re-run capability, a cancelled answer keeps today's behaviour: a genuine failure that fails closed. A real `failure` or `timed_out` status is never retried this way. Changing required check names or CI runner labels is out of scope unless the issue explicitly asks for it.
