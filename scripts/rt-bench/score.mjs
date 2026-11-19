@@ -2,6 +2,8 @@
 // Staleness is judged against the `now` epoch-ms value passed in by the caller.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Owner-proposed L6-L8 (docs/autonomy-benchmark.md section 4) are reported but not scored until the owner approves.
+const UNSCORED = new Set(['L6', 'L7', 'L8']);
 
 // A sub-metric without a finite source timestamp, or with one older than 24 h, is not measurable at level 0.
 export function measure({ id, level, source }, now) {
@@ -19,7 +21,7 @@ export function dimensionScore(levels) {
 export function score(results, now, vetoes = []) {
   const scores = {};
   for (const dim of ['U', 'L', 'I', 'D']) {
-    const levels = results.filter((r) => r.id[0] === dim).map((r) => measure(r, now).level);
+    const levels = results.filter((r) => r.id[0] === dim && !UNSCORED.has(r.id)).map((r) => measure(r, now).level);
     scores[dim] = dimensionScore(levels);
   }
   const vetoed = vetoes.some(({ at }) => Date.parse(at) > now - 7 * DAY_MS && Date.parse(at) <= now);
