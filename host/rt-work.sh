@@ -1096,6 +1096,17 @@ chief_stop_to_gates(){ # 0 = another wake, 1 = finished, 2 = not applicable (nor
   return 1
 }
 
+wait_release(){ # Chief DECISION `wait`: line 3 `unblock_at <ISO time>` (default now + WAIT_SLEEP) -> due timer; the caller then exits
+  local at why
+  at=$(sed -n 's/^unblock_at[[:space:]]*//p' "$SD/DECISION" | head -1)
+  at=${at:-$(date -Is -d "+$WAIT_SLEEP seconds")}
+  why=$(sed -n 2p "$SD/DECISION" | cut -c1-200)
+  node "$RT_HOME/bin/rt-timers.mjs" wait "$RT_HOME" "$n" "$at" 2>>"$RT_HOME/logs/workers.log" || { log "WARN wait timer for '$at' not written; continuing the wake loop"; return 1; }
+  release
+  setstatus "$n" waiting "$wake" "wait until $at: ${why:-no reason}"
+  log "wait: due timer written for $at; worker exits (slot and lock freed)"
+}
+
 # ---- main wake loop -----------------------------------------------------------------------
 used=0; noprog=0; dec=""; run_loop=1
 if [ -f "$SD/chief-stage" ]; then   # a killed worker was inside chief wake N: re-run wake N without spending budget
@@ -1160,7 +1171,7 @@ while [ "$run_loop" = 1 ]; do
                   handle_stop "Chief decided stop: ${why:-no reason}" && continue; break;;
     decompose)    handle_decompose && continue; break;;
     out-of-scope) handle_outofscope; break;;
-    wait)         for _ in $(seq 1 $((WAIT_SLEEP/5))); do stopped && break; sleep 5; done;;
+    wait)         wait_release && break;;
     continue)     ;;
     *)            log "no valid DECISION (rc=$rc)";;
   esac

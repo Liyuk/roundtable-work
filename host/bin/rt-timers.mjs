@@ -1,10 +1,16 @@
 #!/usr/bin/env node
-// Fires every due timer of <root> into its event inbox and prints the number of accepted events.
-import { openTimers } from '../../runtime/lib/event-timers.mjs';
+// rt-timers.mjs <root>: fires every due timer of <root> into its event inbox and prints the number of accepted events.
+// rt-timers.mjs wait <root> <issue> <unblockAt>: a worker's `wait` decision writes its due timer (waitRelease); the worker exits.
+import { openTimers, waitRelease } from '../../runtime/lib/event-timers.mjs';
 
-const root = process.argv[2];
-if (!root) {
-  console.error('usage: node host/bin/rt-timers.mjs <root>');
-  process.exit(2);
+const [cmd, ...args] = process.argv.slice(2);
+if (cmd === 'wait') {
+  const [root, issue, unblockAt] = args;
+  waitRelease(root, { issue: Number(issue), input: { decision: 'wait', event: 'resume', unblockAt } });
+} else {
+  if (!cmd) {
+    console.error('usage: node host/bin/rt-timers.mjs <root> | wait <root> <issue> <unblockAt>');
+    process.exit(2);
+  }
+  console.log(openTimers(cmd).fire(Date.now()));
 }
-console.log(openTimers(root).fire(Date.now()));
