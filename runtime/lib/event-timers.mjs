@@ -24,7 +24,10 @@ export function openTimers(root) {
   return {
     list: () => timers.map((t) => ({ ...t })),
     once: (timer) => put({ ...timer, kind: 'once', at: Date.parse(timer.at) }),
-    recurring: (timer) => put({ ...timer, kind: 'recurring', at: Date.parse(timer.at) }),
+    recurring(timer) {
+      if (!(typeof timer.cadenceMs === 'number' && timer.cadenceMs > 0)) throw new TypeError('cadenceMs must be a number > 0');
+      put({ ...timer, kind: 'recurring', at: Date.parse(timer.at) });
+    },
     // Fires every timer due at `now` (epoch ms). Returns the number of inbox events accepted.
     fire(now) {
       const inbox = openInbox(root);
