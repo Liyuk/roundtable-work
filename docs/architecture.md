@@ -55,7 +55,7 @@ flowchart LR
     P3["Decomposition (implemented)"]:::impl
     P4["Execution: workers, worktree, harness (implemented)"]:::impl
     P5["Review: gates 0/1/2 (implemented)"]:::impl
-    P6["e2e tests (missing)"]:::missing
+    P6["e2e tests (optional, off by default)"]:::impl
     P7["Acceptance: accept, parent-close (implemented)"]:::impl
   end
 
@@ -126,7 +126,7 @@ The machine-readable status of each module (read by the Pages site follow-up) is
   { "id": "pipeline-decompose", "name": "Pipeline: decomposition", "status": "implemented", "code": ["runtime/lib/decisions.mjs", "runtime/lib/decompose-triggers.mjs"], "issues": [97, 331, 332] },
   { "id": "pipeline-execute", "name": "Pipeline: execution", "status": "implemented", "code": ["runtime/lib/workers.mjs", "runtime/lib/worktree.mjs", "runtime/lib/harness.mjs", "runtime/lib/agent-adapter.mjs"], "issues": [302, 303, 311] },
   { "id": "pipeline-review", "name": "Pipeline: review", "status": "implemented", "code": ["runtime/lib/gates.mjs", "runtime/lib/review-precondition.mjs", "runtime/lib/review-ledger.mjs"], "issues": [338, 341] },
-  { "id": "pipeline-e2e", "name": "Pipeline: e2e tests", "status": "missing", "code": [], "issues": [] },
+  { "id": "pipeline-e2e", "name": "Pipeline: e2e tests", "status": "implemented", "code": ["runtime/lib/pipeline.mjs", "runtime/e2e.config.json"], "issues": [602] },
   { "id": "pipeline-accept", "name": "Pipeline: acceptance", "status": "implemented", "code": ["runtime/lib/accept.mjs", "runtime/lib/parent-close.mjs", "runtime/lib/aftercare.mjs"], "issues": [] },
   { "id": "merge-tiers", "name": "Completion tiers", "status": "partial", "code": ["runtime/lib/merge.mjs", "runtime/lib/merge-risk.mjs", "runtime/lib/merge-decision.mjs", "runtime/lib/merge-order.mjs"], "issues": [273, 312] },
   { "id": "outbox", "name": "Outbox and dispatcher", "status": "library-only", "code": ["runtime/lib/outbox.mjs", "runtime/lib/gh-write-proxy.mjs"], "issues": [285, 286] },
@@ -211,10 +211,10 @@ Records written before the extension have no status field; they are read as `don
 | Decomposition | Implemented: size, acceptance-count and risk triggers at triage and after repeated gate failures (#331); two-phase child creation with search-verified retry and sibling title tags (#332). | `decisions.mjs`, `decompose-triggers.mjs` |
 | Execution | Implemented. | `workers.mjs`, `worktree.mjs`, `harness.mjs`, `agent-adapter.mjs` |
 | Review | Implemented: Gate 0/1/2, review only on a clean committed head (#341), follow-ups only for in-scope high or critical findings, de-duplicated (#338). | `gates.mjs`, `review-precondition.mjs`, `review-ledger.mjs` |
-| e2e tests | Missing: only acceptance commands run. | — |
+| e2e tests | Implemented, optional and off by default: `e2e.command` in `runtime/e2e.config.json` runs on the final head after review; with no command the skip is recorded as `e2e:not-configured`. | `pipeline.mjs` `runE2e`, `rtd.mjs` |
 | Acceptance | Implemented. | `accept.mjs`, `parent-close.mjs`, `aftercare.mjs` |
 
-Only the two missing stages are new work (child B10): a plan artifact written to the line state before `execute`, and an optional `e2e.command` run on the final head after review. The other stages are not redone.
+Only the technical plan stage is still new work (child B10): a plan artifact written to the line state before `execute`. The optional e2e stage is wired (#602). The other stages are not redone.
 
 ### 5. Completion tiers
 

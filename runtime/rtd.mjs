@@ -14,7 +14,7 @@ import { createIntakeProvider, linkedPullRequests } from './lib/intake.mjs';
 import { createGitHubReader, createGitHubWriter } from '../scripts/github-read.mjs';
 import { CLAIM_MARKER, createClaimCoordinator } from './lib/claim.mjs';
 import { runWorkers } from './lib/workers.mjs';
-import { createWorktreeManager, syncWithBase } from './lib/worktree.mjs';
+import { createWorktreeManager, syncWithBase, runShell } from './lib/worktree.mjs';
 import { stackStatus } from './lib/merge-order.mjs';
 import { applyDecision, parseDecisionFile, resumeAfterOwnerReply, validateDecision } from './lib/decisions.mjs';
 import { createModelRouter, escalationAttemptBudget } from './lib/routing.mjs';
@@ -60,7 +60,7 @@ import { fetchTransport } from '../scripts/im-transport.mjs';
 import { selfMetrics } from './lib/self-metrics.mjs';
 import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
-import { executeGate, planGateEnabled } from './lib/pipeline.mjs';
+import { executeGate, planGateEnabled, runE2e, loadE2eConfig } from './lib/pipeline.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /**
@@ -229,7 +229,7 @@ export async function runQueue({
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
-  candidates, probe, probeIntervalMs, claimHold = false, planGate = false,
+  candidates, probe, probeIntervalMs, claimHold = false, planGate = false, e2eConfig = {}, e2eExec = runShell,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -986,6 +986,19 @@ export async function runQueue({
               return out('waiting_external', { class: 'observation_failed', reason, decision: 'wait', observation });
             }
           }
+          // The optional e2e stage runs on the final head after review passes; a failure returns the line to execute.
+          if (phase === 'reviewing') {
+            const e2eRun = await runE2e({ exec: (command, opts) => e2eExec(command, { ...opts, cwd: item.worktree ?? repoRoot }),
+              head: e2eConfig.e2e?.command ? await observationClients.git.head(item) : null, config: e2eConfig });
+            if (e2eRun.skipped) await store.append(id, { id: 'e2e', type: 'skipped', detail: e2eRun.skipped });
+            else if (!e2eRun.ok) {
+              const next = await store.retryDeveloper(id, 'e2e_failure', 'e2e failed on the final head');
+              if (next.attempts.developer >= maxDeveloperAttempts) return await finish('stop', cls, 'developer_budget_exhausted', 'stop');
+              await reflectEvent({ kind: 'fix', attempt: next.attempts.developer, role, issue: id, reason: 'e2e_failure' });
+              phase = PHASES[0];
+              continue;
+            }
+          }
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
           if (phase === 'finalizing') {
@@ -1219,7 +1232,7 @@ async function main(argv) {
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers, claimHold) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, claimHold, planGate: await planGateEnabled(), ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, claimHold, planGate: await planGateEnabled(), e2eConfig: await loadE2eConfig(), ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });

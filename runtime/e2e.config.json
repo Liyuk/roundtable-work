@@ -1,0 +1,7 @@
+{
+  "e2e": {
+    "command": null,
+    "timeoutMs": 600000
+  },
+  "description": "Optional e2e stage after review passes, run on the final head. Default off: a null command skips it (recorded as e2e:not-configured). A failing or timed-out run returns the line to execute; a passing run continues to accept."
+}

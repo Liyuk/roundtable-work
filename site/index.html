@@ -44,10 +44,10 @@
 <div class="arch-head">
 <h2 id="arch-h">How the loop is built</h2>
 <ul class="legend-row" role="list" aria-label="Number of modules per status">
-<li><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span>7</span></li>
+<li><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span>8</span></li>
 <li><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span>4</span></li>
 <li><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span> <span>5</span></li>
-<li><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span>7</span></li>
+<li><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span>6</span></li>
 </ul>
 </div>
 <noscript><p class="banner" role="note">JavaScript is off. The diagram is still shown, but selecting a module needs JavaScript. Every module is described in the table below the diagram.</p></noscript>
@@ -117,9 +117,9 @@
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">review</span></span>
 <span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
-<li><button type="button" class="mod" data-module="pipeline-e2e" data-status="missing" aria-expanded="false" aria-controls="module-panel">
+<li><button type="button" class="mod" data-module="pipeline-e2e" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">e2e tests</span></span>
-<span class="mod-status st-missing"><span aria-hidden="true">○</span> Missing</span>
+<span class="mod-status st-implemented"><span aria-hidden="true">●</span> Implemented</span>
 </button></li>
 <li><button type="button" class="mod" data-module="pipeline-accept" data-status="implemented" aria-expanded="false" aria-controls="module-panel">
 <span class="mod-name"><span class="mod-prefix visually-hidden">Pipeline: </span><span class="mod-label">acceptance</span></span>
@@ -192,10 +192,10 @@
 <details class="module-index" id="module-index" open>
 <summary>All 23 modules as a table</summary>
 <ul class="key" role="list" aria-label="Status key">
-<li class="key-item st-implemented"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span class="key-count">7 of 23</span> <span class="key-meaning">Built and on the live path.</span></li>
+<li class="key-item st-implemented"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span> <span class="key-count">8 of 23</span> <span class="key-meaning">Built and on the live path.</span></li>
 <li class="key-item st-partial"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span> <span class="key-count">4 of 23</span> <span class="key-meaning">Some of it is built; the rest is open work.</span></li>
 <li class="key-item st-library-only"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span> <span class="key-count">5 of 23</span> <span class="key-meaning">A library with tests that the daemon and the host loop do not call yet.</span></li>
-<li class="key-item st-missing"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span class="key-count">7 of 23</span> <span class="key-meaning">Not built yet.</span></li>
+<li class="key-item st-missing"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span> <span class="key-count">6 of 23</span> <span class="key-meaning">Not built yet.</span></li>
 </ul>
 <table class="grid" role="table" data-modules>
 <caption>Module status, read from docs/architecture.md</caption>
@@ -215,7 +215,7 @@
 <tr role="row" data-module="pipeline-decompose" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: decomposition</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Splits oversized work into sized children with dependencies, on size, acceptance-count and risk triggers.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>decisions.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>decompose-triggers.mjs</code></li></ul></td><td role="cell" data-label="Issues">#97, #331, #332</td></tr>
 <tr role="row" data-module="pipeline-execute" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: execution</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Workers run the task in its own git worktree through a harness adapter.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>workers.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>worktree.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>harness.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>agent-adapter.mjs</code></li></ul></td><td role="cell" data-label="Issues">#302, #303, #311</td></tr>
 <tr role="row" data-module="pipeline-review" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: review</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Gates 0, 1 and 2, run only on a clean committed head. Follow-ups are created only for in-scope high or critical findings.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>gates.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>review-precondition.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>review-ledger.mjs</code></li></ul></td><td role="cell" data-label="Issues">#338, #341</td></tr>
-<tr role="row" data-module="pipeline-e2e" data-status="missing"><th scope="row" role="rowheader" data-label="Module">Pipeline: e2e tests</th><td role="cell" data-label="Status"><span class="status st-missing"><span aria-hidden="true">○</span> Missing</span></td><td role="cell" data-label="What it does">An optional end-to-end command run on the final head after review. Today only the acceptance commands run.</td><td role="cell" data-label="Code">No code yet</td><td role="cell" data-label="Issues">None recorded</td></tr>
+<tr role="row" data-module="pipeline-e2e" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: e2e tests</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">An optional end-to-end command run on the final head after review. Off by default; a failure returns the line to execute.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>pipeline.mjs</code></li><li><code>runtime/<wbr>e2e.config.json</code></li></ul></td><td role="cell" data-label="Issues">#602</td></tr>
 <tr role="row" data-module="pipeline-accept" data-status="implemented"><th scope="row" role="rowheader" data-label="Module">Pipeline: acceptance</th><td role="cell" data-label="Status"><span class="status st-implemented"><span aria-hidden="true">●</span> Implemented</span></td><td role="cell" data-label="What it does">Checks acceptance, closes finished parents and handles aftercare.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>accept.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>parent-close.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>aftercare.mjs</code></li></ul></td><td role="cell" data-label="Issues">None recorded</td></tr>
 <tr role="row" data-module="merge-tiers" data-status="partial"><th scope="row" role="rowheader" data-label="Module">Completion tiers</th><td role="cell" data-label="Status"><span class="status st-partial"><span aria-hidden="true">◐</span> Partial</span></td><td role="cell" data-label="What it does">Decides per change whether to act silently, act and notify, or ask first. Approval for safety files exists today; the tier function is specified, not built.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>merge.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-risk.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-decision.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>merge-order.mjs</code></li></ul></td><td role="cell" data-label="Issues">#273, #312</td></tr>
 <tr role="row" data-module="outbox" data-status="library-only"><th scope="row" role="rowheader" data-label="Module">Outbox and dispatcher</th><td role="cell" data-label="Status"><span class="status st-library-only"><span aria-hidden="true">◇</span> Library only</span></td><td role="cell" data-label="What it does">Every outward side effect is first an outbox item, then delivered by a dispatcher. A tested library; GitHub writes still go through a host shim.</td><td role="cell" data-label="Code"><ul class="paths" role="list"><li><code>runtime/<wbr>lib/<wbr>outbox.mjs</code></li><li><code>runtime/<wbr>lib/<wbr>gh-write-proxy.mjs</code></li></ul></td><td role="cell" data-label="Issues">#285, #286</td></tr>
@@ -342,7 +342,7 @@
 <p>The inbox, timers, outbox, memory, decision cards and liveness libraries exist with tests. <code>runtime/rtd.mjs</code> imports none of them yet and runs one pass instead of a loop. Wiring them in is the work tracked under #374.</p>
 </article>
 </div>
-<p>Across the 23 modules: 7 implemented, 4 partial, 5 library only, 7 missing.</p>
+<p>Across the 23 modules: 8 implemented, 4 partial, 5 library only, 6 missing.</p>
 <h3>Cutover plan</h3>
 <p>Four phases. Nothing changes on the host until phase 3, which is an owner-only step.</p>
 <ol class="phases">
