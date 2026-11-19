@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,8 @@ function sandbox(t) {
     if (!SKIP.has(name)) cpSync(join(repo, 'host', name), join(home, name), { recursive: true });
   }
   cpSync(join(repo, 'host', 'config.env.example'), join(home, 'config.env'));
+  // Permissive resource hold: live load/memory/PSI must not throttle the dry-run cycle (rt-sched reads these keys).
+  appendFileSync(join(home, 'config.env'), 'RT_MAX_LOAD=1e9\nRT_MIN_MEM_MB=0\nRT_MAX_MEM_PSI=1e9\n');
   cpSync(join(repo, 'runtime'), join(base, 'runtime'), { recursive: true }); // host/bin/rt-timers.mjs imports ../../runtime
   const fake = (name, body) => { writeFileSync(join(home, 'bin', name), body); chmodSync(join(home, 'bin', name), 0o755); };
   const ghLog = join(base, 'gh.log');
