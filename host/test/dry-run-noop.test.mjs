@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const sched = join(dirname(fileURLToPath(import.meta.url)), '..', 'rt-sched.py');
 const READ_VERBS = new Set(['issue list', 'issue view', 'pr list', 'pr view', 'label list', 'run list']);
@@ -71,7 +72,7 @@ function runSched(t, { dry }) {
   const lines = (p) => (existsSync(p) ? readFileSync(p, 'utf8').split('\n').filter(Boolean) : []);
   return {
     status: r.status, stderr: r.stderr, sched: lines(join(home, 'logs', 'sched.log')), gh: lines(join(fx, 'gh.log')),
-    spawned: existsSync(join(home, 'SPAWNED')), before, after: snapshot(box), stale, oldLock,
+    home, spawned: existsSync(join(home, 'SPAWNED')), before, after: snapshot(box), stale, oldLock,
   };
 }
 
@@ -94,8 +95,12 @@ test('dry-run writes no state files, no heartbeat, and runs no tmp cleanup (logs
   assert.ok(existsSync(r.oldLock), 'rt-tmpclean pruned the state lock dir in dry-run');
 });
 
-test('non-dry run still claims and spawns the worker (control)', (t) => {
+test('non-dry run still claims and spawns the worker (control)', async (t) => {
   const r = runSched(t, { dry: false });
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.sched.some((l) => l.includes('spawned worker #7')), 'worker was not spawned without --dry-run\n' + r.sched.join('\n'));
+  // The worker is detached and writes SPAWNED after sched exits; wait (bounded) so cleanup does not race it.
+  const marker = join(r.home, 'SPAWNED');
+  for (let i = 0; i < 100 && !existsSync(marker); i++) await sleep(100);
+  assert.ok(existsSync(marker), 'detached worker never finished');
 });
