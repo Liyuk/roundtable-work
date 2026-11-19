@@ -1,3 +1,5 @@
+import { securityTriggers } from './security-triggers.mjs';
+
 // Translation paths: i18n/locale/translation folders, PO/XLIFF catalogues, and per-language markdown (name.zh.md).
 const TRANSLATION = [/(^|\/)(i18n|locales?|translations?)\//, /\.(po|xliff)$/, /\.(zh|en|ja)(\.[a-z-]+)?\.md$/];
 // Protocol / machine-field code and the prompt/template files that define the verdict contract.
@@ -9,6 +11,7 @@ export function gate2Triggers({ changedFiles = [], gate1 }) {
   const reasons = [];
   if (changedFiles.some(file => TRANSLATION.some(pattern => pattern.test(file)))) reasons.push('translation');
   if (changedFiles.some(file => PROTOCOL.some(pattern => pattern.test(file)))) reasons.push('protocol');
+  if (securityTriggers(changedFiles)) reasons.push('security');
   const rationale = gate1?.rationale;
   if (typeof rationale !== 'string' || rationale.trim().length < MIN_RATIONALE) reasons.push('thin-rationale');
   return reasons;
