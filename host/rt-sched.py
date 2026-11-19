@@ -53,6 +53,13 @@ def load_config(path):
 
 
 
+def read_lines(path):
+    try:
+        return [x for x in open(path, encoding="utf-8", errors="replace").read().split("\n") if x]
+    except OSError:
+        return []
+
+
 # -------------------------------------------- resource admission ----
 # Hard hold on *new claims only*. Running workers are never killed.
 # Thresholds are read from config.env each cycle (see claim_hold_reason).
@@ -557,6 +564,26 @@ class Sched:
         if n:
             self.log("timers fired %d event(s) into the inbox" % n)
 
+    def resume_waits(self, status):
+        """Timer-wait release (state `waiting`, written by rt-work.sh): an unacked inbox event routed to the issue (its due
+        timer, or an awaited event such as CI) makes it queued, so the claim step resumes it. Acked here, so each wakes once."""
+        state = os.path.join(RT_HOME, ".roundtable", "state")
+        acked = set(read_lines(os.path.join(state, "acked.jsonl")))
+        routed = {}
+        for line in read_lines(os.path.join(state, "event-inbox.jsonl")):
+            e = json.loads(line)
+            if "type" not in e and e["issue"] is not None and e["source_event_id"] not in acked:
+                routed.setdefault(e["issue"], []).append(e["source_event_id"])
+        for n, ids in routed.items():
+            if (status.get(n) or {}).get("state") != "waiting":
+                continue
+            self.log("%s#%d: wait released by inbox event %s; queued to resume" % ("DRY " if self.dry else "", n, ids[0]))
+            self.set_status(n, "queued", status[n]["wake"], "resumed by inbox event %s" % ids[0])
+            status[n]["state"] = "queued"
+            if not self.dry:
+                with open(os.path.join(state, "acked.jsonl"), "a", encoding="utf-8") as f:
+                    f.write("".join(i + "\n" for i in ids))
+
     def cycle(self):
         self.reload_cfg()
         self.note_cycle_gap()
@@ -691,6 +718,7 @@ class Sched:
                 status[n] = {"state": "queued", "wake": "0", "ts": time.strftime("%F %T"), "detail": "reopen"}
 
         # 3. intake
+        self.resume_waits(status)
         cands, skips = [], []
         for i in issues:
             n, names, title = i["number"], i["names"], i["title"]
@@ -710,6 +738,8 @@ class Sched:
                 why.append("rt:proposed without rt:approved")
             st = status.get(n)
             queued = bool(st and st["state"] == "queued")
+            if st and st["state"] == "waiting":
+                why.append("waiting for its timer or awaited event")
             op = prs_of(n)
             if op and not queued:
                 why.append("open PR %s (delivered, waiting for owner)" % ", ".join("#%d %s" % (p["number"], p["headRefName"]) for p in op))

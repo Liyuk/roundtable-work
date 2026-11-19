@@ -21,21 +21,41 @@ function result({ id, value, level, now, start, asOf, evidence, ok = true }) {
   return { id, value, level: m.level, window: { start: iso(start), end: iso(now) }, source: m.source, measurable: m.measurable && ok, evidence };
 }
 
-// Freeze (F) and pause (P) time are zero: no freeze or pause source is injected yet.
+// Freeze (F) time is zero: no freeze source is injected yet. Effective time (section 2) excludes the
+// environment pauses (sources.pauses, classified intervals) and idle intervals of the queue snapshots (sources.queue):
+// a snapshot with running = 0 and claimable = 0 is idle until the next snapshot (or now).
 export function computeU({ now, productionStart = PRODUCTION_START, sources }) {
-  const S = { interventions: {}, schedStarts: {}, schedGaps: {}, stages: {}, self: {}, ...sources };
+  const S = { interventions: {}, schedStarts: {}, schedGaps: {}, stages: {}, self: {}, pauses: { events: [] }, queue: { events: [] }, ...sources };
   const start = Math.max(now - WINDOW, productionStart);
   const W = (events = [], from = start) => events.filter((e) => t(e) >= from && t(e) <= now).sort(byTime);
-  const hours = (now - start) / HOUR;
+
+  const queue = [...S.queue.events].sort(byTime);
+  const idle = queue.flatMap((q, i) => (q.running === 0 && q.claimable === 0 ? [[t(q), i + 1 < queue.length ? t(queue[i + 1]) : now]] : []));
+  const excluded = [...S.pauses.events.map((e) => [Date.parse(e.start), Date.parse(e.end)]), ...idle].sort((a, b) => a[0] - b[0]);
+  // Effective ms in [from, to]: the span minus the union of excluded intervals.
+  const effective = (from, to) => {
+    let covered = 0;
+    let cursor = from;
+    for (const [s, e] of excluded) {
+      const lo = Math.max(s, cursor);
+      const hi = Math.min(e, to);
+      if (hi > lo) {
+        covered += hi - lo;
+        cursor = hi;
+      }
+    }
+    return to - from - covered;
+  };
 
   // U1: greedy episodes; an event within 30 min of the previous one joins its episode.
   const ivs = W(S.interventions.events);
   const episodes = ivs.filter((e, i) => i === 0 || t(e) - t(ivs[i - 1]) > 30 * MIN).length;
+  const hours = effective(start, now) / HOUR;
   const u1 = episodes ? hours / episodes : hours;
 
-  // U2: longest gap between consecutive intervention instants, including both window edges.
+  // U2: longest gap between consecutive intervention instants, including both window edges, in effective time.
   const times = [start, ...ivs.map(t), now];
-  const u2 = Math.max(...times.slice(1).map((x, i) => x - times[i])) / HOUR;
+  const u2 = Math.max(...times.slice(1).map((x, i) => effective(times[i], x))) / HOUR;
 
   const manual = W(S.schedStarts.events).filter((e) => e.by === 'manual');
 

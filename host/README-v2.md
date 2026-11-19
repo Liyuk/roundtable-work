@@ -58,9 +58,25 @@ Each round, read the most recent completed CI on main: red → `state/main_red`,
 - `ask`: `credentials|destructive` go straight to the owner via `<!-- rt:ask -->`; `scope|direction` or an invalid category (including the cancelled `merge`) → first `rt-decide` (`resolve` writes SUPERVISOR.md and wakes once more; at most `RT_DECIDE_MAX=2` times per issue, count persisted, reset after an owner reply).
 - `stop` / no progress (2 consecutive wakes with no change) / wake budget (`RT_MAXWAKE`) exhausted: ask the decider once; `resolve` wakes again, otherwise `rt:blocked` + a comment with the reason.
 - `decompose`: creates `rt:self` sub-issues from `state/subissues/NN-*.md` (`sub:NN` is replaced with the real number), and the parent issue gets `rt:hold`. After all sub-issues close, the scheduler releases the hold and wakes the parent issue to check acceptance (DECISION `done` + line 2 `no-pr`). The sub-issue list is in `state/children/<parent>`.
+- `wait`: line 2 is the reason; optional line 3 `unblock_at <ISO 8601 time>` (default: now + `RT_WAIT_SLEEP`, 300 s). The worker writes a due timer through `waitRelease` (`state` file `.roundtable/state/timers.json`), sets the issue to `waiting`, drops `rt:running` and **exits**, so its slot and `locks/<n>.lock` are freed. It is not claimed again until an unacked inbox event routed to the issue arrives (see "Event triggers and wait release"). If the timer cannot be written, the worker keeps its wake loop.
 - `out-of-scope`: comment + `rt:blocked` (not closed; only `rt:self` sub-issues created by the loop itself are closed).
 - `done`: see "Automatic merge" above. Gate 0 privacy/test failures can never be overridden; they only go to fixes (at most 2 rounds, persisted). Disagreements between Gate 0/2 and Gate 1 are judged by Opus as `VERDICT: real|false-positive` (overriding requires Gate 1 to pass). XCHECK `unavailable` does not block.
 - All text a worker sends to GitHub passes the privacy scan first; if it fails, it is replaced with generic wording and logged.
+
+## Event triggers and wait release
+Every trigger becomes one event in the inbox (`.roundtable/state/event-inbox.jsonl`), de-duplicated by `source_event_id`. Timers live in `.roundtable/state/timers.json`; routed events are acked in `acked.jsonl`. Paths are under `RT_HOME`.
+
+**Host wiring (each `rt-sched.py` cycle, in order):** `fire_timers` runs `node bin/rt-timers.mjs <RT_HOME>`, which fires every due timer into the inbox (skipped on `STOP` or during the cycle-gap hold); `resume_waits` queues each `waiting` issue that has an unacked inbox event routed to it; then the claim step starts queued issues like any other candidate. A `waiting` issue with nothing routed is skipped ("waiting for its timer or awaited event").
+
+**Trigger kinds** (`KINDS` in `runtime/lib/event-inbox.mjs`):
+- `heartbeat`: wait-release timers (`wait:<n>:resume`, written by `rt-work.sh`) and the daemon's patrol timer.
+- `timer`: a generic `once` or `recurring` timer whose event has kind `timer`. None is registered by default.
+- `ci`, `owner_comment`, `intake`: produced by `runtime/lib/daemon-events.mjs` (`produceEvents`), which only the daemon runtime calls. The host scheduler does not produce them.
+- `webhook`: `runtime/lib/webhook-listener.mjs`, a signed-POST listener that binds `127.0.0.1` by default. It is **default-off**: nothing in `host/` or the daemon starts it, and enabling it is an explicit operator action. It is not enabled by this change.
+
+**Wait release (`waitRelease`, `runtime/lib/event-timers.mjs`):** the timer id is `wait:<issue>:resume`, its `at` is `unblock_at`, and it fires an event with `kind: heartbeat` and `issue: <n>`. When it fires, its `source_event_id` is `timer:wait:<n>:resume:<at>`, and the inbox drops a replay of that same firing. The issue resumes through the claim step, and a resumed worker continues from its Chief session. The awaited event (for example a CI result for the issue) resumes it the same way, before the timer is due. Each routed event wakes the issue once.
+
+**Tests:** `test/host-wait-release.test.mjs` (fixtures; no network, no real clock) covers the timer, the replayed firing, the CI resume, the scheduler skip and resume, and a worker `wait` in a sandbox that exits with its lock free.
 
 ## Scheduling rules summary
 Candidates: owner-authored, not `[Owner]`/epic, no excluded label, no open PR on `rt/<n>-*` (unless resuming from ask), not terminal, dependencies satisfied (dependency issue CLOSED, or exactly one `rt:ready-to-merge` dependency PR → stack on its branch as base; more than one → wait). Issues in the same series (first `[..]` prefix) and issues with dependencies are mutually exclusive. Ordering: bug → priority → `rt:self` → creation time. `--dry-run` only prints `DRY would claim` / `DRY skip #n: reason`.
