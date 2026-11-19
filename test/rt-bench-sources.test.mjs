@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readInterventions, readMerges } from '../scripts/rt-bench/sources.mjs';
+import { readInterventions, readJsonRows, readMerges } from '../scripts/rt-bench/sources.mjs';
 
 // Layouts are defined in the header of scripts/rt-bench/sources.mjs. Expected instants are literals
 // worked out by hand from the US Pacific rules (PST UTC-8, PDT UTC-7) and UTC+8 for CST.
@@ -84,4 +84,12 @@ test('blank lines are ignored and lastSeen is the latest parsed instant, ignorin
 
 test('empty input yields no events, zero malformed rows and no lastSeen', () => {
   assert.deepEqual(readMerges(''), { events: [], malformed: 0, lastSeen: null });
+});
+
+test('JSON rows keep rows with a valid at as UTC ISO and skip bad JSON or a missing at', () => {
+  const text = ['{"at":"2026-11-16T10:00:00+00:00","issue":1,"inTok":2,"outTok":3,"parseOk":true}', 'not json', '{"issue":2}', '{"at":"2026-11-16T02:00:00Z","running":0}'].join('\n');
+  const { events, malformed, lastSeen } = readJsonRows(text);
+  assert.equal(malformed, 2);
+  assert.deepEqual(events.map((e) => [e.at, e.issue ?? e.running]), [['2026-11-16T10:00:00.000Z', 1], ['2026-11-16T02:00:00.000Z', 0]]);
+  assert.equal(lastSeen, '2026-11-16T10:00:00.000Z');
 });
