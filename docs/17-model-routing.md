@@ -63,6 +63,18 @@ The block states that a receipt naming the routed model for its role is expected
 
 Without `--routing`, low-risk work still runs, but high-risk work fails closed: a high-risk diff with no configured cross-check model is a genuine failure (`hold: false`), and a safety-file change with no configured cross-check model stays a resumable hold (`hold: true`) with a clear reason. Gate records store gate outcomes, not model names.
 
+## Security trigger set
+
+The `security` role (which absorbs the former threat, exploit and red-team roles) runs its Gate 2 cross-check only when a changed path matches the trigger set in `runtime/lib/security-triggers.mjs`. A path matches when one of its tokens (split on `/`, `.`, `_`, `-`, case-insensitive) is in the set. Any match adds the reason `security` to `gate2Triggers`; no match adds nothing.
+
+- auth: `auth`, `oauth`, `login`, `session`, `password`, `rbac`, `permission(s)`
+- network: `network`, `http`, `https`, `socket`, `proxy`, `webhook`, `listener`
+- secrets: `secret(s)`, `credential(s)`, `token(s)`, `env` (e.g. `.env`), `key(s)`, `pem`
+- external input: `intake`, `ingest`, `inbox`, `parse`, `parser`, `input(s)`, `webhook`
+- deployment: `deploy`, `deployment`, `docker`, `dockerfile`, `systemd`, `launchd`
+
+Tickets whose changes match none of these skip the security pass.
+
 ## Checks
 
 ```text
