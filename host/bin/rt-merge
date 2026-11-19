@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """rt-merge <pr>      (needs RT_MERGE_STEP=1; RT_DRY_RUN=1 prints what it would do and writes nothing)
 
-The ONLY place in rt-loop that runs `gh pr merge` (squash; never --admin, never --auto). It re-verifies everything
+The ONLY place in rt-loop that merges (squash via the outbox bridge, which runs `gh pr merge`; never --admin, never --auto). It re-verifies everything
 right before merging:
   PR open (else skip), head branch rt/<n>-* (or rt/revert-<sha7>), not in RT_HANDS_OFF_PRS, base main,
   gates file wt/<n>/.roundtable/state/gates.json all pass for the PR's CURRENT head, a `<!-- rt:gates -->` comment saying `Result: pass` for that head,
@@ -152,9 +152,10 @@ def main(argv):
         gh(["pr", "ready", str(num), "-R", REPO])
     if needs_close:
         gh(["pr", "edit", str(num), "-R", REPO, "--body-file", "-"], inp=(body.rstrip() + "\n\nCloses #%d\n" % n))
-    r = gh(["pr", "merge", str(num), "-R", REPO, "--squash", "--match-head-commit", sha, "--body", ("Closes #%d" % n) if n else ""], check=False)  # explicit body: no Co-authored-by trailers
+    # The squash goes through the durable outbox (enqueue, then gh); explicit body: no Co-authored-by trailers
+    r = subprocess.run(["node", os.path.join(HERE, "..", "outbox-bridge.mjs"), RT_HOME, REPO, "merge", str(n or ""), str(num), sha], capture_output=True, text=True)
     if r.returncode != 0:
-        out(1, "ERROR: gh pr merge failed: %s" % r.stderr.strip()[:200])
+        out(1, "ERROR: merge via outbox failed: %s" % r.stderr.strip()[:200])
     v = json.loads(gh(["pr", "view", str(num), "-R", REPO, "--json", "state,mergeCommit"]).stdout)
     msha = ((v.get("mergeCommit") or {}).get("oid")) or ""
     os.makedirs(os.path.join(RT_HOME, "state"), exist_ok=True)
