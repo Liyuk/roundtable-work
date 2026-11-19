@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { createGitHubOutboxProvider } from '../runtime/lib/outbox-github.mjs';
 import { openOutbox } from '../runtime/lib/outbox.mjs';
 import { mergeItem, mergedNotice, requestRollback, rollbackItem } from '../runtime/lib/merge-outbox.mjs';
+import { loadImRouter, withIm } from '../runtime/lib/outbox-im.mjs';
+import { fetchTransport } from '../scripts/im-transport.mjs';
 
 // Comment ids derive from the body, so a replayed identical comment is refused by enqueue. Accepted trade-off: identical text on the same issue is posted once.
 export const commentItem = (issue, body) => ({ id: `comment:${issue}:${createHash('sha256').update(body).digest('hex').slice(0, 16)}`, kind: 'comment', issue, payload: { body } });
@@ -45,8 +47,8 @@ export function ghWriter({ gh, repo, rtHome }) {
   };
 }
 
-export function hostProvider(writer) {
-  const github = createGitHubOutboxProvider({ writer });
+export function hostProvider(writer, im) {
+  const notify = withIm(createGitHubOutboxProvider({ writer }), im);
   return {
     deliver(item) {
       if (item.kind === 'merge') {
@@ -59,18 +61,18 @@ export function hostProvider(writer) {
         writer.removeLabel(item.issue, item.payload.label);
         return { ok: true };
       }
-      return github.deliver(item);
+      return notify.deliver(item);
     },
   };
 }
 
 // Enqueue one item, then deliver it unless it already has a receipt or was dead-lettered. Returns whether it has a receipt.
-export async function submit({ root, writer, item }) {
+export async function submit({ root, writer, item, send = fetchTransport, env }) {
   const outbox = openOutbox(root);
   outbox.enqueue(item);
   if (outbox.pending().every((i) => i.id !== item.id)) return outbox.receipts().has(item.id);
   try {
-    outbox.markDelivered(item.id, await hostProvider(writer).deliver({ ...item }));
+    outbox.markDelivered(item.id, await hostProvider(writer, loadImRouter({ root, send, env })).deliver({ ...item }));
     return true;
   } catch (error) {
     outbox.recordFailure(item.id, error.message, Date.now());
