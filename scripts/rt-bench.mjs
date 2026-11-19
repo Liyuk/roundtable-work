@@ -8,6 +8,7 @@ import { readInterventions, readJsonRows } from './rt-bench/sources.mjs';
 import { readSchedLog } from './rt-bench/sched-log.mjs';
 import { computeU } from './rt-bench/metrics-u.mjs';
 import { computeLI } from './rt-bench/metrics-li.mjs';
+import { computeLSelf } from './rt-bench/metrics-l-self.mjs';
 import { computeD } from './rt-bench/metrics-d.mjs';
 import { computeQ } from './rt-bench/metrics-q.mjs';
 import { computeC } from './rt-bench/metrics-cost.mjs';
@@ -31,6 +32,7 @@ const ROWS = [
   ['U4', 'freeze self-recovery', percent, '100%'], ['U5', 'lost stages', count, '0'], ['U6', 'self-ledger slices', ratio7, '7/7'],
   ['L1', 'days with self merge', ratio7, '7/7'], ['L2', 'self acceptance', percent, '≥80%'], ['L3', 'self share of merges', percent, '≥40%'],
   ['L4', 'external issues/day', oneDecimal, '≤3/week'], ['L5', 'idle hours', hours, '≤1 h'],
+  ['L6', 'self targets weakest', percent, '100%, cohort ≥5'], ['L7', 'self completion', percent, '≥80%, cohort ≥5'], ['L8', 'invalid/duplicate rate', percent, '0%, cohort ≥5'],
   ['I1', 'PR-shipped changes', percent, '100%'], ['I2', 'hand patches', count, '0'], ['I3', 'repeat-failure closure', percent, '100%'],
   ['I4', 'measured changes', percent, '100%'], ['I5', 'first-pass rate', threeDecimals, '≥0.95'],
   ['D1', 'decision interventions', count, '0'], ['D2', 'longest owner wait', hours, '≤4 h'], ['D3', 'self-settled', percent, '≥98%'],
@@ -81,7 +83,15 @@ function readBench(text) {
 }
 
 export function runBench(sources, now) {
-  const results = [...computeU({ now, sources }), ...computeLI({ now, sources }), ...computeD({ now, sources }), ...computeQ({ now, sources }), ...computeC({ now, sources })];
+  const u = computeU({ now, sources });
+  const li = computeLI({ now, sources });
+  const [l15, i] = [li.slice(0, 5), li.slice(5)];
+  const d = computeD({ now, sources });
+  // Lowest levels among the scored sub-metrics (U, L1-L5, I, D); a not-measurable one is level 0.
+  const scored = [...u, ...l15, ...i, ...d];
+  const min = Math.min(...scored.map((r) => r.level));
+  const lowestIds = scored.filter((r) => r.level === min).map((r) => r.id);
+  const results = [...u, ...l15, ...computeLSelf({ now, sources, lowestIds }), ...i, ...d, ...computeQ({ now, sources }), ...computeC({ now, sources })];
   return { results, scores: score(results, now, sources.vetoes.events) };
 }
 

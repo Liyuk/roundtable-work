@@ -113,6 +113,26 @@ A **self-originated** issue was created by the loop from its own evidence: a gat
 | L4 external/day | >12 | ≤12 | ≤6 | ≤3 | ≤1 | ≤0.43 (≤3/wk) | 20.7 | 0 |
 | L5 idle h | >24 | ≤24 | ≤12 | ≤6 | ≤3 | ≤1 | 7.5 (proxy) | 2 |
 
+**L6–L8 (owner-proposed).** Status: owner-proposed, not scored in dimension L until the owner approves. Current: n/m (no GitHub source is collected yet).
+
+- **L6 Targeting of self-originated work.** `|self-originated issues created in W whose first Bench line (`Bench: <ID> `) names a lowest sub-metric| / |self-originated issues created in W|`. The lowest set is the sub-metrics at the minimum level among U, L1–L5, I and D (not-measurable counts as 0; all ties included), computed at scoring time. A missing Bench line is not a target.
+  - Not measurable when the cohort is empty or the GitHub source is missing or stale.
+- **L7 Completion of self-originated work.** `|cohort issues with a merged, non-reverted PR that closes them| / |cohort|`, where the cohort is self-originated issues created in W and at or before NOW − 24 h. Younger issues are still in flight and are excluded.
+- **L8 Invalid or duplicate rate (lower is better).** `|cohort issues that are closed and either closed as not_planned or labelled duplicate or invalid| / |cohort|`, same cohort as L7. Open issues never count as invalid.
+
+**Relation to L1–L5.**
+
+- L6 refines L3: L3 counts any self merge; L6 counts whether the self issue targets a weakest sub-metric, so self work off the weakest metric does not raise it.
+- L7 is the creation-cohort companion of L2, which uses a closure-date cohort; L7 excludes issues younger than 24 h.
+- L8 reports closures that L2 counts only as unaccepted, separately, so closing issues as invalid cannot hide them.
+- L1, L4 and L5 are unchanged, and L1 and L3 keep their values.
+
+| ID | L0 | L1 | L2 | L3 | L4 | L5 | Current |
+|---|---|---|---|---|---|---|---|
+| L6 targeting % | <20% | ≥20% | ≥40% | ≥60% | ≥80% | 100%, cohort ≥5 | n/m |
+| L7 completion % | <20% | ≥20% | ≥40% | ≥55% | ≥70% | ≥80%, cohort ≥5 | n/m |
+| L8 invalid/duplicate % | >20% | ≤20% | ≤10% | ≤5% | ≤2% | 0%, cohort ≥5 | n/m |
+
 ## 5. Self-iteration (I)
 
 A **runtime change** is any change to the code, prompts, policy or config that the running loop executes.
@@ -290,6 +310,9 @@ In addition:
 | L | L3 self share of merges | 7.1% | 1 | ≥40% |
 | L | L4 external issues/day | 20.7 | 0 | ≤3/week |
 | L | L5 idle hours | 7.5 (proxy) | 2 | ≤1 h |
+| L | L6 self targets weakest | n/m | 0 | 100%, cohort ≥5 |
+| L | L7 self completion | n/m | 0 | ≥80%, cohort ≥5 |
+| L | L8 invalid/duplicate rate | n/m | 0 | 0%, cohort ≥5 |
 | I | I1 PR-shipped changes | 0% | 0 | 100% |
 | I | I2 hand patches | 42 | 0 | 0 |
 | I | I3 repeat-failure closure | 0/7 | 0 | 100% |
