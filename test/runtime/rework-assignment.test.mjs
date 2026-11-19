@@ -17,7 +17,7 @@ const PASS = '审查结论：通过\nok';
 const QUICK = { lockRenewMinMs: 20 };
 const role = (harness, model) => ({ harness, model, tier: 'standard' });
 const routingWith = (roles) => ({ facts: { window: 'test', roles }, prompts: {} });
-const ALL = { chief: role('h', 'm-chief'), developer: role('h', 'm-dev'), fixer: role('h', 'm-fix'), reviewer: role('h', 'm-rev'), researcher: role('h', 'm-res'), crosscheck: role('h', 'm-cc') };
+const ALL = { chief: role('h', 'm-chief'), developer: role('h', 'm-dev'), fixer: role('h', 'm-fix'), reviewer: role('h', 'm-rev'), researcher: role('h', 'm-res'), verifier: role('h', 'm-ver'), security: role('h', 'm-sec') };
 
 test('a review rejection reruns development with the fixer role, never chief', async () => {
   const root = await tmp();

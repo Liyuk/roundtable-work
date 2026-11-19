@@ -7,7 +7,7 @@ import { extractPrRecord } from '../../runtime/lib/pr-record.mjs';
 const RATIONALE = 'Reviewed the diff against the acceptance criteria and found no defects in the changed behaviour.';
 
 // Production-shaped path: runGates hands evidence to the real merge entry point, which writes the PR body record.
-const routing = { facts: { roles: { reviewer: { harness: 'host-agent', model: 'model-review' }, crosscheck: { harness: 'host-agent', model: 'model-cross' } } }, prompts: {} };
+const routing = { facts: { roles: { reviewer: { harness: 'host-agent', model: 'model-review' } } }, prompts: {} };
 
 function mergedRun({ reviewer = { passed: true, head: 'abc1234', rationale: RATIONALE }, usageRows } = {}) {
   const records = new Map();

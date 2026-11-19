@@ -50,7 +50,7 @@ test('CLI passes the validated escalation route and injected adapter to runtime 
   await writeFile(join(root, 'routing.json'), JSON.stringify({ version: 1, windows: [{
     id: 'test', from: '2000-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z',
     roles: { chief: role('provider/standard', 'standard'), developer: role('provider/standard', 'standard'), fixer: role('provider/standard', 'standard'),
-      reviewer: role('provider/reviewer', 'strong'), researcher: role('provider/standard', 'standard'), crosscheck: role('provider/audit', 'strong') },
+      reviewer: role('provider/reviewer', 'strong'), researcher: role('provider/standard', 'standard'), verifier: role('provider/audit', 'standard'), security: role('provider/audit', 'strong') },
   }] }));
   await writeFile(join(root, 'handler.mjs'), `
 import { writeFileSync } from 'node:fs';
