@@ -45,18 +45,22 @@ Rules of use:
 - **Freeze time.** It is excluded only when the freeze ledger classifies it as `host-freeze`: wall-clock time advanced and monotonic time did not. `scheduler-stall` is never excluded. The host loop has no freeze ledger today, so `F(W) = 0`. The unclassified cycle gaps are reported for information only: 29 gaps, 27.2 h.
 - **Owner-only actions** come from the closed list in docs/self-supervision.md. They are excluded, but capped. Beyond 2 entries per `W`, or beyond 20% of all owner and external entries, the excess counts.
 - **Paused time.** It is excluded only between ledger `pause` and `resume` entries, capped at 24 h per `W`.
+- **Effective time.** The U1 and U2 windows (and the #414 72 h clock, `W72`) count only effective time: the span minus the union of
+  - environment-pause intervals (classified, as above); and
+  - idle intervals: a queue snapshot with `running = 0` and `claimable = 0` is idle until the next snapshot (or `T`).
+  Idle time is not work, so it neither lengthens a zero-intervention streak nor counts toward the 72 h clock. An empty queue is not unsupervised success. The scorer takes these intervals as injected sources (`pauses`, `queue`); it reads no files.
 - **Not measurable means level 0.** A missing source, or one staler than 24 h, makes the sub-metric "not measurable" at level 0. A gap in the data is never scored as a zero value.
 - **Reverts subtract.** A merged `Revert` PR removes the reverted merge from every merge count, and is itself not counted as work.
 
 ## 3. Unsupervised (U)
 
-- **U1 MTBI.** `MTBI = (|W| − F(W) − P(W)) / E(W)`, where `E(W)` is the number of counted intervention episodes. If `E = 0`, the value is the lower bound `|W| − F − P`.
+- **U1 MTBI.** `MTBI = (|W| − F(W) − P(W) − I(W)) / E(W)`, where `I(W)` is the idle time in `W` (section 2, effective time) and `E(W)` is the number of counted intervention episodes. If `E = 0`, the value is the lower bound `|W| − F − P − I`.
   - Source: host loop state, interventions.tsv; later `.roundtable/state/interventions.jsonl` plus the freeze ledger.
   - Current: 74 counted rows give 59 episodes (48 date-only rows plus 11 clusters among 26 timestamped rows). `131.6 h / 59 = `**2.2 h**.
   - The row-based figure is 1.8 h.
   - The figure is an upper bound. It leaves out owner-account GitHub comments that rt-metrics flags (15 supervisor-signed comments on 11-15, and 190 unsigned owner-account comments on 11-11..11-15). Counting them would lower it.
   - Since 11-15 00:00 PST (35.6 h, 12 episodes) it is 3.0 h.
-- **U2 Longest unsupervised streak.** The maximum time between consecutive counted intervention instants in `W`, including `[t_last, T]`, minus the freeze time inside it.
+- **U2 Longest unsupervised streak.** The maximum time between consecutive counted intervention instants in `W`, including `[t_last, T]`, measured in effective time: idle and paused time inside a gap does not count toward it (section 2), and freeze time is excluded as before.
   - Source: interventions.tsv.
   - Current: **9.9 h**, from row 47 (anchored 11-15 23:59:59 PST) to 11-16 09:55 PST. The two timestamped rows bounding it are 13.3 h apart. The current streak is 0.2 h.
 - **U3 Manual scheduler starts.** The number of live scheduler starts in `W` not made by the process unit or the watchdog.
@@ -203,6 +207,8 @@ A **runtime change** is any change to the code, prompts, policy or config that t
 | At least 1 `source:self` merged | **fail** (0) |
 | No unrecovered freeze | not measurable (no freeze ledger; 8 manual starts) |
 | `self` entry every 24 h | **fail** (not recorded) |
+
+Effective time (section 2) applies to the zero-intervention row: idle and paused time inside `W72` does not count toward the streak or the 72 h clock. The table above is the baseline snapshot and is not recomputed here.
 
 ## 8. Anti-gaming and regression rules
 
