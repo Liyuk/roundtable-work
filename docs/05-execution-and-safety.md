@@ -54,6 +54,12 @@ When enabled, each developing phase first asks the handler for a plan turn (`pla
 
 When disabled (or the key is absent or not `true`), execute runs with no plan turn and nothing is recorded.
 
+## Optional e2e Stage
+
+Optional stage after a passing review, set in `runtime/e2e.config.json` (`"e2e": { "command": null, "timeoutMs": 600000 }` by default, so it is off). The CLI reads it once per pass and passes it to `runQueue`, so the worker and daemon paths share it. The skip decision and the run live in `runtime/lib/pipeline.mjs` (`runE2e`); the real shell exec is `runShell` in `runtime/lib/worktree.mjs`, next to the other subprocess integrations.
+
+With no `command`, review success goes straight to accept and the ledger records the skip reason `e2e:not-configured`. With a `command`, it runs through the shell in the issue worktree on the final head (`git.head`), killed after `timeoutMs`. A non-zero exit or a timeout returns the line to execute as a developer retry (`e2e_failure`); a pass continues to accept.
+
 ## Cancelled-Only Required CI
 
 A required CI answer is cancelled-only when the CI provider returns `{ green: false, status: 'cancelled' }`: the provider decides that no required job concluded `failure` or `timed_out`, and the runtime never infers that from partial data. When the provider also exposes the optional `ci.rerunCancelled(pr)` capability, `runGates` requests one re-run and holds the issue as `waiting_external` instead of failing into the fixer chain. The budget is two re-runs per issue + head (`MAX_CI_RERUNS`), persisted as `ciReruns` on the gate record before the side effect is requested; a new head or tree resets it. Once the budget is used up, or when the provider exposes no re-run capability, a cancelled answer keeps today's behaviour: a genuine failure that fails closed. A real `failure` or `timed_out` status is never retried this way. Changing required check names or CI runner labels is out of scope unless the issue explicitly asks for it.

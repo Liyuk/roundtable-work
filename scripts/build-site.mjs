@@ -196,7 +196,7 @@ const DESCRIPTIONS = {
   'pipeline-decompose': 'Splits oversized work into sized children with dependencies, on size, acceptance-count and risk triggers.',
   'pipeline-execute': 'Workers run the task in its own git worktree through a harness adapter.',
   'pipeline-review': 'Gates 0, 1 and 2, run only on a clean committed head. Follow-ups are created only for in-scope high or critical findings.',
-  'pipeline-e2e': 'An optional end-to-end command run on the final head after review. Today only the acceptance commands run.',
+  'pipeline-e2e': 'An optional end-to-end command run on the final head after review. Off by default; a failure returns the line to execute.',
   'pipeline-accept': 'Checks acceptance, closes finished parents and handles aftercare.',
   'merge-tiers': 'Decides per change whether to act silently, act and notify, or ask first. Approval for safety files exists today; the tier function is specified, not built.',
   outbox: 'Every outward side effect is first an outbox item, then delivered by a dispatcher. A tested library; GitHub writes still go through a host shim.',
