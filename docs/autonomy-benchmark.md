@@ -294,6 +294,9 @@ In addition:
 | D | D3 self-settled | 75.6% | 1 | ≥98% |
 | D | D4 rollback rate | 2.2% | 4 | ≤2% |
 | D | D5 loop-merged share | 94.0% | 3 | 100% |
+| Q | Q1 rework/revert rate | n/m | 0 | ≤2% |
+| Q | Q2 14-day survival | n/m | 0 | ≥98% |
+| Q | Q3 per-issue bench delta | n/m | 0 | 100% |
 
 ### Data gaps: events `rt-bench` needs
 
@@ -315,4 +318,45 @@ The loop must start writing these. All timestamps are UTC, and every text field 
 | `usage` | at, issue, role, model, inTok, outTok, rc, parseOk | I4, I5 (tokens per merged PR) |
 | `wait` | at, issue, state, waitingOn, redLine, questionKey, endedAt, endedBy (owner, external, self or timeout) | D2, D3 |
 | `decision` | at, issue, kind, verdict (resolve, ask-owner, stop, invalid, fallback or timeout-default), by, rolledBack | D1, D3, D4 |
-| `bench` snapshot (`.roundtable/state/bench.jsonl`) | at, window, per-ID value, level, source freshness | regression rule |
+| `outcome` (rework or revert per PR; path not yet set) | at, pr, kind (rework or revert) | Q1, Q2 |
+| `bench` snapshot (`.roundtable/state/bench.jsonl`) | at, window, per-ID value, level, source freshness | regression rule, Q3 |
+
+## 10. Output quality (Q)
+
+**Status: owner-proposed, not scored until approved.** Q is not part of dimension scoring: no dimension or overall score uses Q, and `scripts/rt-bench/score.mjs` is unchanged. `rt-bench` prints Q1–Q3 in the snapshot and the summary for information only.
+
+**Status of the sources: not measurable until the source exists.** Q1 and Q2 need `outcome` events (section 9). Q3 needs `Bench:` lines in issue bodies and bench snapshots, and at least one line whose evaluation point falls in `W`. Until then all three are n/m at level 0.
+
+Shared definitions:
+
+- **Non-revert PR.** Not a revert: `revertOf` is set, or the title starts with `Revert`. Revert PRs are in no cohort.
+- **Flagged PR.** A PR with an `outcome` event of kind `rework` or `revert`, or a merged revert PR that names it (`revertOf`), at or before the check point.
+- **Cohort and window.** Same `W` as section 2. Each PR is counted once, in the window that contains its check point.
+
+**Q1 Rework/revert rate.** `100 × |flagged non-revert PRs merged in W| / |non-revert PRs merged in W|`, checked at `T`. Lower is better.
+
+- Sources: github `prs` (`mergedAt`, `revertOf`, `title`); outcomes `{ at, pr, kind: 'rework' | 'revert' }`.
+- Relation to I4/I5: I5 counts first-pass PRs from daily rows and is the aggregate guardrail. Q1 is the per-PR view of the same outcomes, and its revert side overlaps D4. They can disagree: I5 uses daily rows, Q1 uses per-PR events.
+- Current: **not measurable** (no outcomes source).
+
+**Q2 14-day survival.** Cohort: non-revert PRs whose 14-day point (`mergedAt + 14 d`) is in `W`. `100 × |cohort PRs not flagged by their 14-day point| / |cohort|`. Higher is better.
+
+- Sources: github `prs` (`mergedAt`, `revertOf`, `title`); outcomes events.
+- Relation to I4/I5: I4 checks a process change after 7 d; Q2 checks each merged PR's output after 14 d. A rework or revert after the 14-day point does not count.
+- Current: **not measurable** (no outcomes source).
+
+**Q3 Per-issue benchmark delta.** Each line `Bench: <ID> <current> -> <expected> (level a -> b) within <d> d` in an issue body is a target. Its evaluation point is the `mergedAt` of the first merged PR that closes the issue, plus `<d>` days, counted when that point is in `W`. Observed = `ids[<ID>].value` of the first bench snapshot at or after that point. The line is achieved when: `expected < current` and observed ≤ expected, or otherwise observed ≥ expected. Prefixes `<`, `>`, `<=`, `>=` and a trailing `%` are ignored when reading the numbers. A non-numeric current (for example `n/m`) is not evaluated. `Q3 = 100 × achieved / evaluated`. Per-issue delta = observed − current, shown in the evidence.
+
+- Sources: github `issues` (`body`) and `prs` (`mergedAt`, `closes`); bench snapshots (`.roundtable/state/bench.jsonl`, `ids`).
+- Relation to I4: I4 asks whether a process change was measured against a pre-registered target. Q3 asks whether the change met the target the issue registered, per issue. Q3 uses the same bench snapshots as the regression rule.
+- Current: **not measurable** (no snapshot is in `W` with an evaluation point in `W`).
+
+**Not-measurable rule.** A missing source (no `asOf`) or a source staler than 24 h makes the Q value not measurable: level 0 and value null. An empty cohort, or zero evaluated lines, is also not measurable with value null. A missing value is never recorded as 0.
+
+**Level tables (owner-proposed).** Level caps: Q1 and Q2 are capped at level 4 when the cohort is below 20 PRs; Q3 is capped at level 4 when fewer than 5 lines are evaluated.
+
+| ID | L0 | L1 | L2 | L3 | L4 | L5 | Current | Level |
+|---|---|---|---|---|---|---|---|---|
+| Q1 rework/revert rate | >15% | ≤15% | ≤10% | ≤6% | ≤4% | ≤2%, cohort ≥20 | n/m | 0 |
+| Q2 14-day survival | <50% | ≥50% | ≥70% | ≥85% | ≥95% | ≥98%, cohort ≥20 | n/m | 0 |
+| Q3 per-issue delta | <20% | ≥20% | ≥40% | ≥60% | ≥80% | 100%, evaluated ≥5 | n/m | 0 |
