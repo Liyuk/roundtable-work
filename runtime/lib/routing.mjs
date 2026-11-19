@@ -1,7 +1,15 @@
 import { readFile } from 'node:fs/promises';
 
-export const ROLES = ['chief', 'developer', 'fixer', 'reviewer', 'researcher', 'crosscheck'];
+export const ROLES = ['chief', 'researcher', 'developer', 'fixer', 'reviewer', 'verifier', 'security'];
 export const TIERS = ['economy', 'standard', 'strong'];
+// Legacy names resolve to a canonical role; the canonical names resolve to themselves.
+export const ROLE_ALIASES = Object.freeze({
+  ...Object.fromEntries(ROLES.map((role) => [role, role])),
+  'opus-fix': 'fixer',
+  xcheck: 'reviewer', crosscheck: 'reviewer', 'cross-reviewer': 'reviewer',
+  decider: 'verifier', acceptor: 'verifier', tester: 'verifier',
+  threat: 'security', exploit: 'security', 'threat-modeler': 'security', 'red-teamer': 'security',
+});
 
 const rank = (tier) => TIERS.indexOf(tier);
 const fail = (message) => { throw new RoutingError(message); };
@@ -15,7 +23,24 @@ export class RoutingError extends Error {
   }
 }
 
-/** Validate the single role-to-model routing table and return it unchanged. */
+export function resolveRole(name) {
+  if (!Object.hasOwn(ROLE_ALIASES, name)) fail(`unknown role "${name}"`);
+  return ROLE_ALIASES[name];
+}
+
+/** Rename legacy role keys to canonical names in `roles`, in place. Two keys for one role are an error. */
+export function canonicalizeRoles(roles, where) {
+  const canonical = {};
+  for (const [name, entry] of Object.entries(roles)) {
+    const role = resolveRole(name);
+    if (Object.hasOwn(canonical, role)) fail(`${where} has more than one key for role "${role}"`);
+    canonical[role] = entry;
+  }
+  for (const name of Object.keys(roles)) delete roles[name];
+  return Object.assign(roles, canonical);
+}
+
+/** Validate the single role-to-model routing table, canonicalizing legacy role keys in place, and return it. */
 export function validateRouting(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) fail('configuration must be an object');
   if (config.version !== 1) fail('version must be 1');
@@ -41,8 +66,8 @@ export function validateRouting(config) {
 
     const roles = window.roles;
     if (!roles || typeof roles !== 'object' || Array.isArray(roles)) fail(`window "${window.id}" requires roles`);
+    canonicalizeRoles(roles, `window "${window.id}"`);
     for (const role of ROLES) if (!(role in roles)) fail(`window "${window.id}" is missing role "${role}"`);
-    for (const role of Object.keys(roles)) if (!ROLES.includes(role)) fail(`window "${window.id}" has unknown role "${role}"`);
 
     for (const role of ROLES) {
       const entry = roles[role];
@@ -54,7 +79,7 @@ export function validateRouting(config) {
     for (const role of ['reviewer', 'fixer']) {
       if (rank(roles[role].tier) < rank(roles.developer.tier)) fail(`window "${window.id}" role "${role}" tier must be >= developer tier`);
     }
-    if (roles.crosscheck.tier !== 'strong') fail(`window "${window.id}" role "crosscheck" tier must be strong`);
+    if (roles.reviewer.tier !== 'strong') fail(`window "${window.id}" role "reviewer" tier must be strong`);
   }
   return config;
 }

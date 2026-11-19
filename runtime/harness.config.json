@@ -1,11 +1,12 @@
 {
   "roles": {
     "chief": "pi",
+    "researcher": "pi",
     "developer": "pi",
     "fixer": "pi",
     "reviewer": "pi",
-    "researcher": "pi",
-    "crosscheck": "pi"
+    "verifier": "pi",
+    "security": "pi"
   },
   "implementerRole": "developer",
   "deny": []

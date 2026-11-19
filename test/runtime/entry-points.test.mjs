@@ -37,7 +37,7 @@ async function setup(t) {
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, RT_FAKE_LOG: log, GH_TOKEN: 'fake-token' };
   const config = async (roles, implementerRole = 'developer') => {
     const file = join(dir, 'harness.json');
-    const allPi = { chief: 'pi', developer: 'pi', fixer: 'pi', reviewer: 'pi', researcher: 'pi', crosscheck: 'pi' };
+    const allPi = { chief: 'pi', developer: 'pi', fixer: 'pi', reviewer: 'pi', researcher: 'pi', verifier: 'pi', security: 'pi' };
     await writeFile(file, JSON.stringify({ roles: { ...allPi, ...roles }, implementerRole }));
     return file;
   };
