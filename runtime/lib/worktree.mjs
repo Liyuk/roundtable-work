@@ -111,6 +111,11 @@ export async function createWorktreeManager({ workRoot, repoRoot, baseBranch = '
   return { workRoot: confinement.root, repoRoot, pathFor, list, create, remove, acquire, inspect };
 }
 
+/** Real exec for `runE2e`: runs `command` through the shell in `cwd`, killed after `timeoutMs`; resolves `{ code, timedOut }`. */
+export const runShell = (command, { timeoutMs, cwd }) => new Promise((resolve) => {
+  execFileCallback('sh', ['-c', command], { cwd, timeout: timeoutMs }, (error) => resolve({ code: error ? error.code : 0, timedOut: error?.killed === true }));
+});
+
 /**
  * Bring the issue branch of `id` up to `origin/<base>` before its gates run: merge, never rebase or force, and push
  * with a normal push, which git refuses unless it fast-forwards the remote branch. A conflicting merge is aborted and

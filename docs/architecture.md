@@ -51,11 +51,11 @@ flowchart LR
 
   subgraph PIPE["3 Single-task pipeline"]
     P1["Requirements design and goal (partial)"]:::partial
-    P2["Technical plan: parsePlan in pipeline.mjs (library-only)"]:::lib
+    P2["Technical plan gate before execute (optional, off by default)"]:::impl
     P3["Decomposition (implemented)"]:::impl
     P4["Execution: workers, worktree, harness (implemented)"]:::impl
     P5["Review: gates 0/1/2 (implemented)"]:::impl
-    P6["e2e tests: runE2e in pipeline.mjs (library-only)"]:::lib
+    P6["e2e tests (optional, off by default)"]:::impl
     P7["Acceptance: accept, parent-close (implemented)"]:::impl
   end
 
@@ -122,11 +122,11 @@ The machine-readable status of each module (read by the Pages site follow-up) is
   { "id": "inbox", "name": "Event inbox and claims", "status": "implemented", "code": ["runtime/lib/event-inbox.mjs", "runtime/lib/event-claim.mjs", "runtime/lib/daemon-loop.mjs"], "issues": [266, 268, 378, 384, 569] },
   { "id": "timers", "name": "Due timers", "status": "implemented", "code": ["runtime/lib/event-timers.mjs", "runtime/lib/daemon-loop.mjs", "host/rt-sched.py", "host/bin/rt-timers.mjs"], "issues": [269, 309, 384, 575, 577] },
   { "id": "pipeline-design", "name": "Pipeline: requirements design and goal", "status": "partial", "code": ["runtime/lib/intake-backlog.mjs"], "issues": [] },
-  { "id": "pipeline-plan", "name": "Pipeline: technical plan", "status": "library-only", "code": ["runtime/lib/pipeline.mjs"], "issues": [382] },
+  { "id": "pipeline-plan", "name": "Pipeline: technical plan", "status": "implemented", "code": ["runtime/lib/pipeline.mjs", "runtime/rtd.mjs", "runtime/plan-gate.config.json"], "issues": [382, 607] },
   { "id": "pipeline-decompose", "name": "Pipeline: decomposition", "status": "implemented", "code": ["runtime/lib/decisions.mjs", "runtime/lib/decompose-triggers.mjs"], "issues": [97, 331, 332] },
   { "id": "pipeline-execute", "name": "Pipeline: execution", "status": "implemented", "code": ["runtime/lib/workers.mjs", "runtime/lib/worktree.mjs", "runtime/lib/harness.mjs", "runtime/lib/agent-adapter.mjs"], "issues": [302, 303, 311] },
   { "id": "pipeline-review", "name": "Pipeline: review", "status": "implemented", "code": ["runtime/lib/gates.mjs", "runtime/lib/review-precondition.mjs", "runtime/lib/review-ledger.mjs"], "issues": [338, 341] },
-  { "id": "pipeline-e2e", "name": "Pipeline: e2e tests", "status": "library-only", "code": ["runtime/lib/pipeline.mjs"], "issues": [382] },
+  { "id": "pipeline-e2e", "name": "Pipeline: e2e tests", "status": "implemented", "code": ["runtime/lib/pipeline.mjs", "runtime/e2e.config.json"], "issues": [602] },
   { "id": "pipeline-accept", "name": "Pipeline: acceptance", "status": "implemented", "code": ["runtime/lib/accept.mjs", "runtime/lib/parent-close.mjs", "runtime/lib/aftercare.mjs"], "issues": [] },
   { "id": "merge-tiers", "name": "Completion tiers", "status": "partial", "code": ["runtime/lib/autonomy.mjs", "runtime/lib/merge.mjs", "runtime/lib/merge-risk.mjs", "runtime/lib/merge-decision.mjs", "runtime/lib/merge-order.mjs"], "issues": [273, 312, 380] },
   { "id": "outbox", "name": "Outbox and dispatcher", "status": "implemented", "code": ["runtime/lib/outbox.mjs", "runtime/lib/outbox-github.mjs", "runtime/lib/gh-write-proxy.mjs", "host/outbox-bridge.mjs"], "issues": [285, 286, 385, 570, 578] },
@@ -209,14 +209,14 @@ Records written before the extension have no status field; they are read as `don
 | Stage | Today | Code |
 | --- | --- | --- |
 | Requirements design and goal | Partial: the intake draft carries a goal and numbered acceptance; the admission check refuses a body without Goal, Acceptance (Run and Expected), Out of scope, Dependencies and Size estimate. | `intake-backlog.mjs`, `intake.mjs` `admission` |
-| Technical plan | Library only: `parsePlan` in `pipeline.mjs` (#382) is not imported by the loop; no plan artifact is written before execute. | `pipeline.mjs` |
+| Technical plan | Implemented, optional and off by default: when `runtime/plan-gate.config.json` sets `enabled: true`, `rtd.mjs` asks for an `rt-plan` block before execute, re-asks once, then continues degraded (#607). | `pipeline.mjs` `executeGate`, `rtd.mjs` `runPlanGate` |
 | Decomposition | Implemented: size, acceptance-count and risk triggers at triage and after repeated gate failures (#331); two-phase child creation with search-verified retry and sibling title tags (#332). | `decisions.mjs`, `decompose-triggers.mjs` |
 | Execution | Implemented. | `workers.mjs`, `worktree.mjs`, `harness.mjs`, `agent-adapter.mjs` |
 | Review | Implemented: Gate 0/1/2, review only on a clean committed head (#341), follow-ups only for in-scope high or critical findings, de-duplicated (#338). | `gates.mjs`, `review-precondition.mjs`, `review-ledger.mjs` |
-| e2e tests | Library only: `runE2e` in `pipeline.mjs` (#382) is not imported by the loop; only acceptance commands run. | `pipeline.mjs` |
+| e2e tests | Implemented, optional and off by default: `e2e.command` in `runtime/e2e.config.json` runs on the final head after review; with no command the skip is recorded as `e2e:not-configured`. | `pipeline.mjs` `runE2e`, `rtd.mjs` |
 | Acceptance | Implemented. | `accept.mjs`, `parent-close.mjs`, `aftercare.mjs` |
 
-The two library-only stages are not wired into the loop yet (child B10, #382): the loop must write the plan artifact to the line state before `execute`, and run the optional `e2e.command` on the final head after review, using `pipeline.mjs`. The other stages are not redone.
+The technical plan gate (#607) and the optional e2e stage (#602) are both wired into the loop and both are off by default. The other stages are not redone.
 
 ### 5. Completion tiers
 

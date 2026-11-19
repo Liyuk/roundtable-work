@@ -6,6 +6,8 @@
 //   createSlackProvider({ root, name, urlEnv, env, send })    Slack incoming webhook JSON {text}
 //   createTelegramProvider({ root, name, tokenEnv, chatEnv, env, send })  POST sendMessage {chat_id, text}
 //   createImRouter({ routes, providers })  outbox provider: delivers a notification to each channel routed for its subtype
+//   loadImRouter({ root, send, env })  reads <root>/.roundtable/im-routes.json (missing = empty) and builds the router for it
+//   withIm(provider, router)  adds IM delivery after an outbox provider, for notification items only
 // Endpoints and secrets are read from env by variable name at delivery time. Each provider records its receipts in
 // <root>/.roundtable/state/im-sent.jsonl, keyed by item id and channel; a repeated item returns the stored receipt.
 // Network: this module makes no network call itself. `send(url, init)` is injected (REQUIRED) and must resolve to
@@ -15,6 +17,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export const SENT_PATH = '.roundtable/state/im-sent.jsonl';
+export const IM_ROUTES_PATH = '.roundtable/im-routes.json';
 const TELEGRAM_API = 'https://api.telegram.org';
 
 const TEMPLATES = {
@@ -88,6 +91,30 @@ export function createImRouter({ routes, providers }) {
       const channels = routes[item.payload.subtype] ?? [];
       for (const name of channels) await providers[name].deliver(item);
       return { ok: true, channels };
+    },
+  };
+}
+
+const MAKERS = { webhook: createWebhookProvider, slack: createSlackProvider, telegram: createTelegramProvider };
+
+// Read at each call, so every dispatch sees the operator's current table. Env variable names in the table are resolved at delivery.
+export function loadImRouter({ root, send, env = process.env }) {
+  const file = join(root, IM_ROUTES_PATH);
+  const { channels = {}, routes = {} } = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  const providers = Object.fromEntries(Object.entries(channels).map(([name, spec]) => {
+    if (!Object.hasOwn(MAKERS, spec.type)) throw new TypeError(`unknown channel type: ${spec.type}`);
+    return [name, MAKERS[spec.type]({ ...spec, root, name, env, send })];
+  }));
+  return createImRouter({ routes: loadRoutes({ channels, routes }), providers });
+}
+
+// GitHub runs first, so an IM failure never delays a GitHub write. Both are idempotent by item id, so a retry repeats neither.
+export function withIm(provider, router) {
+  return {
+    async deliver(item) {
+      const receipt = await provider.deliver(item);
+      if (router && item.kind === 'notification') await router.deliver(item);
+      return receipt;
     },
   };
 }

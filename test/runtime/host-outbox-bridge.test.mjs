@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -129,5 +129,21 @@ test('the CLI runs the real gh with argument arrays: label add/rm and comment bo
     const lines = readFileSync(log, 'utf8').trim().split('\n');
     assert.deepEqual(lines, ['issue edit 286 -R owner/repo --remove-label rt:running', 'issue comment 286 -R owner/repo --body-file -']);
     assert.match(readFileSync(`${log}.body`, 'utf8'), /^<!-- rt:outbox comment:286:[0-9a-f]{16} -->\nhello\n$/);
+  });
+});
+
+test('a notification with an IM route reaches the channel and the GitHub comment, once per item id', async () => {
+  await withRoot(async (root) => {
+    mkdirSync(join(root, '.roundtable'), { recursive: true });
+    writeFileSync(join(root, '.roundtable', 'im-routes.json'), JSON.stringify({ channels: { slack: { type: 'slack', urlEnv: 'RT_SLACK_URL' } }, routes: { 'stall-alert': ['slack'] } }));
+    const writer = fakeGh();
+    const sent = [];
+    const send = async (url) => { sent.push(url); return { ok: true, status: 200 }; };
+    const env = { RT_SLACK_URL: 'https://slack.example.test/in' };
+    const item = { id: 'alert:stall:286', kind: 'notification', issue: 286, payload: { subtype: 'stall-alert', of: 'the worker' } };
+    assert.equal(await submit({ root, writer, item, send, env }), true);
+    assert.equal(await submit({ root, writer, item: { ...item }, send, env }), true);
+    assert.deepEqual(sent, ['https://slack.example.test/in']);
+    assert.equal(writer.comments.length, 1);
   });
 });

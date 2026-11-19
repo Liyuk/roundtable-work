@@ -165,6 +165,25 @@ If CI is not green, the level goes up by one, capped at `risk:high`. The `reason
 
 The helper is pure. It does not merge anything and does not write GitHub labels. Nothing in this repository calls it outside its tests, so the labels are not applied automatically.
 
+## IM notifications (off by default)
+
+Notification outbox items can also go to IM channels. The routes table is `<workspace>/.roundtable/im-routes.json`, read at each end-of-cycle flush of `rtd --loop` and by the host outbox bridge. A missing file, or empty `routes`, means no IM send; the GitHub notices are unchanged.
+
+```json
+{
+  "channels": {
+    "ops-slack": { "type": "slack", "urlEnv": "RT_SLACK_URL" },
+    "ops-tg": { "type": "telegram", "tokenEnv": "RT_TG_TOKEN", "chatEnv": "RT_TG_CHAT" }
+  },
+  "routes": { "stall-alert": ["ops-slack"], "digest": ["ops-slack", "ops-tg"] }
+}
+```
+
+- `type` is `webhook`, `slack` or `telegram`. `webhook` and `slack` read `urlEnv`; `telegram` reads `tokenEnv` and `chatEnv`.
+- The table holds only the names of environment variables. Set the values in the daemon's environment, never in the file. For example, enable the Slack channel by exporting `RT_SLACK_URL` with the incoming-webhook URL.
+- `routes` maps a notification subtype to channel names. Subtypes are the fixed templates in `runtime/lib/outbox-im.mjs`: `merge-notice`, `action-pending-confirmation`, `approval-request`, `rollback-result`, `stall-alert`, `digest`.
+- A shadow run (GitHub run without `--live`) sends nothing to IM.
+
 ## Owner-only steps
 
 These steps are for the owner. The loop and operators must not run them. This repository contains no script that performs them, and the code does not verify them. Record the result of each step outside the repository.
