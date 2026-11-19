@@ -1,3 +1,4 @@
 {
-  "mergeMode": "agent"
+  "mergeMode": "agent",
+  "mergeTiers": false
 }

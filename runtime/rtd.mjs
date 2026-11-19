@@ -22,8 +22,8 @@ import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { loadUsageLedger } from './lib/usage-ledger.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
-import { createMergeEntryPoint } from './lib/merge.mjs';
-import { readMergeConfig } from './lib/merge-mode.mjs';
+import { createTieredMerge } from './lib/merge-tier.mjs';
+import { readMergeConfig, readMergeTiers } from './lib/merge-mode.mjs';
 import { loadLocalChecksConfig } from './lib/local-checks.mjs';
 import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
@@ -237,6 +237,11 @@ export async function runQueue({
   if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
   const mergeMode = await readMergeConfig();
   const localChecks = await loadLocalChecksConfig();
+  // Merge tiers (#604) are default-off; when on, both merge call sites share one tier policy and journal root.
+  const mergeTiers = await readMergeTiers();
+  const tierRoot = loopWorkspace(workRoot);
+  if (mergeTiers && !tierRoot) throw new TypeError('mergeTiers requires a work root named .roundtable');
+  const mergeOptions = { enabled: mergeTiers, autonomy: mergeTiers ? (await loadAutonomy()).autonomy : undefined, root: tierRoot, mode: mergeMode, localChecks };
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -524,7 +529,7 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks, pullRequestBody: pullRequestBodyClient(githubClient) });
+        const squash = createTieredMerge({ ...mergeOptions, revertOf: record.mergeCommit, github: mergeGithub, gateState: guardedGateStore, store, pullRequestBody: pullRequestBodyClient(githubClient) });
         // The revert PR body is host-written; red-main recovery must not be blocked by the loop-PR `Closes #N` link check.
         const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing, requireClosesLink: false });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
@@ -863,7 +868,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode, localChecks, pullRequestBody: pullRequestBodyClient(githubClient) });
+              const squash = createTieredMerge({ ...mergeOptions, github: mergeGithub, gateState, store, pullRequestBody: pullRequestBodyClient(githubClient) });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
