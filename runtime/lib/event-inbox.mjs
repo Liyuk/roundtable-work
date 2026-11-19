@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 
 export const INBOX_PATH = '.roundtable/state/event-inbox.jsonl';
 export const ACKED_PATH = '.roundtable/state/acked.jsonl';
-export const KINDS = ['heartbeat', 'ci', 'owner_comment', 'intake', 'webhook'];
+export const KINDS = ['heartbeat', 'ci', 'owner_comment', 'intake', 'webhook', 'timer'];
 
 function validate(event) {
   if (typeof event.source_event_id !== 'string' || event.source_event_id.length === 0) {

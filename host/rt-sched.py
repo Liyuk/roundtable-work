@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RT_HOME = os.path.abspath(os.path.expanduser(os.environ.get("RT_HOME") or HERE))
 GH = os.environ.get("RT_GH_REAL", "/usr/bin/gh")
 BRIDGE = os.path.join(HERE, "outbox-bridge.mjs")
+TIMER_CLI = os.path.join(HERE, "bin", "rt-timers.mjs")
 
 TERMINAL = {"done", "stop", "error", "out-of-scope"}
 EXCLUDE_LABELS = ["rt:owner", "rt:running", "rt:ask", "rt:ready-to-merge", "rt:blocked", "rt:hold", "rt:merged", "rt:deferred"]
@@ -542,9 +543,24 @@ class Sched:
             pass
         return None
 
+    def fire_timers(self):
+        """Fire due timers into the event inbox (rt-timers.mjs). Skipped on STOP or during a cycle-gap hold."""
+        if os.path.exists(os.path.join(RT_HOME, "STOP")) or time.time() < self._resume_hold_until:
+            return
+        try:
+            r = subprocess.run(["node", TIMER_CLI, RT_HOME], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return self.log("ERROR timers %s" % e)
+        if r.returncode != 0:
+            return self.log("ERROR timers exit %d: %s" % (r.returncode, r.stderr.strip().split("\n")[-1]))
+        n = int(r.stdout)
+        if n:
+            self.log("timers fired %d event(s) into the inbox" % n)
+
     def cycle(self):
         self.reload_cfg()
         self.note_cycle_gap()
+        self.fire_timers()
         try:
             subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'rt-tmpclean')], timeout=120)
         except Exception:
