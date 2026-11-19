@@ -126,11 +126,11 @@ const swap = (from, to) => { assert.ok(doc.includes(from), `fixture: ${from}`); 
 
 test('changing a status in the document changes the built page (nothing is hand-copied)', () => {
   const before = buildSite()['index.html'];
-  const flipped = swap('{ "id": "inbox", "name": "Event inbox and claims", "status": "library-only"', '{ "id": "inbox", "name": "Event inbox and claims", "status": "implemented"');
+  const flipped = swap('{ "id": "inbox", "name": "Event inbox and claims", "status": "implemented"', '{ "id": "inbox", "name": "Event inbox and claims", "status": "library-only"');
   const after = buildSite({ architecture: flipped })['index.html'];
   assert.notEqual(after, before);
-  assert.match(after, /<button type="button" class="mod" data-module="inbox" data-status="implemented"/);
-  assert.match(before, /<button type="button" class="mod" data-module="inbox" data-status="library-only"/);
+  assert.match(after, /<button type="button" class="mod" data-module="inbox" data-status="library-only"/);
+  assert.match(before, /<button type="button" class="mod" data-module="inbox" data-status="implemented"/);
   const renamed = buildSite({ architecture: swap('"name": "Due timers"', '"name": "Due timers (renamed)"') })['index.html'];
   assert.ok(renamed.includes('Due timers (renamed)'));
 });
@@ -138,7 +138,7 @@ test('changing a status in the document changes the built page (nothing is hand-
 test('a module that the page has no description or lane for, or a malformed block, fails the build', () => {
   const added = swap('{ "id": "daemon",', '{ "id": "brand-new", "name": "Brand new", "status": "missing", "code": [], "issues": [] },\n  { "id": "daemon",');
   assert.throws(() => buildSite({ architecture: added }), /without a layout in build-site\.mjs: brand-new/);
-  assert.throws(() => buildSite({ architecture: swap('"status": "missing", "code": [], "issues": [207', '"status": "done", "code": [], "issues": [207') }), /status done/);
+  assert.throws(() => buildSite({ architecture: swap('"status": "partial", "code": ["runtime/lib/intake-sources.mjs"', '"status": "done", "code": ["runtime/lib/intake-sources.mjs"') }), /status done/);
   assert.throws(() => buildSite({ architecture: doc.replace('<!-- rt:module-status -->', '') }), /no rt:module-status block/);
   const removed = doc.replace(/  \{ "id": "memory",[^\n]*\n/, '');
   assert.notEqual(removed, doc);
