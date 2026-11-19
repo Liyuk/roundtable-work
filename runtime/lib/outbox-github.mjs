@@ -5,6 +5,8 @@ const NOTICE_TEXT = {
   'stall-alert': ({ of }) => `Stall alert for ${of}`,
   'approval-request': ({ of, action }) => `Approval requested for ${of}: ${action}`,
   'action-pending-confirmation': ({ issue, action }) => `Action ${action} on issue #${issue} awaits confirmation`,
+  'done-pending-confirmation': ({ pr, head }) => `PR #${pr} merged (head ${head.slice(0, 7)}); awaiting owner confirmation or rollback`,
+  'merge-confirmed': ({ pr }) => `Merge of PR #${pr} confirmed by the owner`,
   digest: ({ body }) => body,
 };
 
