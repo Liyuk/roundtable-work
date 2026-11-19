@@ -1164,7 +1164,7 @@ async function main(argv) {
     prompts[role] = appendMemory(renderRolePrompt(prompt, facts), { store: memoryStore, role });
   }
   const routing = { facts, prompts };
-  const models = { reviewer: facts.roles.reviewer.model, crossCheck: facts.roles.crosscheck.model };
+  const models = { reviewer: facts.roles.reviewer.model, crossCheck: facts.roles.reviewer.model };
   const handlerModule = await import(pathToFileURL(resolve(args.handler)).href);
   const handler = handlerModule.default;
   const escalationAdapter = handlerModule.escalationAdapter;

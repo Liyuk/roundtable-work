@@ -18,7 +18,8 @@ const table = (chiefModel = 'vendor/standard-7') => ({
     id: 'w', from: '2026-11-01T00:00:00.000Z', to: '2026-12-01T00:00:00.000Z',
     roles: {
       chief: entry(chiefModel), developer: entry('vendor/standard-7'), fixer: entry('vendor/standard-7'),
-      reviewer: entry('vendor/standard-7'), researcher: entry('vendor/standard-7'), crosscheck: entry('vendor/standard-7', 'strong'),
+      reviewer: entry('vendor/standard-7', 'strong'), researcher: entry('vendor/standard-7'),
+      verifier: entry('vendor/standard-7'), security: entry('vendor/standard-7', 'strong'),
     },
   }],
 });

@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "note": "Pins and checksums stay null until a real upstream commit is resolved and recorded. A null pin is never installed; the doctor reports the fallback instead.",
+  "skills": [
+    {
+      "id": "tdd",
+      "name": "tdd",
+      "requirement": "required",
+      "roles": [
+        "developer"
+      ],
+      "source": {
+        "repo": "https://github.com/cursor/plugins",
+        "path": "pstack"
+      },
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/tdd.md"
+    },
+    {
+      "id": "diagnosing-bugs",
+      "name": "fix-root-causes",
+      "requirement": "required",
+      "roles": [
+        "fixer"
+      ],
+      "source": {
+        "repo": "https://github.com/mattpocock/skills",
+        "path": null
+      },
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/diagnosing-bugs.md"
+    },
+    {
+      "id": "prove-it-works",
+      "name": "prove-it-works",
+      "requirement": "required",
+      "roles": [
+        "developer"
+      ],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/prove-it-works.md",
+      "note": "verifier role; upstream source not named in issue #552"
+    },
+    {
+      "id": "blast-radius",
+      "name": "blast-radius",
+      "requirement": "required",
+      "roles": [
+        "reviewer"
+      ],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/blast-radius.md",
+      "note": "upstream source not named in issue #552"
+    },
+    {
+      "id": "architect",
+      "name": "architect",
+      "requirement": "required",
+      "roles": [
+        "chief"
+      ],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/architect.md",
+      "note": "new or cross-module design only; upstream source not named in issue #552"
+    },
+    {
+      "id": "sequence-verifiable-units",
+      "name": "sequence-verifiable-units",
+      "requirement": "required",
+      "roles": [
+        "developer"
+      ],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/sequence-verifiable-units.md",
+      "note": "upstream source not named in issue #552"
+    },
+    {
+      "id": "implement",
+      "name": "implement",
+      "requirement": "required",
+      "roles": [
+        "developer"
+      ],
+      "source": {
+        "repo": "https://github.com/mattpocock/skills",
+        "path": null
+      },
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/implement.md"
+    },
+    {
+      "id": "code-review",
+      "name": "code-review",
+      "requirement": "required",
+      "roles": [
+        "reviewer"
+      ],
+      "source": {
+        "repo": "https://github.com/mattpocock/skills",
+        "path": null
+      },
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/code-review.md"
+    },
+    {
+      "id": "correct",
+      "name": "correct",
+      "requirement": "required",
+      "roles": [
+        "chief"
+      ],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/correct.md",
+      "note": "idle sourcer; upstream source not named in issue #552"
+    },
+    {
+      "id": "show-me-your-work",
+      "name": "show-me-your-work",
+      "requirement": "required",
+      "roles": [
+        "all"
+      ],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "distilled-core",
+      "fallbackFile": "practice/fallback/show-me-your-work.md",
+      "note": "decision trace; role list not given in issue #552; upstream source not named in issue #552"
+    },
+    {
+      "id": "arena",
+      "name": "arena",
+      "requirement": "optional",
+      "roles": [],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "skip",
+      "note": "role mapping not given in issue #552; upstream source not named in issue #552"
+    },
+    {
+      "id": "swarm",
+      "name": "swarm",
+      "requirement": "optional",
+      "roles": [],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "skip",
+      "note": "role mapping not given in issue #552; upstream source not named in issue #552"
+    },
+    {
+      "id": "interrogate",
+      "name": "interrogate",
+      "requirement": "optional",
+      "roles": [],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "skip",
+      "note": "role mapping not given in issue #552; upstream source not named in issue #552"
+    },
+    {
+      "id": "formal-verification",
+      "name": "formal-verification",
+      "requirement": "optional",
+      "roles": [],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "skip",
+      "note": "role mapping not given in issue #552; upstream source not named in issue #552"
+    },
+    {
+      "id": "figure-it-out",
+      "name": "figure-it-out",
+      "requirement": "optional",
+      "roles": [],
+      "source": null,
+      "pin": null,
+      "checksum": null,
+      "fallback": "skip",
+      "note": "role mapping not given in issue #552; upstream source not named in issue #552"
+    }
+  ]
+}
