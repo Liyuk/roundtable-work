@@ -52,6 +52,11 @@ export async function runE2e({ exec, head, config }) {
   return { ok: result.code === 0 && !result.timedOut };
 }
 
+/** Load `runtime/e2e.config.json`: `e2e.command` (null by default, so the stage is skipped) and `e2e.timeoutMs`. */
+export async function loadE2eConfig(path = new URL('../e2e.config.json', import.meta.url)) {
+  return JSON.parse(await readFile(path, 'utf8'));
+}
+
 /** Ledger entry for a stage change; `at` is an ISO string supplied by the caller. */
 export function ledgerEntry({ from, to, at, role }) {
   return { stage: to, from, at, role };
