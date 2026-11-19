@@ -297,6 +297,9 @@ In addition:
 | Q | Q1 rework/revert rate | n/m | 0 | ≤2% |
 | Q | Q2 14-day survival | n/m | 0 | ≥98% |
 | Q | Q3 per-issue bench delta | n/m | 0 | 100% |
+| C | C1 tokens per completed issue | n/m | 0 | ≤100k |
+| C | C2 cost per completed issue | n/m | 0 | ≤0.20 |
+| C | C3 idle overhead tokens | n/m | 0 | ≤10k |
 
 ### Data gaps: events `rt-bench` needs
 
@@ -311,11 +314,11 @@ The loop must start writing these. All timestamps are UTC, and every text field 
 | `stage-end` | at, issue, stage, rc, finalState, activeSec, wallSec, cause | U5 |
 | `merge`, extending merges.log | pr, issue, origin (owner, decomposition, gate-finding, self-review, failure-repeat or metric-breach), parent, revertOf | L1, L3, D4, D5 |
 | `issue-filed` / `issue-closed` | issue, source, origin, fingerprint, evidence[], rule; closeReason, pr, acceptanceEvidence | L1–L4 |
-| `queue-snapshot` (per cycle) | at, running, claimable, depBlocked, mainRed, quotaWait, frozen | L5 |
+| `queue-snapshot` (per cycle, `.roundtable/state/queue-snapshot.jsonl`) | at, running, claimable, depBlocked, mainRed, quotaWait, frozen | L5, C3 |
 | `deploy` / `host-patch` | at, fromSha, toSha, pr or tag, files[], kind (pr or hand), rollback | I1, I2 |
 | `failure` | at, signature, issue, stage, detailHash | I3 |
 | `change-eval` | pr, metric, baseline, window, expectedDelta, observedDelta, verdict | I4 |
-| `usage` | at, issue, role, model, inTok, outTok, rc, parseOk | I4, I5 (tokens per merged PR) |
+| `usage` (`.roundtable/state/usage.jsonl`) | at, issue, role, model, inTok, outTok, rc, parseOk, cost (optional) | I4, I5 (tokens per merged PR), C1–C3 |
 | `wait` | at, issue, state, waitingOn, redLine, questionKey, endedAt, endedBy (owner, external, self or timeout) | D2, D3 |
 | `decision` | at, issue, kind, verdict (resolve, ask-owner, stop, invalid, fallback or timeout-default), by, rolledBack | D1, D3, D4 |
 | `outcome` (rework or revert per PR; path not yet set) | at, pr, kind (rework or revert) | Q1, Q2 |
@@ -360,3 +363,34 @@ Shared definitions:
 | Q1 rework/revert rate | >15% | ≤15% | ≤10% | ≤6% | ≤4% | ≤2%, cohort ≥20 | n/m | 0 |
 | Q2 14-day survival | <50% | ≥50% | ≥70% | ≥85% | ≥95% | ≥98%, cohort ≥20 | n/m | 0 |
 | Q3 per-issue delta | <20% | ≥20% | ≥40% | ≥60% | ≥80% | 100%, evaluated ≥5 | n/m | 0 |
+
+## 11. Cost efficiency (C)
+
+**Status: owner-proposed, not scored until approved.** Like Q, C is not part of dimension scoring: no dimension or overall score uses C, and `scripts/rt-bench/score.mjs` is unchanged. `rt-bench` prints C1–C3 in the snapshot and the summary for information only.
+
+**Status of the sources: not measurable until the sources exist.** C1 and C2 need `usage` events (section 9) and github PRs (`closes`, `mergedAt`, `revertOf`, `title`). C3 also needs `queue-snapshot` rows. Until then all three are n/m at level 0.
+
+Shared definitions:
+
+- **Completed issue in W.** An issue named in `closes` of a non-revert PR merged in W. Non-revert as in section 10.
+- **Usage row.** One line of `usage.jsonl`. Fields read: `at`, `issue`, `inTok`, `outTok`, `parseOk` and the optional `cost` (in the currency units the row gives; never converted). `role`, `model` and `rc` are recorded for analysis and not used in the formulas: a failed attempt still consumes tokens.
+- **Reliable row.** `parseOk === true` with finite `inTok` and `outTok`. C2 and C3 also need a finite `cost`.
+- **Idle interval.** A `queue-snapshot` with `running = 0` and `claimable = 0` starts an idle interval that runs up to the next snapshot. Rows before the first snapshot or after the last one are not covered by any interval and count nowhere.
+
+**C1 Tokens per completed issue.** `Σ (inTok + outTok)` over the usage rows of the completed issues in W, divided by the number of completed issues in W. Rows are attributed by `issue`, not filtered by `at`. Lower is better.
+
+**C2 Cost per completed issue.** The same over `cost`, divided by the number of completed issues in W. Lower is better.
+
+**C3 Idle overhead.** `Σ (inTok + outTok)` over usage rows with `at` in W that fall in an idle interval. Usage during claimable or running work is excluded entirely. The cost of the same rows is computed on the same rule as C2 and shown as evidence. Lower is better.
+
+**Not-measurable rule.** A missing source (no `asOf`), a source staler than 24 h, an empty cohort (no completed issue in W; for C3, no usage row covered by an interval in W), a completed issue with no usage row, or any unreliable row makes the C value not measurable: level 0 and value null. A missing value is never recorded as 0. A counted row without a numeric `cost` is not dropped: it makes C2 and C3 not measurable.
+
+**Level caps.** C1 and C2 are capped at level 4 when the cohort is below 20 completed issues. C3 has no cap.
+
+**Level tables (owner-proposed; thresholds are proposals until approved).** C2 thresholds are in the currency units of the rows.
+
+| ID | L0 | L1 | L2 | L3 | L4 | L5 | Current | Level |
+|---|---|---|---|---|---|---|---|---|
+| C1 tokens per completed issue | >2M | ≤2M | ≤1M | ≤500k | ≤250k | ≤100k, cohort ≥20 | n/m | 0 |
+| C2 cost per completed issue | >5 | ≤5 | ≤2 | ≤1 | ≤0.5 | ≤0.2, cohort ≥20 | n/m | 0 |
+| C3 idle overhead tokens | >1M | ≤1M | ≤500k | ≤200k | ≤50k | ≤10k | n/m | 0 |
