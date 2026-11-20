@@ -14,6 +14,7 @@ import { createGitHubOutboxProvider } from '../runtime/lib/outbox-github.mjs';
 import { openOutbox } from '../runtime/lib/outbox.mjs';
 import { mergeItem, mergedNotice, requestRollback, rollbackItem } from '../runtime/lib/merge-outbox.mjs';
 import { hostMergeRefusal } from '../runtime/lib/merge-tier.mjs';
+import { notifyEvent } from '../runtime/lib/watch-rules.mjs';
 import { loadImRouter, withIm } from '../runtime/lib/outbox-im.mjs';
 import { fetchTransport } from '../scripts/im-transport.mjs';
 
@@ -99,6 +100,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       } else {
         const delivered = await submit({ root, writer, item: mergeItem(cause) });
         if (delivered && cause.issue) await submit({ root, writer, item: mergedNotice(cause) });
+        if (delivered) notifyEvent(root, { event: 'pr-merged', issue: cause.issue, key: cause.pr });
+        if (delivered && cause.issue) notifyEvent(root, { event: 'issue-merged', issue: cause.issue, key: cause.issue });
         process.exitCode = delivered ? 0 : 1;
       }
     } else {

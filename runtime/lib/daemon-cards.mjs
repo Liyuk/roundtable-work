@@ -6,6 +6,7 @@ import { askHash, decideByPolicy } from './daemon-asks.mjs';
 import { recordOwnerAnswer, stampSuspension } from './ask-timeout.mjs';
 import { openOutbox } from './outbox.mjs';
 import { recordAsk } from './ask-ledger.mjs';
+import { notifyEvent } from './watch-rules.mjs';
 
 export const cardProvider = { decide: async () => { throw new Error('no card provider configured'); } };
 
@@ -33,6 +34,7 @@ export async function dispatchAsk({ root, issue, category, question, evidence, o
     await stampSuspension({ root, issue, scopeKind, now, since: prior?.question === question ? prior.at : undefined });
     recordAsk(root, { issue, key: askHash(question), route: 'owner', at: now() });
     openOutbox(root).enqueue({ id: `notice:card:${issue}:${askHash(question)}`, kind: 'notification', issue, payload: { subtype: 'approval-request', ...card } });
+    notifyEvent(root, { event: 'ask-opened', issue, key: askHash(question) });
   }
   return result;
 }
