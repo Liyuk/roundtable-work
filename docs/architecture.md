@@ -232,6 +232,8 @@ See [Decision rules](#decision-rules-tiers-and-approval-modes). Mechanically: `m
 
 **IM.** `notification` items are routed by subtype (`merge-notice`, `action-pending-confirmation`, `approval-request`, `rollback-result`, `stall-alert`, `digest`) to channels through adapters (generic JSON webhook, Slack, Telegram) with an allow-list (child B9). Text comes from fixed templates; secrets, host paths and raw logs are never included. The default is quiet: auto-silent sends nothing, and notices for one cycle may be folded into one digest message.
 
+**File sink.** `runtime/lib/outbox-notify.mjs` appends each `notification` item as one JSON line to `<root>/.roundtable/state/outbox/notify.jsonl` with the fields `id`, `ts` (UTC ISO string), `event` (the payload subtype), `issue`, `pr`, `commit`, `recipient` (`pr`, `commit` and `recipient` are `null` when unknown) and `summary` (a short English line naming only the subtype, issue and PR). A repeated item id appends nothing and returns the stored line. Ack protocol: the reader writes the last consumed item id as plain text to `<root>/.roundtable/state/outbox/notify.ack` (`writeAck`); `readAck` returns it after a restart, and consumed lines are never re-emitted.
+
 ### 7. Approval and the action journal
 
 Two modes, decided by the [rules below](#decision-rules-tiers-and-approval-modes):
