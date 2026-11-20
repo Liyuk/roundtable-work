@@ -33,6 +33,10 @@ Open the harness in the workspace and have the agent run "Use roundtable-work to
 2. Ask only the questions that are missing and affect authorization or acceptance: the workspace and long-term goal, which actions need no confirmation and which need confirmation, roles, budget, and whether to enable external events or timers.
 3. Edit `.roundtable/team.md` and `policy.md`; for existing settings, show the diff before changing them. Do not ask for credentials in the conversation, and by default do not automatically merge, deploy, or send messages externally.
 
+### Configuration layers
+
+Safety limits are read from three layers (`runtime/lib/config-layers.mjs`): built-in defaults (`runtime/defaults/limits.json`) < global (`~/.config/rtd/limits.json`) < project (`.roundtable/limits.json` in the workspace). A missing file means no layer. Every key is tighten-only: an upper layer may only make a value stricter than the layer below it. Numeric caps take the lower value, the permission flag `allowAutoFollowups` stays on only if every layer keeps it on, and `rejected` entries record looser or unknown values with a reason but never the value. A malformed layer file fails the load; `rtd doctor` then prints `CONFIG unavailable` and its exit code is unchanged. `rtd doctor` prints each effective key as `CONFIG <key>=<value> (<layer>)` and each rejected entry as `REJECTED <layer> <key>: <reason>`; `rtd doctor --json` returns `config` (key to `{value, layer}`) and `rejected`.
+
 ### Model and reviewer environment keys
 
 Routing reads these keys (`runtime/lib/routing.mjs`, `ROUTE_ENV`). `RT_ALLOWED_MODELS` is required: there are no built-in default models, so the deployment must list every approved model ID (comma-separated).

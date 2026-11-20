@@ -359,6 +359,10 @@ Replies are `/rt` comments, parsed by `parseRtCommand` extended with `confirm`, 
 
 A reply for an unknown id, or one that is not legal in the current state (for example `rollback` after `settled`), is ignored and recorded, never applied. A reply by anyone other than the owner (the same author check `resumeAfterOwnerReply` in `decisions.mjs` uses today) is ignored.
 
+## Configuration layers
+
+`runtime/lib/config-layers.mjs` merges the safety limits in three layers: built-in defaults (`runtime/defaults/limits.json`) < global (`~/.config/rtd/limits.json`) < project (`<workspace>/.roundtable/limits.json`). An absent file is an empty layer. Each key has one tighten-only rule: `min` (number cap, lower wins), `and` (boolean permission, kept only if every layer keeps it), or `subset` (array intersected with the lower layer). An upper layer that loosens a value is ignored and listed in `rejected` with a reason and no value. A default key without a rule fails the load, and a malformed layer file fails the load. `rtd doctor` prints the effective value and its layer per key (`CONFIG` lines, or `config` in `--json`) and the `rejected` list. `guard.mjs` `loadLimits` and `autonomy.mjs` `loadAutonomy` keep their own loaders for now; the governor, observer, prune, and autonomy defaults are not layered yet.
+
 ## Weak-model constraints
 
 These constraints are what make a Haiku-class model safe to run unattended. Each one is a mechanism, not advice.
