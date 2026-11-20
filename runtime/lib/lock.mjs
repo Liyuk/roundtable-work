@@ -12,8 +12,10 @@ import { basename, dirname, join, resolve } from 'node:path';
  * cannot reset the fencing token.
  *
  * Anchor root: `$RTW_STATE_DIR` when set (it *is* the anchor root), else `<XDG_STATE_HOME>/roundtable`, else
- * `~/.local/state/roundtable`. The anchor is created with mode 0700 and every open validates it: a real
- * directory (lstat; a symlink is refused), owned by the current uid, not group/world accessible
+ * `~/.local/state/roundtable`; a project id (`<workspace>/.roundtable/project.json`) moves that base to
+ * `<base>/projects/<project id>`, so two projects on one machine never share lock records (see `anchorRootOf`).
+ * The anchor is created with mode 0700 and every open validates it: a real directory (lstat; a symlink is
+ * refused), owned by the current uid, not group/world accessible
  * (`mode & 0o077 === 0`). `locks/` and the per-repo directory are validated the same way, and the per-repo
  * directory inode is recorded once in `locks/.repo-<repo-id>.json`; a later open that sees a different inode
  * refuses to use the directory (fail closed), so a replaced anchor directory can never issue a lower epoch.
@@ -90,11 +92,33 @@ export function hostId() {
   return cachedHostId;
 }
 
-/** The private anchor root (see the module docs). Pure function of the environment. */
-export function anchorRootOf({ env = process.env, home = homedir() } = {}) {
+const PROJECT_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * The private anchor root (see the module docs). `RTW_STATE_DIR` wins outright. Otherwise the base is
+ * `<XDG_STATE_HOME>/roundtable` or `~/.local/state/roundtable`, and a `projectId` (from `readProjectId`) selects
+ * `<base>/projects/<projectId>`; without one the base itself is returned (legacy layout). The id becomes a path
+ * segment, so it is validated here, the one place it is joined.
+ */
+export function anchorRootOf({ env = process.env, home = homedir(), projectId } = {}) {
   if (env?.RTW_STATE_DIR) return resolve(env.RTW_STATE_DIR);
-  if (env?.XDG_STATE_HOME) return join(resolve(env.XDG_STATE_HOME), 'roundtable');
-  return resolve(home, '.local', 'state', 'roundtable');
+  const base = env?.XDG_STATE_HOME ? join(resolve(env.XDG_STATE_HOME), 'roundtable') : resolve(home, '.local', 'state', 'roundtable');
+  if (projectId === undefined) return base;
+  if (typeof projectId !== 'string' || !PROJECT_ID.test(projectId)) throw new Error('Invalid projectId');
+  return join(base, 'projects', projectId);
+}
+
+/** The `projectId` of `<repoRoot>/.roundtable/project.json`; `undefined` when the file or the key is absent. */
+export async function readProjectId(repoRoot) {
+  let text;
+  try { text = await realFs.readFile(join(repoRoot, '.roundtable', 'project.json'), 'utf8'); } catch (err) {
+    if (err.code === 'ENOENT') return undefined;
+    throw err;
+  }
+  let value;
+  try { value = JSON.parse(text); } catch { throw new Error('Invalid project file'); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid project file');
+  return value.projectId;
 }
 
 /** `realpath(repoRoot)` when it resolves, else the resolved path (what the identity marker records). */
@@ -114,10 +138,11 @@ function domainIdOf(anchor) {
 
 /**
  * The anchored lock directory for `lockPath` in `repoRoot` (default: the directory of `lockPath`), computed
- * with the same repo hashing `acquireLock` uses. Tests and callers can use it to inspect the lock records.
+ * with the same repo hashing `acquireLock` uses. It is synchronous, so the caller passes the `projectId` it read
+ * with `readProjectId` (`undefined` for the legacy layout). Tests and callers can use it to inspect the lock records.
  */
-export function lockDirectoryFor({ lockPath, repoRoot, anchorRoot, env = process.env } = {}) {
-  const anchor = anchorRoot === undefined ? anchorRootOf({ env }) : resolve(anchorRoot);
+export function lockDirectoryFor({ lockPath, repoRoot, anchorRoot, env = process.env, projectId } = {}) {
+  const anchor = anchorRoot === undefined ? anchorRootOf({ env, projectId }) : resolve(anchorRoot);
   return join(anchor, 'locks', repoIdOf(repoRoot ?? dirname(lockPath)), basename(lockPath));
 }
 
@@ -321,7 +346,7 @@ export async function acquireLock({
   const currentUid = uid === undefined ? (typeof process.getuid === 'function' ? process.getuid() : null) : uid;
   const lockName = typeof lockPath === 'string' ? basename(lockPath) : '';
   if (!lockName || lockName === '.' || lockName === '..') return fail('invalid_lock_path');
-  const anchor = anchorRoot === undefined ? anchorRootOf({ env }) : resolve(anchorRoot);
+  const anchor = anchorRoot === undefined ? anchorRootOf({ env, projectId: await readProjectId(repoRoot ?? dirname(lockPath)) }) : resolve(anchorRoot);
   const repoId = repoIdOf(repoRoot ?? dirname(lockPath));
   const ctx = await prepareAnchor(fs, { anchor, repoId, uid: currentUid });
   if (!ctx.ok) return fail('invalid_anchor', null, { detail: ctx.detail });

@@ -37,6 +37,10 @@ Open the harness in the workspace and have the agent run "Use roundtable-work to
 
 Safety limits are read from three layers (`runtime/lib/config-layers.mjs`): built-in defaults (`runtime/defaults/limits.json`) < global (`~/.config/rtd/limits.json`) < project (`.roundtable/limits.json` in the workspace). A missing file means no layer. Every key is tighten-only: an upper layer may only make a value stricter than the layer below it. Numeric caps take the lower value, the permission flag `allowAutoFollowups` stays on only if every layer keeps it on, and `rejected` entries record looser or unknown values with a reason but never the value. A malformed layer file fails the load; `rtd doctor` then prints `CONFIG unavailable` and its exit code is unchanged. `rtd doctor` prints each effective key as `CONFIG <key>=<value> (<layer>)` and each rejected entry as `REJECTED <layer> <key>: <reason>`; `rtd doctor --json` returns `config` (key to `{value, layer}`) and `rejected`.
 
+### Per-project state root
+
+Each project keeps its lock records under its own state root, so two projects on one machine never share them. The anchor holds only lock records; the inbox, ledger, and logs stay per workspace under `<workspace>/.roundtable/state/` and are unchanged. The root is derived from the project id in `<workspace>/.roundtable/project.json` (`"projectId"`, lowercase letters, digits and hyphens, at most 64 characters): `<base>/projects/<projectId>`, where `<base>` is `$XDG_STATE_HOME/roundtable` or `~/.local/state/roundtable`. A workspace without the file keeps the legacy `<base>` layout. Setting `RTW_STATE_DIR` overrides the derived root for every project. `anchorRootOf` in `runtime/lib/lock.mjs` is the one function that computes it.
+
 ### Model and reviewer environment keys
 
 Routing reads these keys (`runtime/lib/routing.mjs`, `ROUTE_ENV`). `RT_ALLOWED_MODELS` is required: there are no built-in default models, so the deployment must list every approved model ID (comma-separated).

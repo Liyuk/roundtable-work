@@ -363,6 +363,10 @@ A reply for an unknown id, or one that is not legal in the current state (for ex
 
 `runtime/lib/config-layers.mjs` merges the safety limits in three layers: built-in defaults (`runtime/defaults/limits.json`) < global (`~/.config/rtd/limits.json`) < project (`<workspace>/.roundtable/limits.json`). An absent file is an empty layer. Each key has one tighten-only rule: `min` (number cap, lower wins), `and` (boolean permission, kept only if every layer keeps it), or `subset` (array intersected with the lower layer). An upper layer that loosens a value is ignored and listed in `rejected` with a reason and no value. A default key without a rule fails the load, and a malformed layer file fails the load. `rtd doctor` prints the effective value and its layer per key (`CONFIG` lines, or `config` in `--json`) and the `rejected` list. `guard.mjs` `loadLimits` and `autonomy.mjs` `loadAutonomy` keep their own loaders for now; the governor, observer, prune, and autonomy defaults are not layered yet.
 
+## Per-project state root
+
+The private anchor root holds only lock records, isolated per project; the inbox, ledger, and logs stay per workspace under `<workspace>/.roundtable/state/` and are unchanged. `anchorRootOf` in `runtime/lib/lock.mjs` is the single function that derives the anchor root: `RTW_STATE_DIR` when set (it wins), else `<base>/projects/<projectId>` where `<base>` is `$XDG_STATE_HOME/roundtable` or `~/.local/state/roundtable`, and `<base>` alone when the workspace has no project id. `readProjectId` reads `projectId` from `<workspace>/.roundtable/project.json`: a missing file or key means no id, and a malformed file fails the read. The id must match `^[a-z0-9][a-z0-9-]{0,63}$` (it becomes a path segment). `acquireLock` derives the anchor from the workspace's project id; `lockDirectoryFor` takes an explicit `projectId`. Lock records of two projects therefore never share a directory or block each other. `prune` still uses the base anchor by default.
+
 ## Weak-model constraints
 
 These constraints are what make a Haiku-class model safe to run unattended. Each one is a mechanism, not advice.
