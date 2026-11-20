@@ -6,5 +6,6 @@
   "maxWakeupsPerIssue": 4,
   "maxReviewRoundsPerIssue": 3,
   "maxSessionMinutes": 25,
-  "allowAutoFollowups": false
+  "allowAutoFollowups": false,
+  "requiredVersionRange": null
 }

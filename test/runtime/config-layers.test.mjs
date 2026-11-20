@@ -98,3 +98,29 @@ test('the real limits defaults load with no layer files and report defaults prov
   assert.equal(new Set(Object.values(r.sources)).size, 1);
   assert.equal(r.sources.maxAttemptsPerAssignment, 'defaults');
 });
+
+// requiredVersionRange: a `pin` key may only be set by a layer whose lower layer has it null.
+const PIN_RULES = { pin: 'pin' };
+const PIN_DEFAULTS = { pin: null };
+
+test('pin rule: a layer may set a null pin, and the lower layer then keeps it', async () => {
+  const r = await load(fixture({ defaults: PIN_DEFAULTS, project: { pin: '>=0.2.0' } }), PIN_RULES);
+  assert.deepEqual([r.values.pin, r.sources.pin, r.rejected], ['>=0.2.0', 'project', []]);
+});
+
+test('pin rule: a layer cannot change a pin that a lower layer already set, and the reason carries no value', async () => {
+  const r = await load(fixture({ defaults: PIN_DEFAULTS, global: { pin: '>=0.2.0' }, project: { pin: '>=0.9.0' } }), PIN_RULES);
+  assert.deepEqual([r.values.pin, r.sources.pin], ['>=0.2.0', 'global']);
+  assert.deepEqual(r.rejected.map(({ layer, key }) => [layer, key]), [['project', 'pin']]);
+  assert.doesNotMatch(r.rejected[0].reason, /0\.9\.0/);
+});
+
+test('pin rule: a null from an upper layer cannot clear a pin set below', async () => {
+  const r = await load(fixture({ defaults: PIN_DEFAULTS, global: { pin: '>=0.2.0' }, project: { pin: null } }), PIN_RULES);
+  assert.deepEqual([r.values.pin, r.sources.pin], ['>=0.2.0', 'global']);
+  assert.deepEqual(r.rejected.map(({ layer, key }) => [layer, key]), [['project', 'pin']]);
+});
+
+test('pin rule: a non-string, non-null value fails the load and the error names only the key', async () => {
+  await assert.rejects(load(fixture({ defaults: PIN_DEFAULTS, project: { pin: 7 } }), PIN_RULES), (err) => /pin/.test(err.message) && !err.message.includes('7'));
+});

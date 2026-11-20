@@ -24,6 +24,7 @@ const LAUNCHD_NOTES = [
 const HARNESS_CONFIG = new URL('../runtime/harness.config.json', import.meta.url);
 // Config layers are read by launching the runtime module as a child process: bin/ may launch, not import, runtime code.
 const CONFIG_LAYERS = fileURLToPath(new URL('../runtime/lib/config-layers.mjs', import.meta.url));
+const VERSION_PIN = fileURLToPath(new URL('../runtime/lib/version-pin.mjs', import.meta.url));
 // bin/ is launch-only and may not import runtime modules, so these mirror runtime/lib/harness.mjs and supervisor/heartbeat.mjs.
 const IN_PROCESS_HARNESSES = new Set(['host-agent']);
 const HEARTBEAT_PATH = '.roundtable/state/heartbeat.json';
@@ -36,6 +37,7 @@ const HINTS = {
   DOCTOR_DISK_LOW: 'Free disk space on the workspace filesystem, or lower --min-free-mb.',
   DOCTOR_SERVICE_DOWN: 'Start the service: systemctl --user enable --now rtd.service (macOS: bootstrap the io.roundtable.rtd LaunchAgent).',
   DOCTOR_HEARTBEAT_STALE: 'Check the rtd daemon is running and writing its heartbeat; restart it if it has stopped.',
+  DOCTOR_VERSION_PIN: 'Install the rtd version that satisfies requiredVersionRange, or change the pin in .roundtable/limits.json.',
 };
 
 export function renderUnits(o) {
@@ -190,6 +192,7 @@ function defaultProbes({ workspace }, platform) {
     },
     heartbeat: (ws) => readFile(join(ws, HEARTBEAT_PATH), 'utf8').catch(() => undefined),
     config: (ws) => JSON.parse(spawnSync(process.execPath, [CONFIG_LAYERS, ws], { encoding: 'utf8' }).stdout),
+    versionPin: (ws) => JSON.parse(spawnSync(process.execPath, [VERSION_PIN, ws], { encoding: 'utf8' }).stdout),
   };
 }
 
@@ -231,7 +234,7 @@ async function doctor(args, { platform, probes, now, cwd, stdout, stderr }) {
   }
   const p = { ...defaultProbes(o, platform), ...probes };
   const checks = [];
-  const check = (name, ok, code) => checks.push({ name, ok: !!ok, code: ok ? null : code, hint: ok ? null : HINTS[code] });
+  const check = (name, ok, code, detail) => checks.push({ name, ok: !!ok, code: ok ? null : code, hint: ok ? null : HINTS[code], detail: ok ? null : detail });
 
   check('gh-auth', await attempt(() => p.ghAuth()), 'DOCTOR_GH_AUTH');
   const names = await attempt(() => p.harnesses());
@@ -244,6 +247,8 @@ async function doctor(args, { platform, probes, now, cwd, stdout, stderr }) {
   check('service', await attempt(() => p.service()), 'DOCTOR_SERVICE_DOWN');
   const writtenAt = await attempt(async () => JSON.parse(await p.heartbeat(o.workspace)).writtenAt);
   check('heartbeat', typeof writtenAt === 'number' && now - writtenAt <= o.maxHeartbeatAgeMs, 'DOCTOR_HEARTBEAT_STALE');
+  const pin = await attempt(() => p.versionPin(o.workspace));
+  if (pin) check('version-pin', pin.ok, 'DOCTOR_VERSION_PIN', pin.message);
 
   const config = await attempt(() => p.config(o.workspace));
   const ok = checks.every((c) => c.ok);
@@ -251,7 +256,7 @@ async function doctor(args, { platform, probes, now, cwd, stdout, stderr }) {
     const effective = config && Object.fromEntries(Object.entries(config.values).map(([k, value]) => [k, { value, layer: config.sources[k] }]));
     stdout.write(`${JSON.stringify({ ok, checks, config: effective ?? null, rejected: config?.rejected ?? [] }, null, 2)}\n`);
   } else {
-    for (const c of checks) stdout.write(c.ok ? `PASS ${c.name}\n` : `FAIL ${c.name} [${c.code}] fix: ${c.hint}\n`);
+    for (const c of checks) stdout.write(c.ok ? `PASS ${c.name}\n` : `FAIL ${c.name} [${c.code}] fix: ${c.hint}\n${c.detail ? `${c.detail}\n` : ''}`);
     if (config) for (const [key, value] of Object.entries(config.values)) stdout.write(`CONFIG ${key}=${JSON.stringify(value)} (${config.sources[key]})\n`);
     else stdout.write('CONFIG unavailable: a config layer file is invalid\n');
     for (const r of config?.rejected ?? []) stdout.write(`REJECTED ${r.layer} ${r.key}: ${r.reason}\n`);
