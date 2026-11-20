@@ -59,6 +59,7 @@ import { loadImRouter, withIm } from './lib/outbox-im.mjs';
 import { fetchTransport } from '../scripts/im-transport.mjs';
 import { selfMetrics } from './lib/self-metrics.mjs';
 import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
+import { notifyEvent } from './lib/watch-rules.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
 import { executeGate, planGateEnabled, runE2e, loadE2eConfig } from './lib/pipeline.mjs';
 
@@ -229,7 +230,7 @@ export async function runQueue({
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
-  candidates, probe, probeIntervalMs, claimHold = false, planGate = false, e2eConfig = {}, e2eExec = runShell,
+  candidates, probe, probeIntervalMs, claimHold = false, planGate = false, e2eConfig = {}, e2eExec = runShell, notify,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -508,6 +509,7 @@ export async function runQueue({
         return false;
       }
       if (status.status !== 'red' || status.head !== record.mergeCommit) return true;
+      notify?.({ event: 'main-red', key: record.mergeCommit });
       await recoverRedMain({ mergeCommit: record.mergeCommit, mainHead: status.head, mainRed: true,
       pause: { async claimsAndMerges() {} },
       git: { createRevert: (args) => once('revert', () => autoMerge.git.createRevert(args)) },
@@ -911,6 +913,8 @@ export async function runQueue({
                   mergeMonitorError = `merge monitor: ${err?.message ?? err}`;
                 }
               }
+              notify?.({ event: 'pr-merged', issue: id, key: context.pr });
+              notify?.({ event: 'issue-merged', issue: id, key: id });
               // a merged step is never a hold, whatever the handler returned
               return { ...result, mergeHold: null, merged: true, ...(mergeMonitorError ? { mergeMonitorError } : {}) };
             };
@@ -1007,6 +1011,7 @@ export async function runQueue({
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
           if (phase === 'finalizing') {
+            notify?.({ event: 'issue-closed', issue: id, key: id });
             const done = await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
             await reflectEvent({ kind: 'done', attempt: state.attempts.wakes, issue: id, reason: cls });
             return { ...done, ...(step.merged === true && { merged: true }) };
@@ -1034,6 +1039,7 @@ export async function runQueue({
         } else if (cls === 'quota_wait') {
           return await finish('waiting_external', cls, reason, 'wait');
         } else if (cls === 'human_block') {
+          notify?.({ event: 'blocked', issue: id, key: `${id}:${state.attempts.wakes}` });
           return await finish('waiting_person', cls, reason, 'ask');
         } else {
           return await finish('out-of-scope', cls, reason, 'ask');
@@ -1237,7 +1243,7 @@ async function main(argv) {
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers, claimHold) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, claimHold, planGate: await planGateEnabled(), e2eConfig: await loadE2eConfig(), ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, notify: workspace && ((event) => notifyEvent(workspace, event)), claimHold, planGate: await planGateEnabled(), e2eConfig: await loadE2eConfig(), ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
@@ -1276,6 +1282,7 @@ async function main(argv) {
             const actions = journal.list().filter((a) => a.at >= since);
             const text = buildDigest({ window: signals.metrics.window, metrics: signals.metrics, entries: signals.entries, merged, actions, stage: 'not computed (RT-S12)', thresholds: signals.thresholds, deadLetters: signals.deadLetters });
             await enqueueDigest({ outbox, now: Date.now(), issue: goals.reporting.digestIssue, text, hygiene: selfReview.hygiene });
+            notifyEvent(workspace, { event: 'window-reset', key: signals.metrics.window.since });
           }
           for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job && !['digest', 'patrol'].includes(event.payload.job)) {
             await runSelfJob({ root: workspace, now: Date.now(), event, goals: selfReview.goals, inputs: gatherInputs(workspace), client: selfReview.client, hygiene: selfReview.hygiene });
