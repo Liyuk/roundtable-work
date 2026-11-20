@@ -3,7 +3,8 @@
 //   createNotifyFileProvider({ root, now })  outbox provider: deliver(item) appends one line; a repeated id returns the stored line
 //   readAck(root)                            last consumed item id from notify.ack, or null
 //   writeAck(root, id)                       records the last consumed item id
-// No network call. Unknown pr/commit/recipient are null. The summary names only the subtype, issue and PR.
+// No network call. Unknown pr/commit/recipient are null. The summary names only the event, issue and PR.
+// A watch notification's event is its payload event; a `commits` payload is written as an extra `commits` field.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -17,16 +18,17 @@ export function createNotifyFileProvider({ root, now = () => new Date().toISOStr
       const past = existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
       const hit = past.find((record) => record.id === item.id);
       if (hit) return hit;
-      const { subtype, pr = null, commit = item.payload.head ?? null, recipient = null } = item.payload;
+      const { subtype, event = subtype, pr = null, commit = item.payload.head ?? null, recipient = null, commits } = item.payload;
       const record = {
         id: item.id,
         ts: now(),
-        event: subtype,
+        event,
         issue: item.issue,
         pr,
         commit,
         recipient,
-        summary: `${subtype.replace(/-/g, ' ')}${pr === null ? '' : ` for PR #${pr}`}${item.issue === null ? '' : ` on issue #${item.issue}`}`,
+        summary: `${event.replace(/-/g, ' ')}${pr === null ? '' : ` for PR #${pr}`}${item.issue === null ? '' : ` on issue #${item.issue}`}`,
+        ...(commits && { commits }),
       };
       mkdirSync(dirname(file), { recursive: true });
       appendFileSync(file, JSON.stringify(record) + '\n');
