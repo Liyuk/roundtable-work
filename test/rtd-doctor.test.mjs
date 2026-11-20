@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { hostname, userInfo } from 'node:os';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir, userInfo } from 'node:os';
+import { join } from 'node:path';
 import { main } from '../bin/rtd';
+import { loadConfigLayers } from '../runtime/lib/config-layers.mjs';
 
 const HOME_PATH = /\/home\/|\/Users\/|\/root\//;
 const IPV4 = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
@@ -16,6 +19,7 @@ const PASSING = {
   freeBytes: async () => 10 * 1024 * 1024 * 1024,
   service: async () => true,
   heartbeat: async () => JSON.stringify({ writtenAt: HEARTBEAT_NOW - 1000 }),
+  config: async () => ({ values: {}, sources: {}, rejected: [] }),
 };
 
 // Each failing probe maps to the one check it must fail and the code it must yield.
@@ -174,4 +178,62 @@ test('text and json output contain no host names, IP addresses, usernames, or ho
     assert.ok(!r.stdout.includes(hostname()), 'hostname leaked');
     assert.ok(!r.stdout.includes(userInfo().username), 'username leaked');
   }
+});
+
+// Config provenance: the global file lives in a temp dir, so the real home is never read.
+function configFixture(global, project) {
+  const root = mkdtempSync(join(tmpdir(), 'doctor-config-'));
+  const globalPath = join(root, 'limits.json');
+  const workspace = join(root, 'ws');
+  writeFileSync(globalPath, JSON.stringify(global));
+  mkdirSync(join(workspace, '.roundtable'), { recursive: true });
+  writeFileSync(join(workspace, '.roundtable', 'limits.json'), JSON.stringify(project));
+  return { workspace, probes: { config: (ws) => loadConfigLayers({ name: 'limits', workspace: ws, globalPath }) } };
+}
+
+test('doctor prints each effective config key with its layer and the rejected entries', async () => {
+  const { workspace, probes } = configFixture({ maxAttemptsPerAssignment: 1, allowAutoFollowups: true }, { maxWakeupsPerIssue: 2 });
+  const r = await doctor(['--workspace', workspace], probes);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^CONFIG maxAttemptsPerAssignment=1 \(global\)$/m);
+  assert.match(r.stdout, /^CONFIG maxWakeupsPerIssue=2 \(project\)$/m);
+  assert.match(r.stdout, /^CONFIG allowAutoFollowups=false \(defaults\)$/m);
+  assert.match(r.stdout, /^REJECTED global allowAutoFollowups: .+$/m);
+});
+
+test('an invalid layer file leaves exit code and checks unchanged and prints CONFIG unavailable', async () => {
+  const { workspace } = configFixture({}, {});
+  writeFileSync(join(workspace, '.roundtable', 'limits.json'), '{not json');
+  const r = await doctor(['--workspace', workspace], { config: () => { throw new Error('bad'); } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^CONFIG unavailable/m);
+  assert.doesNotMatch(r.stdout, /^CONFIG maxWakeupsPerIssue/m);
+});
+
+test('--json gives key to {value, layer} and the rejected list', async () => {
+  const { workspace, probes } = configFixture({ allowAutoFollowups: true }, { maxWakeupsPerIssue: 2 });
+  const body = jsonOf(await doctor(['--json', '--workspace', workspace], probes));
+  assert.deepEqual(body.config.maxWakeupsPerIssue, { value: 2, layer: 'project' });
+  assert.deepEqual(body.config.allowAutoFollowups, { value: false, layer: 'defaults' });
+  assert.deepEqual(body.rejected.map(({ layer, key }) => [layer, key]), [['global', 'allowAutoFollowups']]);
+  assert.equal(body.ok, true);
+});
+
+test('the default config probe launches the layer module; HOME is a temp dir so no real config is read', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'doctor-home-'));
+  const workspace = mkdtempSync(join(tmpdir(), 'doctor-ws-'));
+  mkdirSync(join(workspace, '.roundtable'), { recursive: true });
+  writeFileSync(join(workspace, '.roundtable', 'limits.json'), JSON.stringify({ maxWakeupsPerIssue: 2 }));
+  const { config, ...probes } = PASSING;
+  const saved = process.env.HOME;
+  process.env.HOME = home;
+  const out = [];
+  try {
+    await main(['doctor', '--json', '--workspace', workspace], { platform: 'linux', env: {}, cwd: '/work/space', now: HEARTBEAT_NOW, probes: { ...probes, repoAccess: async () => true }, stdout: { write: (s) => out.push(s) }, stderr: { write() {} } });
+  } finally {
+    process.env.HOME = saved;
+  }
+  const body = JSON.parse(out.join(''));
+  assert.deepEqual(body.config.maxWakeupsPerIssue, { value: 2, layer: 'project' });
+  assert.deepEqual(body.config.maxConcurrentWorkers, { value: 8, layer: 'defaults' });
 });
