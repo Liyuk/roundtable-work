@@ -56,6 +56,7 @@ import { openOutbox, dispatch } from './lib/outbox.mjs';
 import { ensurePatrolTimer, patrolCadenceMs, runPatrol } from './lib/patrol-timer.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
 import { loadImRouter, withIm } from './lib/outbox-im.mjs';
+import { createWebhookSink, withWebhook } from './lib/outbox-webhook.mjs';
 import { fetchTransport } from '../scripts/im-transport.mjs';
 import { selfMetrics } from './lib/self-metrics.mjs';
 import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
@@ -1296,7 +1297,7 @@ async function main(argv) {
       // End of each cycle: raise anomaly alerts, then flush the outbox. Notifications also go to the IM channels routed for their subtype in .roundtable/im-routes.json (none when it is missing); a shadow run sends nothing to IM.
       if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
       const github = createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue });
-      await dispatch({ outbox, provider: withIm(github, shadow ? null : loadImRouter({ root: workspace, send: fetchTransport })), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+      await dispatch({ outbox, provider: withWebhook(withIm(github, shadow ? null : loadImRouter({ root: workspace, send: fetchTransport })), shadow ? null : createWebhookSink({ env: process.env, send: fetchTransport })), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
     }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }

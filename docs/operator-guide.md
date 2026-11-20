@@ -184,6 +184,14 @@ Notification outbox items can also go to IM channels. The routes table is `<work
 - `routes` maps a notification subtype to channel names. Subtypes are the fixed templates in `runtime/lib/outbox-im.mjs`: `merge-notice`, `action-pending-confirmation`, `approval-request`, `rollback-result`, `stall-alert`, `digest`.
 - A shadow run (GitHub run without `--live`) sends nothing to IM.
 
+## Supervisor webhook (off by default)
+
+Set `RT_NOTIFY_WEBHOOK_URL` in the daemon's environment to POST each notification outbox item to that URL as JSON. The body has the fields `id`, `ts`, `event`, `issue`, `pr`, `commit`, `recipient`, `summary` (and `commits` for an umbrella-done notice), the same record the local file sink writes. Unset, nothing is sent. A shadow run sends nothing.
+
+- `RT_NOTIFY_WEBHOOK_KEY` is sent in the header named by `RT_NOTIFY_WEBHOOK_HEADER` (default `x-rt-notify-key`).
+- Delivery is at-least-once: a network error or non-2xx answer is retried up to three times with exponential backoff. Every attempt carries the same item `id`, so the receiver must dedupe on it.
+- The key and the URL are never logged, and a failure message names only the HTTP status or `network error`.
+
 ## Owner-only steps
 
 These steps are for the owner. The loop and operators must not run them. This repository contains no script that performs them, and the code does not verify them. Record the result of each step outside the repository.
