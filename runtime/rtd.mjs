@@ -63,6 +63,7 @@ import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDiges
 import { notifyEvent } from './lib/watch-rules.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
 import { executeGate, planGateEnabled, runE2e, loadE2eConfig } from './lib/pipeline.mjs';
+import { checkWorkspacePin } from './lib/version-pin.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /**
@@ -1157,6 +1158,12 @@ async function main(argv) {
     console.error('usage: rtd.mjs --work-root DIR (--queue FILE | --github [--repo OWNER/REPO] [--repo-root DIR] [--workers N]) --handler MODULE [--providers MODULE] --routing FILE [--phase-timeout-ms N] [--queue-timeout-ms N] [--grace-ms N] [--live-decisions FILE] [--live] [--exclusive-with PIDFILE] [--loop [--poll-ms N] [--cycle-deadline-ms N]] (MODULE is trusted operator code, not confined to the work root)');
     console.error('       rtd.mjs --work-root DIR --providers MODULE --clear-main-pause');
     return 2;
+  }
+  // The project pin lives in the workspace, the parent of `.roundtable/`; a mismatch refuses to start any work.
+  const pin = await checkWorkspacePin(resolve(args['work-root'], '..'));
+  if (!pin.ok) {
+    console.error(pin.message);
+    return 1;
   }
   if (args['exclusive-with']) {
     const refusal = await exclusiveRefusal(args['exclusive-with']);

@@ -20,6 +20,7 @@ const PASSING = {
   service: async () => true,
   heartbeat: async () => JSON.stringify({ writtenAt: HEARTBEAT_NOW - 1000 }),
   config: async () => ({ values: {}, sources: {}, rejected: [] }),
+  versionPin: async () => ({ ok: true, message: 'no requiredVersionRange set' }),
 };
 
 // Each failing probe maps to the one check it must fail and the code it must yield.
@@ -236,4 +237,18 @@ test('the default config probe launches the layer module; HOME is a temp dir so 
   const body = JSON.parse(out.join(''));
   assert.deepEqual(body.config.maxWakeupsPerIssue, { value: 2, layer: 'project' });
   assert.deepEqual(body.config.maxConcurrentWorkers, { value: 8, layer: 'defaults' });
+});
+
+test('doctor version-pin: a matching pin passes', async () => {
+  const r = await doctor([], { versionPin: async () => ({ ok: true, message: 'installed version 0.2.2 satisfies requiredVersionRange >=0.2.0' }) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^PASS version-pin$/m);
+});
+
+test('doctor version-pin: a mismatching pin fails non-zero, and the message follows the FAIL line', async () => {
+  const message = 'installed version 0.2.2 does not satisfy requiredVersionRange >=0.3.0';
+  const r = await doctor([], { versionPin: async () => ({ ok: false, message }) });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^FAIL version-pin \[DOCTOR_VERSION_PIN\] fix: .+$/m);
+  assert.match(r.stdout, new RegExp(`^FAIL version-pin .*\\n${message.replace(/[.>=]/g, '\\$&')}$`, 'm'));
 });
