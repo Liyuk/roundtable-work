@@ -189,6 +189,8 @@ Notification outbox items can also go to IM channels. The routes table is `<work
 Set `RT_NOTIFY_WEBHOOK_URL` in the daemon's environment to POST each notification outbox item to that URL as JSON. The body has the fields `id`, `ts`, `event`, `issue`, `pr`, `commit`, `recipient`, `summary` (and `commits` for an umbrella-done notice), the same record the local file sink writes. Unset, nothing is sent. A shadow run sends nothing.
 
 - `RT_NOTIFY_WEBHOOK_KEY` is sent in the header named by `RT_NOTIFY_WEBHOOK_HEADER` (default `x-rt-notify-key`).
+- `RT_NOTIFY_WEBHOOK_SCHEME` (optional): when set, the header value is `<scheme> <key>`, for example `Bearer` with `RT_NOTIFY_WEBHOOK_HEADER=authorization`. Unset, the header value is the raw key.
+- The host loop posts merge notifications (`done-pending-confirmation`) through the same sink, after the GitHub write. A webhook failure is logged as one line on stderr and never dead-letters the item.
 - Delivery is at-least-once: a network error or non-2xx answer is retried up to three times with exponential backoff. Every attempt carries the same item `id`, so the receiver must dedupe on it.
 - The key and the URL are never logged, and a failure message names only the HTTP status or `network error`.
 
