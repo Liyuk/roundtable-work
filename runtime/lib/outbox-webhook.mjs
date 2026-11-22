@@ -3,7 +3,7 @@
 //   createWebhookSink({ env, send, sleep, maxAttempts, backoffMs })  { deliver(item) }, or null when RT_NOTIFY_WEBHOOK_URL is unset
 //   withWebhook(provider, sink)  adds webhook delivery after an outbox provider, for notification items only
 // Env is read at delivery time: RT_NOTIFY_WEBHOOK_URL, RT_NOTIFY_WEBHOOK_KEY (sent in the RT_NOTIFY_WEBHOOK_HEADER header,
-// default x-rt-notify-key). The item id is the receiver's dedupe key and is the same on every attempt (at-least-once).
+// default x-rt-notify-key; as "<RT_NOTIFY_WEBHOOK_SCHEME> <key>" when RT_NOTIFY_WEBHOOK_SCHEME is set, else the raw key). The item id is the receiver's dedupe key and is the same on every attempt (at-least-once).
 // Network: `send(url, init)` is injected and must resolve to { ok, status }; the real transport is scripts/im-transport.mjs.
 // Errors carry only the HTTP status or "network error", never the URL, the key or the response body.
 import { buildNotifyRecord } from './outbox-notify.mjs';
@@ -16,7 +16,8 @@ export function createWebhookSink({ env, send, sleep = defaultSleep, maxAttempts
     async deliver(item) {
       const body = JSON.stringify(buildNotifyRecord(item, new Date().toISOString()));
       const keyHeader = env.RT_NOTIFY_WEBHOOK_HEADER || 'x-rt-notify-key';
-      const headers = { 'content-type': 'application/json', ...(env.RT_NOTIFY_WEBHOOK_KEY && { [keyHeader]: env.RT_NOTIFY_WEBHOOK_KEY }) };
+      const { RT_NOTIFY_WEBHOOK_KEY: key, RT_NOTIFY_WEBHOOK_SCHEME: scheme } = env;
+      const headers = { 'content-type': 'application/json', ...(key && { [keyHeader]: scheme ? `${scheme} ${key}` : key }) };
       let failure;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (attempt > 1) await sleep(backoffMs * 2 ** (attempt - 2));

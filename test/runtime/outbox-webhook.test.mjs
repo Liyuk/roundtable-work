@@ -124,3 +124,12 @@ test('withWebhook delivers to the provider first and posts only notification ite
     assert.deepEqual(server.requests.map((r) => r.body.id), ['notice:merge:12:abc123']);
   } finally { await server.close(); }
 });
+
+test('with RT_NOTIFY_WEBHOOK_SCHEME the key header carries "<scheme> <key>"', async () => {
+  const sent = [];
+  const send = async (url, init) => { sent.push({ url, headers: init.headers }); return { ok: true, status: 200 }; };
+  const env = { RT_NOTIFY_WEBHOOK_URL: 'https://hook.example.test/in', RT_NOTIFY_WEBHOOK_KEY: KEY, RT_NOTIFY_WEBHOOK_SCHEME: 'Bearer', RT_NOTIFY_WEBHOOK_HEADER: 'authorization' };
+  await createWebhookSink({ env, send, sleep: noSleep }).deliver(merge());
+  assert.equal(sent[0].headers.authorization, `Bearer ${KEY}`);
+  assert.ok(!('x-rt-notify-key' in sent[0].headers));
+});

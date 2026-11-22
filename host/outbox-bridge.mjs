@@ -16,6 +16,7 @@ import { mergeItem, mergedNotice, requestRollback, rollbackItem } from '../runti
 import { hostMergeRefusal } from '../runtime/lib/merge-tier.mjs';
 import { notifyEvent } from '../runtime/lib/watch-rules.mjs';
 import { loadImRouter, withIm } from '../runtime/lib/outbox-im.mjs';
+import { createWebhookSink } from '../runtime/lib/outbox-webhook.mjs';
 import { fetchTransport } from '../scripts/im-transport.mjs';
 
 // Comment ids derive from the body, so a replayed identical comment is refused by enqueue. Accepted trade-off: identical text on the same issue is posted once.
@@ -73,18 +74,23 @@ export function hostProvider(writer, im) {
 }
 
 // Enqueue one item, then deliver it unless it already has a receipt or was dead-lettered. Returns whether it has a receipt.
-export async function submit({ root, writer, item, send = fetchTransport, env }) {
+// After the provider delivers a notification, the webhook sink posts it too; a webhook failure is logged and keeps the receipt.
+export async function submit({ root, writer, item, send = fetchTransport, env = process.env }) {
   const outbox = openOutbox(root);
   outbox.enqueue(item);
   if (outbox.pending().every((i) => i.id !== item.id)) return outbox.receipts().has(item.id);
+  let receipt;
   try {
-    outbox.markDelivered(item.id, await hostProvider(writer, loadImRouter({ root, send, env })).deliver({ ...item }));
-    return true;
+    receipt = await hostProvider(writer, loadImRouter({ root, send, env })).deliver({ ...item });
   } catch (error) {
     outbox.recordFailure(item.id, error.message, Date.now());
     outbox.markDead(item.id);
     return false;
   }
+  outbox.markDelivered(item.id, receipt);
+  const sink = createWebhookSink({ env, send });
+  if (sink && item.kind === 'notification') await sink.deliver(item).catch((error) => process.stderr.write(`webhook notification not delivered: ${error.message}\n`));
+  return true;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
