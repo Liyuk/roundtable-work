@@ -9,7 +9,7 @@ verb=""
 if [[ $l =~ ^no-pr([^[:alnum:]-].*)?$ ]]; then
   verb=done
   l2=$(sed -n 2p "$f")
-  [[ ${l2,,} == no-pr* ]] || l2="no-pr $l2"
+  [[ $(printf '%s' "$l2" | tr 'A-Z' 'a-z') == no-pr* ]] || l2="no-pr $l2"
   { printf 'done\n%s\n' "$l2"; sed -n '3,$p' "$f"; } >"$f.tmp" && mv "$f.tmp" "$f"
 fi
 [ -n "$verb" ] || exit 1

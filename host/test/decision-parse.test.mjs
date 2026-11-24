@@ -154,3 +154,9 @@ test('A4: an unrecognised first line triggers exactly one corrective Chief wake 
   assert.doesNotMatch(log, /no progress in 2 consecutive wakes/, 'the wake pair counts as one no-progress wake');
   assert.match(log, /wake 2 end rc=0 decision=none/);
 });
+
+test('A6: the helper uses no bash-4-only expansion (macOS CI runs bash 3.2)', () => {
+  const src = readFileSync(PARSER, 'utf8');
+  assert.doesNotMatch(src, /\$\{[^}]*(,,|\^\^)/);
+  assert.doesNotMatch(src, /\bdeclare -A\b|\bmapfile\b|\breadarray\b/);
+});
