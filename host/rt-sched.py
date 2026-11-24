@@ -16,6 +16,7 @@ import fcntl
 import glob
 import json
 import os
+import random
 import re
 import signal
 import subprocess
@@ -25,6 +26,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 RT_HOME = os.path.abspath(os.path.expanduser(os.environ.get("RT_HOME") or HERE))
 GH = os.environ.get("RT_GH_REAL", "/usr/bin/gh")
+GH_READ_TIMEOUT = 60   # s per gh read call (#652)
+GH_JITTER = 2.0        # s, upper bound of the pause before the one retry of a failed read
 BRIDGE = os.path.join(HERE, "outbox-bridge.mjs")
 TIMER_CLI = os.path.join(HERE, "bin", "rt-timers.mjs")
 
@@ -231,6 +234,8 @@ class Sched:
         self.handsoff = {int(x) for x in re.split(r"[\s,]+", c.get("RT_HANDS_OFF_PRS", "")) if x.isdigit()}
         self.sweep_retry = int(c.get("RT_SWEEP_RETRY", "900"))
         self.main_red = False
+        self.cycle_no = 0
+        self.gh_good = {}     # key -> (cycle no, last good read), see gh_read_cached
         self.last_sweep = {}   # n -> (head sha, time)
         self.aux = {}          # revert helpers: sha7 -> Popen
         self.state = os.path.join(RT_HOME, "state")
@@ -265,10 +270,35 @@ class Sched:
     # ---- gh
     def gh_read(self, args):
         assert tuple(args[:2]) in READ_ONLY_GH, "refusing non-read-only gh call: %s" % args[:2]
-        r = subprocess.run([GH] + args, capture_output=True, text=True, timeout=120)
-        if r.returncode != 0:
-            raise RuntimeError("gh %s failed: %s" % (" ".join(args[:2]), r.stderr.strip()[:200]))
-        return json.loads(r.stdout or "null")
+        for attempt in range(2):   # one retry after a jittered pause (#652)
+            if attempt:
+                time.sleep(random.uniform(0, GH_JITTER))
+            try:
+                r = subprocess.run([GH] + args, capture_output=True, text=True, timeout=GH_READ_TIMEOUT)
+                if r.returncode == 0:
+                    return json.loads(r.stdout or "null")
+                err = r.stderr.strip()[:200]
+            except subprocess.TimeoutExpired:
+                err = "timed out after %ds" % GH_READ_TIMEOUT
+        msg = "gh %s failed: %s" % (" ".join(args[:2]), err)
+        self.log("gh_read_fail " + msg)   # counted by grep; one line per failed read
+        raise RuntimeError(msg)
+
+    def gh_try(self, args):
+        """gh_read, or None when the read failed (gh_read has counted it)."""
+        try:
+            return self.gh_read(args)
+        except RuntimeError:
+            return None
+
+    def gh_read_cached(self, key, args):
+        """(value, fresh): a live read; when it fails, the last good answer for `key` if it is at most 2 cycles old, else None."""
+        v = self.gh_try(args)
+        if v is not None:
+            self.gh_good[key] = (self.cycle_no, v)
+            return v, True
+        at, last = self.gh_good.get(key, (0, None))
+        return (last if self.cycle_no - at <= 2 else None), False
 
     def gh_write(self, args, what, stdin=None):
         """Every GitHub write goes through here; in dry-run nothing is executed."""
@@ -590,6 +620,7 @@ class Sched:
                     f.write("".join(i + "\n" for i in ids))
 
     def cycle(self):
+        self.cycle_no += 1
         self.reload_cfg()
         self.note_cycle_gap()
         self.fire_timers()
@@ -605,18 +636,18 @@ class Sched:
             # main health and revert-on-red need no model: keep them running during a usage-limit wait
             self.check_main()
             return
-        try:
-            issues = [i for a in sorted(self.authors) for i in self.gh_read(
-                ["issue", "list", "-R", self.repo, "--state", "open", "--author", a, "-L", "200",
-                 "--json", "number,title,body,labels,createdAt"])]
-            allst = {i["number"]: i["state"] for i in self.gh_read(
-                ["issue", "list", "-R", self.repo, "--state", "all", "-L", "500", "--json", "number,state"])}
-            merged = {p["number"] for p in self.gh_read(["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number"])}
-            prs = self.gh_read(["pr", "list", "-R", self.repo, "--state", "open", "-L", "200",
-                                "--json", "number,headRefName,baseRefName,headRefOid,labels,isDraft,title,comments"])
-        except Exception as e:
-            self.log("ERROR github read failed, skipping cycle: %s" % e)
-            return
+        # GitHub reads (#652): a failed read is counted and skipped; claims need the open issue and PR lists and allst/merged
+        opened = [self.gh_read_cached("open:" + a, ["issue", "list", "-R", self.repo, "--state", "open", "--author", a, "-L", "200",
+                                                    "--json", "number,title,body,labels,createdAt"]) for a in sorted(self.authors)]
+        prs_raw = self.gh_try(["pr", "list", "-R", self.repo, "--state", "open", "-L", "200",
+                               "--json", "number,headRefName,baseRefName,headRefOid,labels,isDraft,title,comments"])
+        allst_raw = self.gh_read_cached("allst", ["issue", "list", "-R", self.repo, "--state", "all", "-L", "500", "--json", "number,state"])[0]
+        merged_raw = self.gh_read_cached("merged", ["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number"])[0]
+        claims_ok = all(fresh for _, fresh in opened) and prs_raw is not None and allst_raw is not None and merged_raw is not None
+        issues = [i for v, _ in opened for i in v or []]   # the last good list when a read failed (orphans still respawn)
+        prs = prs_raw or []
+        allst = {i["number"]: i["state"] for i in allst_raw or []}
+        merged = {p["number"] for p in merged_raw or []}
         status = self.read_status()
         byn = {i["number"]: i for i in issues}
         for i in issues:
@@ -845,6 +876,9 @@ class Sched:
         # 4. claim (resource-aware admission: never kill running workers)
         hold = self.claim_hold_reason() if cands else None
         if hold:
+            cands = []
+        if not claims_ok and cands:
+            self.log("GitHub read failed: no new claims this cycle (%d candidate(s) wait)" % len(cands))
             cands = []
         if self.main_red and cands:
             self.log("%smain CI is red: no new claims (%d candidate(s) wait)" % ("DRY " if self.dry else "", len(cands)))
