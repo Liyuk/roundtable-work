@@ -217,6 +217,18 @@ def sort_key(issue):
             issue.get("createdAt", ""), issue["number"])
 
 
+def closable_verified(issue, status, kids, allst, prs, main_runs):
+    """#646: a verified-complete issue closes itself once every recorded child is closed, no PR is open, nothing blocks it and the
+    newest main Check run is green (a pending or red newest run is not green yet). Pure: no I/O."""
+    if ("rt:ready-to-merge" not in issue["names"] or prs or "verified complete" not in str(status.get("detail", ""))
+            or issue["names"] & {"rt:hold", "rt:blocked", "rt:ask", "rt:running"}):
+        return False
+    if not all(allst.get(k) == "CLOSED" for k in kids):
+        return False
+    r = main_runs[0] if main_runs else {}
+    return r.get("status") == "completed" and r.get("conclusion") == "success"
+
+
 # -------------------------------------------------------------- scheduler ----
 class Sched:
     def __init__(self, dry, once):
@@ -665,25 +677,20 @@ class Sched:
                         self.set_status(n, "queued", 0, "children closed; resumed")
                         status[n] = {"state": "queued", "wake": "0", "ts": time.strftime("%F %T"), "detail": "children closed"}
 
-        # 2a'. verified-complete parents left waiting for the owner (rt-work fell back because main CI was pending/red at
-        # that moment): close them once every child is closed, no PR is open and the latest completed main Check is green
-        for i in issues:
-            n = i["number"]
-            cf = os.path.join(self.state, "children", str(n))
-            st = status.get(n) or {}
-            if ("rt:ready-to-merge" not in i["names"] or not os.path.exists(cf) or prs_of(n)
-                    or "verified complete" not in str(st.get("detail", "")) or i["names"] & {"rt:hold", "rt:blocked", "rt:ask", "rt:running"}):
-                continue
-            kids = [int(x) for x in open(cf).read().split() if x.isdigit()]
-            if not kids or not all(allst.get(k) == "CLOSED" for k in kids):
-                continue
+        # 2a'. verified-complete parents/leaves left waiting for the owner (rt-work fell back because main CI was pending/red at
+        # that moment): close them once closable_verified says so (#646)
+        cands = [i for i in issues if "rt:ready-to-merge" in i["names"]]
+        runs = []
+        if cands:
             try:
                 runs = self.gh_read(["run", "list", "-R", self.repo, "--branch", "main", "--workflow", "Check", "-L", "5", "--json", "conclusion,status"])
             except Exception as e:
-                self.log("WARN main Check unreadable for #%d close: %s" % (n, e))
-                continue
-            done = [r for r in (runs or []) if r.get("status") == "completed"]
-            if not done or done[0].get("conclusion") != "success":
+                self.log("WARN main Check unreadable for verified-complete close: %s" % e)
+        for i in cands:
+            n = i["number"]
+            cf = os.path.join(self.state, "children", str(n))
+            kids = [int(x) for x in open(cf).read().split() if x.isdigit()] if os.path.exists(cf) else []
+            if not closable_verified(i, status.get(n) or {}, kids, allst, prs_of(n), runs):
                 continue
             self.log("#%d: verified complete, all sub-issues closed, main green: closing" % n)
             self.comment(n, "<!-- rt:summary -->\nAll sub-issues are closed and main CI is green again; the earlier verification stands. Closing as complete (reopen to undo).")
@@ -691,6 +698,8 @@ class Sched:
                 self.rm_label(n, "rt:ready-to-merge")
                 i["names"].discard("rt:ready-to-merge")
                 self.set_status(n, "done", 0, "no PR needed (verified complete, closed by sweep)")
+                allst[n] = "CLOSED"   # same cycle: intake below sees dependents of n as unblocked (#646)
+                status[n] = {"state": "done", "wake": "0", "ts": time.strftime("%F %T"), "detail": "no PR needed (verified complete, closed by sweep)"}
 
         # 2b. ask-resume
         for i in issues:
@@ -785,7 +794,8 @@ class Sched:
             deferred = {x["number"] for x in issues if "rt:deferred" in x["names"]}
             for d in deps:
                 s = allst.get(d)
-                if s == "CLOSED" or d in merged or d in deferred:   # merged PR = met (#540); deferred deps (owner-trimmed scope) do not block
+                vc = status.get(d) or {}
+                if s == "CLOSED" or d in merged or d in deferred or (vc.get("state") == "done" and "verified complete" in vc.get("detail", "")):   # merged PR = met (#540); deferred deps (owner-trimmed scope) do not block; verified complete = met (#646)
                     continue
                 dp = prs_of(d)
                 rd = [p for p in dp if any(l["name"] == "rt:ready-to-merge" for l in p["labels"])]
