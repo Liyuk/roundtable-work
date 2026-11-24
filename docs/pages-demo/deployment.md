@@ -47,6 +47,8 @@ What the build job runs, in order:
 4. `npm run validate:site` (artifact allowlist and content patterns)
 5. Upload `site/` as the Pages artifact
 
+`.github/workflows/check.yml` runs the same two site checks, plus `npm run check:architecture-refs`, on every pull request and on `main`. The reference check fails when a code path named in [`docs/architecture.md`](../architecture.md) is not in the tree or an issue number it cites does not exist. It reads issues from the GitHub API with the job's own `GITHUB_TOKEN` (read-only, no added secret).
+
 ## Local preview, validation and build
 
 Requires the Node.js version in `.nvmrc`. No other dependency is needed to preview or validate; `npm ci` installs nothing extra for these scripts.
@@ -60,6 +62,7 @@ Serves `site/` on `127.0.0.1`, port 4173 by default (the script prints the exact
 ```
 npm run build:site            # regenerate site/index.html from docs/architecture.md and scenario.json
 npm run build:site -- --check # exit 1 if site/ differs from a fresh build; writes nothing
+GITHUB_REPOSITORY=owner/repo npm run check:architecture-refs # every code path and issue cited in docs/architecture.md exists
 npm run validate:site         # check what would be published
 npm test                      # unit tests, then the Markdown link check
 npm run check                 # the Markdown link check on its own

@@ -150,7 +150,7 @@ test('in a real browser: the skip link is the first tab stop, and a module opens
       let s = await state('inbox');
       assert.deepEqual([s.expanded, s.hidden], ['true', false], 'Enter opens the module');
       assert.match(s.panel, /Event inbox and claims/);
-      assert.match(s.panel, /Library only/);
+      assert.match(s.panel, /Implemented/);
       assert.match(s.panel, /runtime\/lib\/event-inbox\.mjs/);
       assert.match(s.panel, /#266/);
       await browser.evaluate(`document.querySelector('button.mod[data-module="timers"]').focus()`);
