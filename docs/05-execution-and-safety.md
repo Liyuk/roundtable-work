@@ -38,6 +38,20 @@ Every squash merge goes through the single merge entry point (`runtime/lib/merge
 
 A missing, unreadable, malformed, or unknown `mergeMode` resolves to `dry-run` (fail closed). In `owner` and `dry-run` modes the merge is never called, including for revert merges; a finalizing issue waits with a `merge-mode` hold instead of failing.
 
+## Merge Tiers
+
+Off by default. `runtime/merge.config.json` sets `"mergeTiers": false`; only an explicit `true` turns it on (`runtime/lib/merge-mode.mjs`, `readMergeTiers`). Off, the merge path is unchanged and the daemon loads no autonomy file.
+
+On, both daemon merge call sites (the gated merge and the red-main revert merge) pass `tierOf`, built from `autonomyTier` (`runtime/lib/autonomy.mjs`) with the loaded autonomy config (`loadAutonomy`, tighten-only: the host file can only narrow the shipped defaults). The tier is computed after the gates and live checks and before any squash (`runtime/lib/merge-tier.mjs`):
+
+- `approve-first` (owner-override label, safety file, irreversible, a kind outside the allow-list, or high risk): `ApprovalRequired`. Nothing is squashed and nothing is journaled; the gated merge fails closed and the issue stays for a decision. A safety-file change is approve-first even when its safety approval is recorded. A revert is never `auto-silent`. The owner override is read from the live pull request's labels; a live pull request without labels fails closed.
+- `auto-notify`: the squash runs, then the action journal (#389) records the merge as `executed_pending_confirmation` and the outbox gets one `action-pending-confirmation` notice for the issue. Confirm or roll back through the journal's owner replies (#390).
+- `auto-silent`: the squash runs and the journal records it as `settled`, with no notice.
+
+The live pull request carries no line count, so the daemon maps every non-high-risk merge to `risk:medium`. Today that makes `auto-notify` the highest tier a daemon merge can reach; `auto-silent` needs a risk signal the daemon does not yet have. With `mergeTiers` on, the work root must be named `.roundtable`, or the daemon refuses to start.
+
+Host merges through the durable outbox (#579) use the same enable key, autonomy and `mergeTierOf` (`hostMergeRefusal` in `runtime/lib/merge-tier.mjs`). `host/bin/rt-merge` passes whether `gates.json` records a high-risk reason; `host/outbox-bridge.mjs merge` reads the live pull request's files and labels with `gh pr view`, and refuses an `approve-first` merge (exit 2, `REFUSE[tier]`) before anything is enqueued or squashed. Off, it reads no pull request and merges as before. `auto-notify` host merges keep their existing `done-pending-confirmation` notice and are not written to the action journal. #570 has no host merge path in this tree.
+
 ## Technical-Plan Gate
 
 Optional gate before `execute`, set in `runtime/plan-gate.config.json` (`"enabled": false` by default). It is read once per pass by the CLI and passed to `runQueue`, so the worker and daemon paths share it. Parsing lives only in `runtime/lib/pipeline.mjs` (`parsePlan`, `executeGate`).

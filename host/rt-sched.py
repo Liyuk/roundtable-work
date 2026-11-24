@@ -224,6 +224,8 @@ class Sched:
         c = self.cfg
         self.repo = c.get("RT_REPO", "Liyuk/roundtable-work")
         self.owner = c.get("RT_OWNER", "Liyuk")
+        raw = c.get("RT_AUTHOR_ALLOWLIST", "").strip() or self.owner   # issue authors the scheduler claims
+        self.authors = {a.strip() for a in raw.split(",") if a.strip()}
         self.workers_max = int(c.get("RT_WORKERS", "2"))
         self.poll = int(c.get("RT_POLL", "300"))
         self.handsoff = {int(x) for x in re.split(r"[\s,]+", c.get("RT_HANDS_OFF_PRS", "")) if x.isdigit()}
@@ -243,8 +245,11 @@ class Sched:
         self._gap_warned_from = None
         self._throttle_logged = {}  # reason_key -> last log epoch
         self._unresolved_logged = {}  # (issue, dep) -> last log epoch (#540)
-        for d in (self.state, self.logs, os.path.join(self.logs, "work"), os.path.join(RT_HOME, "locks"), os.path.join(self.state, "issues"),
-                  os.path.join(self.state, "children"), os.path.join(self.state, "supervisor"), os.path.join(RT_HOME, "wt")):
+        dirs = [self.logs, os.path.join(self.logs, "work")]   # logs are allowed in dry-run
+        if not dry:
+            dirs += [self.state, os.path.join(RT_HOME, "locks"), os.path.join(self.state, "issues"),
+                     os.path.join(self.state, "children"), os.path.join(self.state, "supervisor"), os.path.join(RT_HOME, "wt")]
+        for d in dirs:
             os.makedirs(d, exist_ok=True)
 
     # ---- logging
@@ -552,7 +557,7 @@ class Sched:
 
     def fire_timers(self):
         """Fire due timers into the event inbox (rt-timers.mjs). Skipped on STOP or during a cycle-gap hold."""
-        if os.path.exists(os.path.join(RT_HOME, "STOP")) or time.time() < self._resume_hold_until:
+        if self.dry or os.path.exists(os.path.join(RT_HOME, "STOP")) or time.time() < self._resume_hold_until:
             return
         try:
             r = subprocess.run(["node", TIMER_CLI, RT_HOME], capture_output=True, text=True, timeout=60)
@@ -588,10 +593,11 @@ class Sched:
         self.reload_cfg()
         self.note_cycle_gap()
         self.fire_timers()
-        try:
-            subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'rt-tmpclean')], timeout=120)
-        except Exception:
-            pass
+        if not self.dry:
+            try:
+                subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bin', 'rt-tmpclean')], timeout=120)
+            except Exception:
+                pass
         act = self.reap()
         lim = self.limit_active()
         if lim:
@@ -600,8 +606,9 @@ class Sched:
             self.check_main()
             return
         try:
-            issues = self.gh_read(["issue", "list", "-R", self.repo, "--state", "open", "--author", self.owner, "-L", "200",
-                                   "--json", "number,title,body,labels,createdAt"])
+            issues = [i for a in sorted(self.authors) for i in self.gh_read(
+                ["issue", "list", "-R", self.repo, "--state", "open", "--author", a, "-L", "200",
+                 "--json", "number,title,body,labels,createdAt"])]
             allst = {i["number"]: i["state"] for i in self.gh_read(
                 ["issue", "list", "-R", self.repo, "--state", "all", "-L", "500", "--json", "number,state"])}
             merged = {p["number"] for p in self.gh_read(["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number"])}
@@ -1034,11 +1041,13 @@ class Sched:
 
     # ---- heartbeat
     def heartbeat(self, act):
+        if self.dry:   # dry-run writes no state (status.sh shows no DRY heartbeat)
+            return
         ws = ",".join("%d:%d:%d" % (n, a["slot"], a["pid"]) for n, a in sorted(act.items()))
         now = time.time()
-        txt = "ts=%s\nepoch=%d\npid=%d\ndry=%d\nslots=%d\nrunning=%d\nmain_red=%d\nworkers=%s\n" % (
-            time.strftime("%F %T %Z"), now, os.getpid(), 1 if self.dry else 0, self.workers_max, len(act), 1 if self.main_red else 0, ws)
-        path = os.path.join(self.state, "heartbeat.dry" if self.dry else "heartbeat")
+        txt = "ts=%s\nepoch=%d\npid=%d\ndry=0\nslots=%d\nrunning=%d\nmain_red=%d\nworkers=%s\n" % (
+            time.strftime("%F %T %Z"), now, os.getpid(), self.workers_max, len(act), 1 if self.main_red else 0, ws)
+        path = os.path.join(self.state, "heartbeat")
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             f.write(txt)

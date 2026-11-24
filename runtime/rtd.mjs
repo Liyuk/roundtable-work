@@ -22,8 +22,8 @@ import { runGates, recoverRedMain } from './lib/gates.mjs';
 import { loadUsageLedger } from './lib/usage-ledger.mjs';
 import { createReviewPrecondition } from './lib/review-precondition.mjs';
 import { createProductionAdapter } from './lib/production.mjs';
-import { createMergeEntryPoint } from './lib/merge.mjs';
-import { readMergeConfig } from './lib/merge-mode.mjs';
+import { createTieredMerge } from './lib/merge-tier.mjs';
+import { readMergeConfig, readMergeTiers } from './lib/merge-mode.mjs';
 import { loadLocalChecksConfig } from './lib/local-checks.mjs';
 import { projectLabels } from './lib/label-projection.mjs';
 import { observeAndCheckTransition } from './lib/observe.mjs';
@@ -56,11 +56,14 @@ import { openOutbox, dispatch } from './lib/outbox.mjs';
 import { ensurePatrolTimer, patrolCadenceMs, runPatrol } from './lib/patrol-timer.mjs';
 import { createGitHubOutboxProvider } from './lib/outbox-github.mjs';
 import { loadImRouter, withIm } from './lib/outbox-im.mjs';
+import { createWebhookSink, withWebhook } from './lib/outbox-webhook.mjs';
 import { fetchTransport } from '../scripts/im-transport.mjs';
 import { selfMetrics } from './lib/self-metrics.mjs';
 import { anomalies, buildDigest, deadLetterCount, enqueueAnomalies, enqueueDigest, ensureDigestTimer } from './lib/digest.mjs';
+import { notifyEvent } from './lib/watch-rules.mjs';
 import { runChiefCli } from './lib/chief-session.mjs';
 import { executeGate, planGateEnabled, runE2e, loadE2eConfig } from './lib/pipeline.mjs';
+import { checkWorkspacePin } from './lib/version-pin.mjs';
 
 const STAGE = { developing: 'developer', testing: 'test', reviewing: 'reviewer', finalizing: 'finalize' };
 /**
@@ -229,7 +232,7 @@ export async function runQueue({
   mergeUnknownTimeoutMs = 15 * 60_000,
   githubClient, outbox, repoRoot, workers = 2, baseBranch = 'main', baseSync = true, autoMerge, observationClients, models = {}, routing,
   escalationAdapter, modelRouter, maxEscalationAttempts = 2, chiefImplements = false, preDispatch, memory,
-  candidates, probe, probeIntervalMs, claimHold = false, planGate = false, e2eConfig = {}, e2eExec = runShell,
+  candidates, probe, probeIntervalMs, claimHold = false, planGate = false, e2eConfig = {}, e2eExec = runShell, notify,
 }) {
   if (typeof handler !== 'function') throw new TypeError('handler must be a function');
   observationClients ??= autoMerge?.observationClients;
@@ -237,6 +240,11 @@ export async function runQueue({
   if (githubClient && !repoRoot) throw new TypeError('repoRoot is required for tracker workers');
   const mergeMode = await readMergeConfig();
   const localChecks = await loadLocalChecksConfig();
+  // Merge tiers (#604) are default-off; when on, both merge call sites share one tier policy and journal root.
+  const mergeTiers = await readMergeTiers();
+  const tierRoot = loopWorkspace(workRoot);
+  if (mergeTiers && !tierRoot) throw new TypeError('mergeTiers requires a work root named .roundtable');
+  const mergeOptions = { enabled: mergeTiers, autonomy: mergeTiers ? (await loadAutonomy()).autonomy : undefined, root: tierRoot, mode: mergeMode, localChecks };
   // The lock must be renewed well before it expires: at least two renewals fit into one lease.
   for (const [name, value] of [['lockTtlMs', lockTtlMs], ['lockRenewMinMs', lockRenewMinMs], ['leaseTtlMs', leaseTtlMs]]) {
     if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new TypeError(`${name} must be a positive number`);
@@ -503,6 +511,7 @@ export async function runQueue({
         return false;
       }
       if (status.status !== 'red' || status.head !== record.mergeCommit) return true;
+      notify?.({ event: 'main-red', key: record.mergeCommit });
       await recoverRedMain({ mergeCommit: record.mergeCommit, mainHead: status.head, mainRed: true,
       pause: { async claimsAndMerges() {} },
       git: { createRevert: (args) => once('revert', () => autoMerge.git.createRevert(args)) },
@@ -524,7 +533,7 @@ export async function runQueue({
           squashMerge: (...args) => once('revertMerged', () => autoMerge.github.squashMerge(...args)),
         };
         const guardedGateStore = { ...gateStore, put: async (...args) => { await ensureLive(signal); return gateStore.put(...args); } };
-        const squash = createMergeEntryPoint({ github: mergeGithub, gateState: guardedGateStore, store, mode: mergeMode, localChecks, pullRequestBody: pullRequestBodyClient(githubClient) });
+        const squash = createTieredMerge({ ...mergeOptions, revertOf: record.mergeCommit, github: mergeGithub, gateState: guardedGateStore, store, pullRequestBody: pullRequestBodyClient(githubClient) });
         // The revert PR body is host-written; red-main recovery must not be blocked by the loop-PR `Closes #N` link check.
         const gated = await runGates({ ...context, issue: String(issue), gates: autoMerge.gates, localChecks, ci: autoMerge.github, github: autoMerge.github, state: guardedGateStore, store, merge: { squash }, models, routing, requireClosesLink: false });
         if (gated.status !== 'merged') throw new Error(`Revert ${gated.gate}: ${gated.reason}`);
@@ -863,7 +872,7 @@ export async function runQueue({
                   return merged;
                 },
               };
-              const squash = createMergeEntryPoint({ github: mergeGithub, gateState, store, mode: mergeMode, localChecks, pullRequestBody: pullRequestBodyClient(githubClient) });
+              const squash = createTieredMerge({ ...mergeOptions, github: mergeGithub, gateState, store, pullRequestBody: pullRequestBodyClient(githubClient) });
               const guardedSquash = async (...args) => {
                 if (signal.aborted || !(await refreshLock())) throw new Error('phase aborted or lock lost');
                 await requireObservation(item, phase, result);
@@ -906,6 +915,8 @@ export async function runQueue({
                   mergeMonitorError = `merge monitor: ${err?.message ?? err}`;
                 }
               }
+              notify?.({ event: 'pr-merged', issue: id, key: context.pr });
+              notify?.({ event: 'issue-merged', issue: id, key: id });
               // a merged step is never a hold, whatever the handler returned
               return { ...result, mergeHold: null, merged: true, ...(mergeMonitorError ? { mergeMonitorError } : {}) };
             };
@@ -1002,6 +1013,7 @@ export async function runQueue({
           await store.checkpoint(id, phase, { changedFiles: step.changedFiles });
           // A post-merge monitor/bookkeeping failure is recorded as a detail, never as a failed wake.
           if (phase === 'finalizing') {
+            notify?.({ event: 'issue-closed', issue: id, key: id });
             const done = await finish('done', cls, autoMerge ? step.mergeMonitorError : undefined, 'done');
             await reflectEvent({ kind: 'done', attempt: state.attempts.wakes, issue: id, reason: cls });
             return { ...done, ...(step.merged === true && { merged: true }) };
@@ -1029,6 +1041,7 @@ export async function runQueue({
         } else if (cls === 'quota_wait') {
           return await finish('waiting_external', cls, reason, 'wait');
         } else if (cls === 'human_block') {
+          notify?.({ event: 'blocked', issue: id, key: `${id}:${state.attempts.wakes}` });
           return await finish('waiting_person', cls, reason, 'ask');
         } else {
           return await finish('out-of-scope', cls, reason, 'ask');
@@ -1146,6 +1159,12 @@ async function main(argv) {
     console.error('       rtd.mjs --work-root DIR --providers MODULE --clear-main-pause');
     return 2;
   }
+  // The project pin lives in the workspace, the parent of `.roundtable/`; a mismatch refuses to start any work.
+  const pin = await checkWorkspacePin(resolve(args['work-root'], '..'));
+  if (!pin.ok) {
+    console.error(pin.message);
+    return 1;
+  }
   if (args['exclusive-with']) {
     const refusal = await exclusiveRefusal(args['exclusive-with']);
     if (refusal) {
@@ -1232,7 +1251,7 @@ async function main(argv) {
   const queue = args.github ? createIntakeProvider(reader, { includeRunning: true }) : args.queue;
   // One pass: the existing single runQueue call. `workers` is a number, or a function when looping.
   const pass = async (workers, claimHold) => {
-    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, claimHold, planGate: await planGateEnabled(), e2eConfig: await loadE2eConfig(), ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
+    const result = await runQueue({ workRoot: args['work-root'], queue, handler, preDispatch, memory, autoMerge, baseSync: !shadow, escalationAdapter, modelRouter, maxEscalationAttempts, observationClients: autoMerge?.observationClients ?? handlerModule.observationClients, models, routing, candidates, probe: handlerModule.probe, notify: workspace && ((event) => notifyEvent(workspace, event)), claimHold, planGate: await planGateEnabled(), e2eConfig: await loadE2eConfig(), ...timeouts, ...(args.github ? { githubClient: shadow ? createShadowGitHub(writer) : writer, outbox, repoRoot: resolve(args['repo-root'] ?? '.'), workers } : {}) });
     if (args.github) {
       result.triage = queue.triage;
       if (shadow && result.outcomes) await writeShadowCycle({ workRoot: args['work-root'], outcomes: result.outcomes, live });
@@ -1271,6 +1290,7 @@ async function main(argv) {
             const actions = journal.list().filter((a) => a.at >= since);
             const text = buildDigest({ window: signals.metrics.window, metrics: signals.metrics, entries: signals.entries, merged, actions, stage: 'not computed (RT-S12)', thresholds: signals.thresholds, deadLetters: signals.deadLetters });
             await enqueueDigest({ outbox, now: Date.now(), issue: goals.reporting.digestIssue, text, hygiene: selfReview.hygiene });
+            notifyEvent(workspace, { event: 'window-reset', key: signals.metrics.window.since });
           }
           for (const event of batch.events) if (selfReview && event.kind === 'heartbeat' && event.payload.job && !['digest', 'patrol'].includes(event.payload.job)) {
             await runSelfJob({ root: workspace, now: Date.now(), event, goals: selfReview.goals, inputs: gatherInputs(workspace), client: selfReview.client, hygiene: selfReview.hygiene });
@@ -1284,7 +1304,7 @@ async function main(argv) {
       // End of each cycle: raise anomaly alerts, then flush the outbox. Notifications also go to the IM channels routed for their subtype in .roundtable/im-routes.json (none when it is missing); a shadow run sends nothing to IM.
       if (outbox) enqueueAnomalies({ outbox, now: Date.now(), fired: anomalies(supervisionSignals({ workspace, goals, outbox, now: Date.now() })) });
       const github = createGitHubOutboxProvider({ writer: shadow ? createShadowGitHub(writer) : writer, digestIssue: goals.reporting.digestIssue });
-      await dispatch({ outbox, provider: withIm(github, shadow ? null : loadImRouter({ root: workspace, send: fetchTransport })), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
+      await dispatch({ outbox, provider: withWebhook(withIm(github, shadow ? null : loadImRouter({ root: workspace, send: fetchTransport })), shadow ? null : createWebhookSink({ env: process.env, send: fetchTransport })), backoffMs: OUTBOX_BACKOFF_MS, deadAfter: OUTBOX_DEAD_AFTER });
     }, pollMs: loop.pollMs ?? DEFAULT_POLL_MS, cycleDeadlineMs: loop.cycleDeadlineMs ?? 60 * 60_000, workRoot: workspace, baseWorkers, wake, prune: governor.prune, budget: governor.budget });
     // A pass that never settled may still hold the process open: end it after stdout is flushed.
     if (code === EXIT_CYCLE_DEADLINE) { process.stdout.write('cycle deadline exceeded\n', () => process.exit(code)); return new Promise(() => {}); }

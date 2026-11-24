@@ -33,6 +33,16 @@ Open the harness in the workspace and have the agent run "Use roundtable-work to
 2. Ask only the questions that are missing and affect authorization or acceptance: the workspace and long-term goal, which actions need no confirmation and which need confirmation, roles, budget, and whether to enable external events or timers.
 3. Edit `.roundtable/team.md` and `policy.md`; for existing settings, show the diff before changing them. Do not ask for credentials in the conversation, and by default do not automatically merge, deploy, or send messages externally.
 
+### Configuration layers
+
+Safety limits are read from three layers (`runtime/lib/config-layers.mjs`): built-in defaults (`runtime/defaults/limits.json`) < global (`~/.config/rtd/limits.json`) < project (`.roundtable/limits.json` in the workspace). A missing file means no layer. Every key is tighten-only: an upper layer may only make a value stricter than the layer below it. Numeric caps take the lower value, the permission flag `allowAutoFollowups` stays on only if every layer keeps it on, and `rejected` entries record looser or unknown values with a reason but never the value. A malformed layer file fails the load; `rtd doctor` then prints `CONFIG unavailable` and its exit code is unchanged. `rtd doctor` prints each effective key as `CONFIG <key>=<value> (<layer>)` and each rejected entry as `REJECTED <layer> <key>: <reason>`; `rtd doctor --json` returns `config` (key to `{value, layer}`) and `rejected`.
+
+`requiredVersionRange` pins the installed rtd to a semver-style range (the same syntax as `engines`, for example `>=0.2.0 <0.3.0`, `^0.2.0`, `~0.2.1`). It defaults to `null` (no pin). A layer may set it only when the layer below has it `null`; a later attempt is listed in `rejected` with a reason only. The installed version is the `version` in this checkout's `package.json`. Startup of the daemon refuses to start and `rtd doctor` fails (`version-pin`, `DOCTOR_VERSION_PIN`) when the installed version does not satisfy the range; both print the range and the installed version.
+
+### Per-project state root
+
+Each project keeps its lock records under its own state root, so two projects on one machine never share them. The anchor holds only lock records; the inbox, ledger, and logs stay per workspace under `<workspace>/.roundtable/state/` and are unchanged. The root is derived from the project id in `<workspace>/.roundtable/project.json` (`"projectId"`, lowercase letters, digits and hyphens, at most 64 characters): `<base>/projects/<projectId>`, where `<base>` is `$XDG_STATE_HOME/roundtable` or `~/.local/state/roundtable`. A workspace without the file keeps the legacy `<base>` layout. Setting `RTW_STATE_DIR` overrides the derived root for every project. `anchorRootOf` in `runtime/lib/lock.mjs` is the one function that computes it.
+
 ### Model and reviewer environment keys
 
 Routing reads these keys (`runtime/lib/routing.mjs`, `ROUTE_ENV`). `RT_ALLOWED_MODELS` is required: there are no built-in default models, so the deployment must list every approved model ID (comma-separated).

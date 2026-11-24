@@ -9,7 +9,7 @@ sha="${1:?merge sha}"; sha7="${sha:0:7}"
 RT_HOME="${RT_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"; export RT_HOME
 set -a; . "$RT_HOME/config.env"; set +a
 GH="${RT_GH_REAL:-/usr/bin/gh}"; export RT_GH_REAL="$GH"
-REPO_DIR="${RT_REPO_DIR:-$HOME/roundtable-work}"
+REPO_DIR="${RT_REPO_DIR:-$(dirname "$RT_HOME")/roundtable-work}"
 BR="rt/revert-$sha7"; WT="$RT_HOME/wt/revert-$sha7"
 CI_TMO="${RT_CI_TIMEOUT:-1200}"
 mkdir -p "$RT_HOME/state/reverted" "$RT_HOME/logs"

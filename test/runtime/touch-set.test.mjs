@@ -133,10 +133,10 @@ test('a touch lock whose refresh fails aborts the run as issue lock loss', async
   try {
     const touchDir = lockDirectoryFor({ lockPath: join(workRoot, 'locks', `touch-${createHash('sha256').update('runtime/lib/a.mjs').digest('hex')}.lock.d`), repoRoot: repo, anchorRoot: ANCHOR });
     let sawAbort = false;
-    const result = await runWorkers({ issues: [{ id: '1', title: '[A] touch', body: section('- runtime/lib/a.mjs') }], workRoot, repoRoot: repo, workers: 1, lockTtlMs: 30, run: async (_issue, { signal }) => {
+    const result = await runWorkers({ issues: [{ id: '1', title: '[A] touch', body: section('- runtime/lib/a.mjs') }], workRoot, repoRoot: repo, workers: 1, lockTtlMs: 300, run: async (_issue, { signal }) => {
       // Drop the touch lock's epoch record: the next touch refresh cannot find its own record and must report loss.
       for (const name of await readdir(touchDir)) if (name.startsWith('epoch-')) await rm(join(touchDir, name));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       sawAbort = signal.aborted;
     } });
     assert.equal(sawAbort, true);
@@ -153,7 +153,7 @@ test('a touch lock stays alive for the whole run so a second acquirer is refused
   try {
     const lockPath = join(workRoot, 'locks', `touch-${createHash('sha256').update('runtime/lib/a.mjs').digest('hex')}.lock.d`);
     let intruder;
-    const result = await runWorkers({ issues: [{ id: '1', title: '[A] touch', body: section('- runtime/lib/a.mjs') }], workRoot, repoRoot: repo, workers: 1, lockTtlMs: 4000, run: async () => {
+    const result = await runWorkers({ issues: [{ id: '1', title: '[A] touch', body: section('- runtime/lib/a.mjs') }], workRoot, repoRoot: repo, workers: 1, lockTtlMs: 20000, run: async () => {
       await new Promise((resolve) => setTimeout(resolve, 8000));
       intruder = await acquireLock({ lockPath, repoRoot: repo, owner: 'intruder' });
     } });

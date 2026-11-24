@@ -153,7 +153,7 @@ def main(argv):
     if needs_close:
         gh(["pr", "edit", str(num), "-R", REPO, "--body-file", "-"], inp=(body.rstrip() + "\n\nCloses #%d\n" % n))
     # The squash goes through the durable outbox (enqueue, then gh); explicit body: no Co-authored-by trailers
-    r = subprocess.run(["node", os.path.join(HERE, "..", "outbox-bridge.mjs"), RT_HOME, REPO, "merge", str(n or ""), str(num), sha], capture_output=True, text=True)
+    r = subprocess.run(["node", os.path.join(HERE, "..", "outbox-bridge.mjs"), RT_HOME, REPO, "merge", str(n or ""), str(num), sha, "1" if g.get("risk") else "0"], capture_output=True, text=True)
     if r.returncode != 0:
         out(1, "ERROR: merge via outbox failed: %s" % r.stderr.strip()[:200])
     v = json.loads(gh(["pr", "view", str(num), "-R", REPO, "--json", "state,mergeCommit"]).stdout)

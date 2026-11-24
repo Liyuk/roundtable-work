@@ -21,7 +21,7 @@ export RT_MODEL RT_DECIDER_MODEL RT_XCHECK_MODEL RT_OWNER RT_REPO
 export RT_HARNESS="${RT_HARNESS:-pi}"
 AGENT="$RT_HOME/bin/rt-agent"        # the only place that starts a model process (harness + per-role model)
 HARNESS_EFF=$("$AGENT" --harness); CHIEF_MODEL=$("$AGENT" --model chief); DECIDER_EFF=$("$AGENT" --model decider); OPUSFIX_EFF=$("$AGENT" --model opus-fix); EXPLOIT_EFF=$("$AGENT" --model exploit); THREAT_EFF=$("$AGENT" --model threat)
-REPO_DIR="${RT_REPO_DIR:-$HOME/roundtable-work}"; export RT_REPO_DIR="$REPO_DIR"
+REPO_DIR="${RT_REPO_DIR:-$(dirname "$RT_HOME")/roundtable-work}"; export RT_REPO_DIR="$REPO_DIR"
 GH="${RT_GH_REAL:-/usr/bin/gh}"; export RT_GH_REAL="$GH"
 MAXWAKE="${RT_MAXWAKE:-4}"
 DECIDE_MAX="${RT_DECIDE_MAX:-2}"     # Opus decider calls per issue (persisted in state/issues/<n>.json; reset by an owner reply)

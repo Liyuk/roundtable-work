@@ -3,7 +3,7 @@
 // A failed item is recorded and dead-lettered, never retried, so a stale write cannot land after a later one. Exit 0 only when this call's item was delivered.
 //   node host/outbox-bridge.mjs <root> <repo> comment <issue> <bodyFile|->   (body from stdin when "-")
 //   node host/outbox-bridge.mjs <root> <repo> label <issue> add|rm <label>
-//   node host/outbox-bridge.mjs <root> <repo> merge <issue|""> <pr> <head>     (squash; then the done-pending-confirmation notice)
+//   node host/outbox-bridge.mjs <root> <repo> merge <issue|""> <pr> <head> <highRisk 0|1>     (tier-gated squash; then the done-pending-confirmation notice)
 //   node host/outbox-bridge.mjs <root> <repo> rollback <issue|""> <pr> <head> <mergeSha>   (runs bin/rt-revert)
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,7 +13,10 @@ import { fileURLToPath } from 'node:url';
 import { createGitHubOutboxProvider } from '../runtime/lib/outbox-github.mjs';
 import { openOutbox } from '../runtime/lib/outbox.mjs';
 import { mergeItem, mergedNotice, requestRollback, rollbackItem } from '../runtime/lib/merge-outbox.mjs';
+import { hostMergeRefusal } from '../runtime/lib/merge-tier.mjs';
+import { notifyEvent } from '../runtime/lib/watch-rules.mjs';
 import { loadImRouter, withIm } from '../runtime/lib/outbox-im.mjs';
+import { createWebhookSink } from '../runtime/lib/outbox-webhook.mjs';
 import { fetchTransport } from '../scripts/im-transport.mjs';
 
 // Comment ids derive from the body, so a replayed identical comment is refused by enqueue. Accepted trade-off: identical text on the same issue is posted once.
@@ -42,6 +45,10 @@ export function ghWriter({ gh, repo, rtHome }) {
     revertMerge: (mergeSha) => run(join(rtHome, 'bin', 'rt-revert'), [mergeSha], undefined, { ...process.env, RT_HOME: rtHome }),
     addLabel: (issue, label) => ghRun(['issue', 'edit', String(issue), '-R', repo, '--add-label', label]),
     removeLabel: (issue, label) => ghRun(['issue', 'edit', String(issue), '-R', repo, '--remove-label', label]),
+    pullRequest: async (pr) => {
+      const live = JSON.parse(ghRun(['pr', 'view', String(pr), '-R', repo, '--json', 'files,labels']));
+      return { files: live.files.map((file) => file.path), labels: live.labels.map((label) => label.name) };
+    },
     listComments: async (issue) => JSON.parse(ghRun(['issue', 'view', String(issue), '-R', repo, '--json', 'comments'])).comments,
     createComment: (issue, body) => ghRun(['issue', 'comment', String(issue), '-R', repo, '--body-file', '-'], body),
   };
@@ -67,18 +74,23 @@ export function hostProvider(writer, im) {
 }
 
 // Enqueue one item, then deliver it unless it already has a receipt or was dead-lettered. Returns whether it has a receipt.
-export async function submit({ root, writer, item, send = fetchTransport, env }) {
+// After the provider delivers a notification, the webhook sink posts it too; a webhook failure is logged and keeps the receipt.
+export async function submit({ root, writer, item, send = fetchTransport, env = process.env }) {
   const outbox = openOutbox(root);
   outbox.enqueue(item);
   if (outbox.pending().every((i) => i.id !== item.id)) return outbox.receipts().has(item.id);
+  let receipt;
   try {
-    outbox.markDelivered(item.id, await hostProvider(writer, loadImRouter({ root, send, env })).deliver({ ...item }));
-    return true;
+    receipt = await hostProvider(writer, loadImRouter({ root, send, env })).deliver({ ...item });
   } catch (error) {
     outbox.recordFailure(item.id, error.message, Date.now());
     outbox.markDead(item.id);
     return false;
   }
+  outbox.markDelivered(item.id, receipt);
+  const sink = createWebhookSink({ env, send });
+  if (sink && item.kind === 'notification') await sink.deliver(item).catch((error) => process.stderr.write(`webhook notification not delivered: ${error.message}\n`));
+  return true;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -87,9 +99,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (op === 'merge' || op === 'rollback') {
     const cause = { issue: Number(issue) || null, pr: Number(a), head: b, mergeSha: c };
     if (op === 'merge') {
-      const delivered = await submit({ root, writer, item: mergeItem(cause) });
-      if (delivered && cause.issue) await submit({ root, writer, item: mergedNotice(cause) });
-      process.exitCode = delivered ? 0 : 1;
+      const refusal = await hostMergeRefusal({ readLive: () => writer.pullRequest(cause.pr), evidence: { highRisk: c === '1' }, revertOf: b.startsWith('rt/revert-') ? b : undefined });
+      if (refusal) {
+        process.stderr.write(`REFUSE[tier]: ${refusal}\n`);
+        process.exitCode = 2;
+      } else {
+        const delivered = await submit({ root, writer, item: mergeItem(cause) });
+        if (delivered && cause.issue) await submit({ root, writer, item: mergedNotice(cause) });
+        if (delivered) notifyEvent(root, { event: 'pr-merged', issue: cause.issue, key: cause.pr });
+        if (delivered && cause.issue) notifyEvent(root, { event: 'issue-merged', issue: cause.issue, key: cause.issue });
+        process.exitCode = delivered ? 0 : 1;
+      }
     } else {
       // requestRollback enqueues once; submit then delivers that same pending item.
       const requested = requestRollback(root, cause).ok;
