@@ -1036,14 +1036,22 @@ handle_done(){
   local d2; d2=$(sed -n 2p "$SD/DECISION" 2>/dev/null)
   if grep -qi '^no-pr' <<<"$d2"; then   # parent resumed after its children were merged: nothing left to PR
     # owner 2026-11-13: verified-complete parents close themselves when every recorded child is closed and main CI is green
-    local cf="$STATE/children/$n" c open_kids="" main_ci
+    local cf="$STATE/children/$n" c open_kids="" runs pend main_ci
     if [ -s "$cf" ]; then
       for c in $(tr -cs '0-9' ' ' <"$cf"); do
         [ "$("$GH" issue view "$c" -R "$RT_REPO" --json state --jq .state 2>/dev/null)" = CLOSED ] || open_kids="$open_kids #$c"
       done
     fi
-    # supervisor 2026-11-16 (#504): leaf issues verified complete with no diff also close themselves when main CI is green
-    main_ci=$("$GH" run list -R "$RT_REPO" -b main -w Check -L 1 --json conclusion --jq '.[0].conclusion' 2>/dev/null)
+    # supervisor 2026-11-16 (#504): leaf issues verified complete with no diff also close themselves when main CI is green.
+    # #646: a pending run (or an unreadable list) is retried by a timer, never answered with the owner ask
+    runs=$("$GH" run list -R "$RT_REPO" -b main -w Check -L 5 --json status,conclusion 2>/dev/null)
+    pend=$(jq -r '.[0].status // "completed"' <<<"$runs" 2>/dev/null)
+    if [ -z "$open_kids" ] && [ "$pend" != completed ]; then
+      local at; at=$(date -Is -d "+$WAIT_SLEEP seconds")
+      node "$RT_HOME/bin/rt-timers.mjs" wait "$RT_HOME" "$n" "$at" 2>>"$RT_HOME/logs/workers.log" || { log "WARN retry timer for '$at' not written"; return 1; }
+      release; setstatus "$n" waiting "$wake" "main Check run pending; retry at $at, then close if green"; return 1
+    fi
+    main_ci=$(jq -r '[.[] | select(.status == "completed")][0].conclusion // empty' <<<"$runs" 2>/dev/null)
     if [ -z "$open_kids" ] && [ "$main_ci" = success ]; then
       say issue "$n" '<!-- rt:summary -->' "All sub-issues are closed, main CI is green, and the acceptance criteria were verified against main: $(sed -n '3,$p' "$SD/DECISION" | head -c 600). Closing as complete."
       "$GH" issue close "$n" -R "$RT_REPO" >/dev/null 2>&1 || log "WARN issue close failed"
