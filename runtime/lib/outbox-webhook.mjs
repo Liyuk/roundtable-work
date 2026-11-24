@@ -4,14 +4,17 @@
 //   withWebhook(provider, sink)  adds webhook delivery after an outbox provider, for notification items only
 // Env is read at delivery time: RT_NOTIFY_WEBHOOK_URL, RT_NOTIFY_WEBHOOK_KEY (sent in the RT_NOTIFY_WEBHOOK_HEADER header,
 // default x-rt-notify-key; as "<RT_NOTIFY_WEBHOOK_SCHEME> <key>" when RT_NOTIFY_WEBHOOK_SCHEME is set, else the raw key). The item id is the receiver's dedupe key and is the same on every attempt (at-least-once).
-// Network: `send(url, init)` is injected and must resolve to { ok, status }; the real transport is scripts/im-transport.mjs.
+// Network: `send(url, init)` must resolve to { ok, status }; it defaults to scripts/im-transport.mjs outside test mode, and under test mode the sink is null unless send is injected.
 // Errors carry only the HTTP status or "network error", never the URL, the key or the response body.
+import { fetchTransport } from '../../scripts/im-transport.mjs';
 import { buildNotifyRecord } from './outbox-notify.mjs';
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Under test, the real transport is never the default: a sink needs an injected send.
+const inTestContext = () => Boolean(process.env.NODE_TEST_CONTEXT || process.env.RT_TEST === '1');
 
-export function createWebhookSink({ env, send, sleep = defaultSleep, maxAttempts = 3, backoffMs = 1000 }) {
-  if (!env.RT_NOTIFY_WEBHOOK_URL) return null;
+export function createWebhookSink({ env, send = inTestContext() ? null : fetchTransport, sleep = defaultSleep, maxAttempts = 3, backoffMs = 1000 }) {
+  if (!env.RT_NOTIFY_WEBHOOK_URL || !send) return null;
   return {
     async deliver(item) {
       const body = JSON.stringify(buildNotifyRecord(item, new Date().toISOString()));

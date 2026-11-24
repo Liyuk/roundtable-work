@@ -207,7 +207,8 @@ export async function runGateExecution(input = {}) {
     const parsed = {};
     for (const ref of REFS) {
       const destination = join(evidenceDir, `${ref}.jsonl`);
-      const env = { NODE_OPTIONS: `--test-reporter=${reporter} --test-reporter-destination=${destination}` };
+      // Blanking the webhook URL and key keeps gate runs from posting to the notify endpoint, whatever the base environment holds.
+      const env = { NODE_OPTIONS: `--test-reporter=${reporter} --test-reporter-destination=${destination}`, RT_NOTIFY_WEBHOOK_URL: '', RT_NOTIFY_WEBHOOK_KEY: '' };
       for (const step of steps.steps) {
         const result = await sandbox.run({ ref, command: step.command, args: step.args, env, timeoutMs });
         if (result?.timedOut || result?.signal) {
