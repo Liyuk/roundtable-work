@@ -1109,7 +1109,7 @@ wait_release(){ # Chief DECISION `wait`: line 3 `unblock_at <ISO time>` (default
 }
 
 # ---- main wake loop -----------------------------------------------------------------------
-used=0; noprog=0; dec=""; run_loop=1
+used=0; noprog=0; dec=""; run_loop=1; fix=0; bad=""
 if [ -f "$SD/chief-stage" ]; then   # a killed worker was inside chief wake N: re-run wake N without spending budget
   read -r _ wake used <"$SD/chief-stage"; wake=$((wake-1)); extra=1; log "resuming interrupted chief wake $((wake+1))"
 fi
@@ -1147,19 +1147,26 @@ while [ "$run_loop" = 1 ]; do
     used=$((used+1))
   fi
   extra=0; wake=$((wake+1))
-  before=$(fp); rm -f "$SD/DECISION"; echo "chief $wake $used" >"$SD/chief-stage"
+  before=$(fp); [ "$fix" = 1 ] || rm -f "$SD/DECISION"; echo "chief $wake $used" >"$SD/chief-stage"
   setstatus "$n" running "$wake" "chief wake $wake (budget $used/$MAXWAKE)"
   clog="$RT_HOME/logs/chief/$n-wake$wake-$(date +%Y%m%d-%H%M%S).log"
   prompt=$(render "$(pick chief-prompt.md)")
+  [ "$fix" = 1 ] && prompt="The first line of DECISION was \`$bad\`, which is not valid. Rewrite DECISION so line 1 is exactly one of \`continue wait ask done stop decompose out-of-scope\`, then the reason from line 2.
+
+$prompt"
   log "wake $wake start log=$clog"
   t0=$(date +%s)
   (printf "%s" "$prompt" | "$RT_HOME/bin/rt-stage-run" chief "$CHIEF_TMO" "$clog" "$AGENT" chief "$WT" "$clog" --session-dir "$RT_HOME/sessions/$n" 2>>"$clog.agent")
   rc=$?; rm -f "$SD/chief-stage"
   limit_hit "$t0" && limit_exit "Chief wake $wake"
-  dec=$(head -1 "$SD/DECISION" 2>/dev/null | tr 'A-Z' 'a-z' | sed 's/^decision[[:space:]=]*//' | tr -dc 'a-z-')
+  dec=$("$RT_HOME/bin/rt-decision-parse" "$SD/DECISION" 2>/dev/null)
   why=$(sed -n 2p "$SD/DECISION" 2>/dev/null | cut -c1-200)
   after=$(fp)
   log "wake $wake end rc=$rc decision=${dec:-none} why=${why}"
+  if [ -z "$dec" ] && [ -s "$SD/DECISION" ] && [ "$fix" = 0 ]; then   # unrecognised first line: one corrective wake in the same session, not counted
+    bad=$(head -1 "$SD/DECISION"); fix=1; extra=1; continue
+  fi
+  fix=0
   apply_triage_labels
   if [ "$before" = "$after" ]; then noprog=$((noprog+1)); else noprog=0; fi
   if [ -f "$SD/SUPERVISOR.md" ] && [ -n "$dec" ]; then   # consumed once; the Chief records what matters in its checkpoint
