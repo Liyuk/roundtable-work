@@ -359,6 +359,19 @@ class Sched:
                 json.dump(d, f, sort_keys=True)
             os.replace(p + ".tmp", p)
 
+    def count_sweep_requeue(self, n):
+        """The resume sweep's own requeue count; reset_counters leaves it alone, so the sweep requeues an issue at most once."""
+        if self.dry:
+            return
+        p = os.path.join(self.state, "issues", "%d.json" % n)
+        with open(p + ".lock", "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            d = self.issue_state(n)
+            d["sweep_requeue_n"] = d.get("sweep_requeue_n", 0) + 1
+            with open(p + ".tmp", "w") as f:
+                json.dump(d, f, sort_keys=True)
+            os.replace(p + ".tmp", p)
+
     def gates_ok(self, n, head):
         try:
             g = json.load(open(os.path.join(RT_HOME, "wt", str(n), ".roundtable", "state", "gates.json")))
@@ -611,7 +624,10 @@ class Sched:
                  "--json", "number,title,body,labels,createdAt"])]
             allst = {i["number"]: i["state"] for i in self.gh_read(
                 ["issue", "list", "-R", self.repo, "--state", "all", "-L", "500", "--json", "number,state"])}
-            merged = {p["number"] for p in self.gh_read(["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number"])}
+            merged_prs = self.gh_read(["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number,headRefName,body"])
+            merged = {p["number"] for p in merged_prs}
+            closed_prs = [p for p in self.gh_read(["pr", "list", "-R", self.repo, "--state", "closed", "-L", "500", "--json", "number,headRefName,body"])
+                          if p["number"] not in merged]
             prs = self.gh_read(["pr", "list", "-R", self.repo, "--state", "open", "-L", "200",
                                 "--json", "number,headRefName,baseRefName,headRefOid,labels,isDraft,title,comments"])
         except Exception as e:
@@ -699,10 +715,7 @@ class Sched:
             st = status.get(n)
             if not st or st["state"] not in TERMINAL:
                 continue
-            skip = {"rt:owner", "rt:running", "rt:ask", "rt:ready-to-merge", "rt:hold", "rt:deferred"}
-            if "rt:blocked" in i["names"]:
-                skip.discard("rt:ready-to-merge")  # blocked wins: a stale ready-to-merge must not swallow the owner's resume
-            if i["names"] & skip:
+            if i["names"] & {"rt:owner", "rt:running", "rt:ask", "rt:deferred"}:
                 continue
             try:
                 cm = self.comments(n)
@@ -717,12 +730,47 @@ class Sched:
                 self.log("#%d: owner comment newer than terminal status '%s', re-opening" % (n, st["state"]))
                 self.write_supervisor(n, newest["body"])
                 self.reset_counters(n)
-                if "rt:blocked" in i["names"] and self.rm_label(n, "rt:blocked"):
-                    i["names"].discard("rt:blocked")
-                    if "rt:ready-to-merge" in i["names"] and self.rm_label(n, "rt:ready-to-merge"):
-                        i["names"].discard("rt:ready-to-merge")
+                for l in ("rt:blocked", "rt:ready-to-merge", "rt:hold"):   # intake's EXCLUDE_LABELS would otherwise block the re-queue
+                    if l in i["names"] and self.rm_label(n, l):
+                        i["names"].discard(l)
                 self.set_status(n, "queued", 0, "re-opened by owner comment")
                 status[n] = {"state": "queued", "wake": "0", "ts": time.strftime("%F %T"), "detail": "reopen"}
+
+        # 2e. open issues left terminal or failed with no marker label and no open PR: a ready-to-merge issue whose PR is gone is
+        # closed (merged without Closes) or requeued (PR closed unmerged); an internal cause (killed by a signal) is requeued once, else parked
+        for i in issues:
+            n, names = i["number"], i["names"]
+            if prs_of(n):
+                continue
+            if "rt:ready-to-merge" in names:
+                mine = [p for p in merged_prs if re.match(r"^rt/%d-" % n, p["headRefName"])]
+                if mine:
+                    p = max(mine, key=lambda x: x["number"])
+                    if not re.search(r"Closes #%d\b" % n, p.get("body") or ""):
+                        self.log("#%d: PR #%d merged without Closes, closing" % (n, p["number"]))
+                        if self.gh_write(["issue", "close", str(n), "-R", self.repo], "close #%d" % n):
+                            self.rm_label(n, "rt:ready-to-merge")
+                            self.set_status(n, "done", 0, "merged without Closes; closed by sweep")
+                    continue
+                closed = [p for p in closed_prs if re.match(r"^rt/%d-" % n, p["headRefName"])]
+                if closed and self.rm_label(n, "rt:ready-to-merge"):
+                    self.log("#%d: PR #%d closed unmerged, requeueing" % (n, closed[0]["number"]))
+                    self.set_status(n, "queued", 0, "PR closed unmerged; requeued by sweep")
+                    status[n] = {"state": "queued", "wake": "0", "ts": time.strftime("%F %T"), "detail": "PR closed unmerged"}
+                continue
+            st = status.get(n) or {}
+            if st.get("state") not in ("error", "stop", "done") or names & {"rt:blocked", "rt:ask", "rt:hold", "rt:deferred", "rt:running", "rt:merged"}:
+                continue
+            detail = "%s: %s" % (st["state"], st.get("detail", ""))
+            if "rc=-" in detail and not self.issue_state(n).get("sweep_requeue_n"):
+                self.log("#%d: last run ended with %s, requeueing once" % (n, detail))
+                self.count_sweep_requeue(n)
+                self.set_status(n, "queued", 0, "requeued by the sweep after %s" % detail)
+                status[n] = {"state": "queued", "wake": "0", "ts": time.strftime("%F %T"), "detail": "requeued by the sweep"}
+            else:
+                self.log("#%d: parking with rt:blocked, last run ended with %s" % (n, detail))
+                self.comment(n, "<!-- rt:blocked -->\nParked: the last run ended with `%s`. Reply in this issue to resume." % detail)
+                self.add_label(n, "rt:blocked")
 
         # 3. intake
         self.resume_waits(status)
