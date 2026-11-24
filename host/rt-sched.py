@@ -29,6 +29,7 @@ BRIDGE = os.path.join(HERE, "outbox-bridge.mjs")
 TIMER_CLI = os.path.join(HERE, "bin", "rt-timers.mjs")
 
 TERMINAL = {"done", "stop", "error", "out-of-scope"}
+BACKOFF_MIN = (15, 60, 240)   # minutes before the 1st / 2nd / 3rd retry of a crashed worker; the 4th crash blocks (#647)
 EXCLUDE_LABELS = ["rt:owner", "rt:running", "rt:ask", "rt:ready-to-merge", "rt:blocked", "rt:hold", "rt:merged", "rt:deferred"]
 MARKER_ANY = "<!-- rt:"
 MARKER_ASK = "<!-- rt:ask -->"
@@ -238,7 +239,6 @@ class Sched:
         self.status_path = os.path.join(RT_HOME, "status.tsv")
         self.procs = {}        # n -> {proc, slot, started, series}
         self.prev_active = {}  # n -> info, for detecting adopted workers that finished
-        self.fail_count = {}   # n -> consecutive crashed worker runs
         self.stop_flag = False
         self._last_cycle_wall = None
         self._resume_hold_until = 0.0
@@ -343,21 +343,24 @@ class Sched:
         except (OSError, ValueError):
             return {}
 
-    def reset_counters(self, n):
-        """Owner acted on the issue: give it fresh decider / fix / review budgets."""
+    def issue_set(self, n, **kv):
+        """Merge kv into state/issues/<n>.json (flock + rename, same file as rt-state)."""
         if self.dry:
-            self.log("DRY would reset counters of #%d" % n)
+            self.log("DRY would set %s of #%d" % (", ".join(sorted(kv)), n))
             return
         p = os.path.join(self.state, "issues", "%d.json" % n)
         with open(p + ".lock", "w") as lk:
             fcntl.flock(lk, fcntl.LOCK_EX)
             d = self.issue_state(n)
-            for k in ("decide_n", "fix_n", "review_n", "safety_n", "opus_fix_n", "opus_exploit_n"):
-                d[k] = 0
-            d["merge_hold"] = ""
+            d.update(kv)
             with open(p + ".tmp", "w") as f:
                 json.dump(d, f, sort_keys=True)
             os.replace(p + ".tmp", p)
+
+    def reset_counters(self, n):
+        """Owner acted on the issue: give it fresh decider / fix / review / crash / retry budgets."""
+        self.issue_set(n, merge_hold="", next_retry=0,
+                       **{k: 0 for k in ("decide_n", "fix_n", "review_n", "safety_n", "opus_fix_n", "opus_exploit_n", "fail_count", "retry_n")})
 
     def gates_ok(self, n, head):
         try:
@@ -425,11 +428,15 @@ class Sched:
             st = self.read_status().get(n, {})
             self.log("worker #%d exited rc=%s state=%s %s" % (n, rc, st.get("state", "-"), (st.get("detail", "") or "")[:120]))
             if rc != 0 and rc != 3:
-                self.fail_count[n] = self.fail_count.get(n, 0) + 1
+                k = self.issue_state(n).get("fail_count", 0) + 1
+                kv = {"fail_count": k}
+                if k <= len(BACKOFF_MIN):
+                    kv["next_retry"] = time.time() + BACKOFF_MIN[k - 1] * 60
+                self.issue_set(n, **kv)
                 if st.get("state") == "running":
                     self.set_status(n, "error", st.get("wake", 0), "worker exited rc=%s without a final state" % rc)
             elif rc == 0:
-                self.fail_count[n] = 0
+                self.issue_set(n, fail_count=0)
         act = self.active_workers()
         for n in list(self.prev_active):
             if n not in act and n not in self.procs and not self.prev_active[n].get("own"):
@@ -437,6 +444,22 @@ class Sched:
                 self.log("adopted worker #%d finished state=%s %s" % (n, st.get("state", "-"), (st.get("detail", "") or "")[:120]))
         self.prev_active = act
         return act
+
+    def crash_gate(self, n):
+        """Orphan (rt:running, no worker) or claimable issue: "block" after 4 crashes, "wait" inside the backoff, else "resume"."""
+        st = self.issue_state(n)
+        if st.get("fail_count", 0) > len(BACKOFF_MIN):
+            return "block"
+        return "wait" if time.time() < st.get("next_retry", 0) else "resume"
+
+    def give_up(self, n):
+        """The 4th crash in a row: alert the owner and block with the internal:crash reason."""
+        self.log("#%d: worker crashed %d times in a row, giving up: rt:blocked (internal:crash)" % (n, self.issue_state(n).get("fail_count", 0)))
+        self.comment(n, "<!-- rt:blocked -->\nBlocked (internal:crash): the worker for this issue crashed repeatedly. "
+                        "See the worker logs on the host. Reply in this issue to resume.")
+        self.add_label(n, "rt:blocked")
+        self.rm_label(n, "rt:running")
+        self.set_status(n, "stop", 0, "blocked (internal:crash): worker crashed repeatedly")
 
     def spawn(self, n, slot, base, title, extra=()):
         ts = time.strftime("%Y%m%d-%H%M%S")
@@ -752,6 +775,8 @@ class Sched:
                 why.append("open PR %s (delivered, waiting for owner)" % ", ".join("#%d %s" % (p["number"], p["headRefName"]) for p in op))
             if st and st["state"] in TERMINAL:
                 why.append("status %s (terminal; owner comment re-opens)" % st["state"])
+            if self.crash_gate(n) == "wait":
+                why.append("internal retry backoff (next retry %s)" % self.issue_state(n).get("next_retry"))
             # dependencies / stacking
             deps = parse_deps(i["body"])
             deps = [d for d in deps if d != n]
@@ -817,14 +842,12 @@ class Sched:
             n = i["number"]
             if "rt:running" not in i["names"] or n in act:
                 continue
-            if self.fail_count.get(n, 0) >= 3:
-                self.log("#%d: worker crashed %d times in a row, giving up: rt:blocked" % (n, self.fail_count[n]))
-                self.comment(n, "<!-- rt:blocked -->\nBlocked: the worker for this issue crashed repeatedly. See the worker logs on the host. "
-                                "Reply in this issue to resume.")
-                self.add_label(n, "rt:blocked")
-                self.rm_label(n, "rt:running")
-                self.set_status(n, "stop", 0, "worker crashed repeatedly")
-                self.fail_count[n] = 0
+            g = self.crash_gate(n)
+            if g == "block":
+                self.give_up(n)
+                continue
+            if g == "wait":
+                self.log("#%d: worker crashed; retry after its backoff (%s)" % (n, self.issue_state(n).get("next_retry")))
                 continue
             k = free_slot()
             if k is None:
