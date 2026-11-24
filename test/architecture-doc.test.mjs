@@ -64,9 +64,17 @@ test('module-status block is valid and its code paths exist', () => {
 test('runtime paths named in the doc exist', () => {
   const paths = new Set([...doc.matchAll(/`((?:runtime|bin|scripts|deploy)\/[\w./-]+\.(?:mjs|json|service))`/g)].map((m) => m[1]));
   // Files that this document names as future work.
-  const planned = new Set(['runtime/defaults/autonomy.json', 'scripts/cutover-check.mjs']);
+  const planned = new Set(['scripts/cutover-check.mjs']);
   for (const path of paths) {
     if (planned.has(path)) continue;
     assert.ok(existsSync(join(root, path)), path);
+  }
+});
+
+test('the docs that point at the catalog or the site name the reference and freshness checks', () => {
+  for (const file of ['docs/architecture.md', 'docs/pages-demo/deployment.md']) {
+    const text = readFileSync(join(root, file), 'utf8');
+    assert.match(text, /check:architecture-refs/, `${file}: reference check`);
+    assert.match(text, /build:site -- --check/, `${file}: freshness check`);
   }
 });

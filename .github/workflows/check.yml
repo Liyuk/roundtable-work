@@ -4,6 +4,7 @@ on:
   pull_request:
 permissions:
   contents: read
+  issues: read
 jobs:
   check:
     strategy:
@@ -22,3 +23,11 @@ jobs:
         if: runner.os == 'macOS'
         run: test ! -e /proc
       - run: npm test
+      # Every code path and issue named in docs/architecture.md must exist. Uses only the job's own read-only GITHUB_TOKEN.
+      - name: Check architecture references
+        run: npm run check:architecture-refs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      # The committed site/ must equal a fresh build of docs/architecture.md, and only the allowed files may be published.
+      - run: npm run build:site -- --check
+      - run: npm run validate:site
