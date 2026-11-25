@@ -40,7 +40,11 @@ export function ghWriter({ gh, repo, rtHome }) {
   };
   const ghRun = (args, input) => run(gh, args, input);
   return {
-    squashMerge: (pr, head, issue) => ghRun(['pr', 'merge', String(pr), '-R', repo, '--squash', '--match-head-commit', head, '--body', issue ? `Closes #${issue}` : '']),
+    // Returns the commit that landed on main (undefined when gh reports none).
+    squashMerge: (pr, head, issue) => {
+      ghRun(['pr', 'merge', String(pr), '-R', repo, '--squash', '--match-head-commit', head, '--body', issue ? `Closes #${issue}` : '']);
+      return JSON.parse(ghRun(['pr', 'view', String(pr), '-R', repo, '--json', 'mergeCommit'])).mergeCommit?.oid;
+    },
     // Reverts through the existing mechanism (bin/rt-revert reads state/merges.log under RT_HOME).
     revertMerge: (mergeSha) => run(join(rtHome, 'bin', 'rt-revert'), [mergeSha], undefined, { ...process.env, RT_HOME: rtHome }),
     addLabel: (issue, label) => ghRun(['issue', 'edit', String(issue), '-R', repo, '--add-label', label]),
@@ -60,8 +64,8 @@ export function hostProvider(writer, im) {
     deliver(item) {
       if (item.kind === 'merge') {
         const { op, pr, head, mergeSha } = item.payload;
-        if (op === 'squash') writer.squashMerge(pr, head, item.issue);
-        else writer.revertMerge(mergeSha);
+        if (op === 'squash') return { ok: true, mergeSha: writer.squashMerge(pr, head, item.issue) };
+        writer.revertMerge(mergeSha);
         return { ok: true };
       }
       if (item.kind === 'label' && item.payload.op === 'rm') {
@@ -104,8 +108,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.stderr.write(`REFUSE[tier]: ${refusal}\n`);
         process.exitCode = 2;
       } else {
-        const delivered = await submit({ root, writer, item: mergeItem(cause) });
-        if (delivered && cause.issue) await submit({ root, writer, item: mergedNotice(cause) });
+        const merge = mergeItem(cause);
+        const delivered = await submit({ root, writer, item: merge });
+        // The notice names the commit the squash receipt reports; with no landed sha known, no notice is sent.
+        const mergeSha = openOutbox(root).receipts().get(merge.id)?.mergeSha;
+        if (delivered && cause.issue && mergeSha) await submit({ root, writer, item: mergedNotice({ ...cause, mergeSha }) });
         if (delivered) notifyEvent(root, { event: 'pr-merged', issue: cause.issue, key: cause.pr });
         if (delivered && cause.issue) notifyEvent(root, { event: 'issue-merged', issue: cause.issue, key: cause.issue });
         process.exitCode = delivered ? 0 : 1;
