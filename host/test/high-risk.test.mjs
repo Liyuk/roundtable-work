@@ -47,6 +47,10 @@ test('high-risk classes (auth, network, secrets, external input, deployment) tri
   assert.match(trigger(t, { 'host/deploy/install.sh': 1 }), /deploy/);
 });
 
+test('a security token inside a longer word does not trigger Gate 2 (the trigger set matches whole tokens)', (t) => {
+  assert.equal(trigger(t, { 'src/tokenizer/lex.mjs': 1 }), '');
+});
+
 test('high blast radius (>400 changed lines) triggers Gate 2', (t) => {
   assert.match(trigger(t, { 'docs/big.md': 401 }), /401 changed lines \(>400\)/);
   assert.equal(trigger(t, { 'docs/big.md': 400 }), '');

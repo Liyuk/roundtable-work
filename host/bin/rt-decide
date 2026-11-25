@@ -44,7 +44,7 @@ start=""
 i=1
 while [ "$i" -le "$attempts" ]; do
   : >"$log"
-  ( printf "%s" "$prompt" | "$RT_HOME/bin/rt-stage-run" decider "$TMO" "$log.agent" "$RT_HOME/bin/rt-agent" decider "$wt" "$log" 2>>"$log.agent" )
+  ( printf "%s" "$prompt" | "$RT_HOME/bin/rt-stage-run" decider "$TMO" "$log.agent" "$RT_HOME/bin/rt-agent" verifier "$wt" "$log" 2>>"$log.agent" )
   rc=$?
   start=$(grep -n -m1 -E '^DECIDE: *(resolve|ask-owner|stop) *$' "$log" | cut -d: -f1)
   if [ -n "$start" ]; then

@@ -7,7 +7,7 @@ wt="$1"; base="$2"; title="${3:-}"
 mb=$(git -C "$wt" merge-base "$base" HEAD) || exit 0
 files=$(git -C "$wt" diff --name-only "$mb"...HEAD)
 if grep -qE '^(scripts/|\.github/|runtime/|\.agents/skills/|profiles/)|(^|/)templates/' <<<"$files"; then echo "touches scripts/.github/runtime/skills/profiles/templates"; exit 0; fi
-hit=$(grep -oiE 'auth|secret|credential|token|deploy|network|proxy|webhook|intake' <<<"$files" | head -1)
+hit=$(node "$(dirname "$0")/rt-policy.mjs" security <<<"$files")   # security trigger set (runtime/lib/security-triggers.mjs): whole path tokens
 if [ -n "$hit" ]; then echo "high-risk path: $hit"; exit 0; fi
 lines=$(git -C "$wt" diff --numstat "$mb"...HEAD | awk '$1!="-"{s+=$1+$2} END{print s+0}')
 if [ "$lines" -gt 400 ]; then echo "$lines changed lines (>400)"; exit 0; fi

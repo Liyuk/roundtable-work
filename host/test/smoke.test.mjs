@@ -25,8 +25,11 @@ case "\${@: -1}" in *review*) printf 'Verdict: pass\\nno findings\\n';; *) print
 const readLines = (p) => (existsSync(p) ? readFileSync(p, 'utf8').split('\n').filter(Boolean) : []);
 
 function sandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'rt-smoke-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const base = mkdtempSync(join(tmpdir(), 'rt-smoke-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, 'host');   // runtime/ sits beside it, as in the repo (bin/rt-policy.mjs imports runtime/lib)
+  mkdirSync(root);
+  cpSync(join(hostDir, '..', 'runtime'), join(base, 'runtime'), { recursive: true });
   for (const name of readdirSync(hostDir)) {
     if (!SKIP.has(name)) cpSync(join(hostDir, name), join(root, name), { recursive: true });
   }
