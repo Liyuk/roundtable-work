@@ -75,13 +75,13 @@ export function hostProvider(writer, im) {
 
 // Enqueue one item, then deliver it unless it already has a receipt or was dead-lettered. Returns whether it has a receipt.
 // After the provider delivers a notification, the webhook sink posts it too; a webhook failure is logged and keeps the receipt.
-export async function submit({ root, writer, item, send = fetchTransport, env = process.env }) {
+export async function submit({ root, writer, item, send, env = process.env }) {
   const outbox = openOutbox(root);
   outbox.enqueue(item);
   if (outbox.pending().every((i) => i.id !== item.id)) return outbox.receipts().has(item.id);
   let receipt;
   try {
-    receipt = await hostProvider(writer, loadImRouter({ root, send, env })).deliver({ ...item });
+    receipt = await hostProvider(writer, loadImRouter({ root, send: send ?? fetchTransport, env })).deliver({ ...item });
   } catch (error) {
     outbox.recordFailure(item.id, error.message, Date.now());
     outbox.markDead(item.id);

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 const root = await mkdtemp(join(tmpdir(), 'rt-test-'));
 const env = {
-  ...process.env,
+  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('RT_NOTIFY_WEBHOOK_'))),
   RTW_STATE_DIR: join(root, 'state'),
   XDG_STATE_HOME: join(root, 'xdg'),
   TMPDIR: root,

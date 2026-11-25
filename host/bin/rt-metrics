@@ -530,6 +530,7 @@ def parse_sched_log(path: Path) -> dict:
             "exits": [],
             "warn_gaps": [],
             "downtime": [],
+            "gh_read_fails": [],
             "poll": POLL_DEFAULT,
         }
     with path.open(encoding="utf-8", errors="replace") as f:
@@ -544,8 +545,11 @@ def parse_sched_log(path: Path) -> dict:
     warn_gaps = []  # (start, end, seconds, kind)
     spawns = []  # (dt, issue, slot)
     exits = []
+    gh_read_fails = []  # dt of each failed GitHub read (#652)
     poll = POLL_DEFAULT
     for dt, msg in events:
+        if msg.startswith("gh_read_fail "):
+            gh_read_fails.append(dt)
         sm = START_RE.search(msg)
         if sm:
             dry = sm.group(2) == "True"
@@ -595,6 +599,7 @@ def parse_sched_log(path: Path) -> dict:
         "exits": exits,
         "warn_gaps": warn_gaps,
         "downtime": downtime,
+        "gh_read_fails": gh_read_fails,
         "poll": poll,
     }
 
@@ -1175,6 +1180,7 @@ def compute(now: Optional[datetime] = None) -> list[dict]:
         day_freezes = [(a, b, s, k) for a, b, s, k in warn_only if overlap_seconds(a, b, lo, hi) > 0]
         freeze_n = len(day_freezes)
         freeze_min = sum(overlap_seconds(a, b, lo, hi) for a, b, s, k in day_freezes) / 60.0
+        gh_fail_n = sum(lo <= t < hi for t in sched["gh_read_fails"])
 
         # loop coverage: if no sched events overlap this day and no live start before hi, uptime 0
         first_live = sched["live_starts"][0]["ts"] if sched.get("live_starts") else None
@@ -1248,6 +1254,7 @@ def compute(now: Optional[datetime] = None) -> list[dict]:
             "stall_minutes": rround(stall_min, 1),
             "box_freeze_intervals_n": freeze_n,
             "box_freeze_minutes": rround(freeze_min, 1),
+            "gh_read_failures_n": gh_fail_n,
             "tokens_per_merged_pr": rround(tokens, 1) if tokens is not None else None,
             "tokens_note": usage_note if tokens is None else None,
             "worker_util_avg_busy_slots": rround(util, 3),

@@ -20,8 +20,8 @@ export function selectAdapter(name) {
   return ADAPTERS[name];
 }
 
-// Role sessions never receive a GitHub write token.
-export const childEnv = (env = process.env) => Object.fromEntries(Object.entries(env).filter(([k]) => !/^(GH|GITHUB)_/.test(k)));
+// Role sessions never receive a GitHub write token or the notify webhook settings.
+export const childEnv = (env = process.env) => Object.fromEntries(Object.entries(env).filter(([k]) => !/^(GH|GITHUB)_|^RT_NOTIFY_WEBHOOK_/.test(k)));
 
 /**
  * Returns `launch({ workspace, sessionId, resume, prompt, issue, role, model })` for startFrontChief; resolves to the exit code.
