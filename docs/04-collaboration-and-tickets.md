@@ -25,6 +25,8 @@ Status expresses "what is being waited on". The unified vocabulary for ticket st
 5. Output goes to independent review; when review sends it back, the original author still fixes it, and anything beyond the round limit or with major disagreement goes to the superior. The verdict records which version/HEAD it is based on, the execution evidence, and what was not done.
 6. After passing, deliver according to permissions and write the result back to the ticket and the sender; if code changes after review, the validity of the review must be re-judged.
 
+**Fix-then-retest is sequential by default.** After a fix, re-run the checks on the fixed head before accepting it; an earlier run on the old head is not evidence for the new one. Parallel acceptance (accepting while a re-check is still running) is used only when explicitly opted in for that ticket.
+
 A delegation allows different purposes such as work, consult, and notify: only work establishes delivery responsibility; a notification does not automatically confer authority. When cancelling, reclaiming, or reassigning, record the reason, the current state, and unconsumed inputs; make sure the original executor has stopped or its fence is invalidated, to avoid double writes.
 
 ## Direct Handoff and Multi-Level Reporting
