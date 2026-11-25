@@ -41,5 +41,9 @@ Session initialization loads: identity and stable rules, the current ticket and 
 | Fixer | Locating and fixing bugs | Taking ordinary features; taking over a PR whose author is still fixing it |
 | Reviewer | Reviewing, executing acceptance, giving verdicts | Treating self-reports as execution evidence |
 | Researcher | Research and sourced reports | Turning into development or external publishing without authorization |
+| Verifier | Running acceptance checks against a stated head and recording the evidence | Accepting on self-reported results; editing the work it verifies |
+| Security | Security review of changes that hit the trigger set | Publishing findings or exploit details outside the ticket without authorization |
+
+The standing role names and their legacy aliases are defined in [17 Model Routing](17-model-routing.md#roles-and-tiers).
 
 These are example roles; whether a deployment uses these names and models is configured by the operator. For the role implementation, see the [studio preset](../profiles/studio/README.md).
