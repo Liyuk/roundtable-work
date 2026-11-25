@@ -24,6 +24,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)   # drift.py lives beside this file (also when loaded by path, e.g. the tests)
+import drift   # host script drift vs origin/main (#653)
 RT_HOME = os.path.abspath(os.path.expanduser(os.environ.get("RT_HOME") or HERE))
 GH = os.environ.get("RT_GH_REAL", "/usr/bin/gh")
 GH_READ_TIMEOUT = 60   # s per gh read call (#652)
@@ -250,6 +252,7 @@ class Sched:
         self.gh_good = {}     # key -> (cycle no, last good read), see gh_read_cached
         self.last_sweep = {}   # n -> (head sha, time)
         self.aux = {}          # revert helpers: sha7 -> Popen
+        self.drift = []        # host scripts that differ from origin/main (#653)
         self.state = os.path.join(RT_HOME, "state")
         self.logs = os.path.join(RT_HOME, "logs")
         self.status_path = os.path.join(RT_HOME, "status.tsv")
@@ -930,6 +933,9 @@ class Sched:
             slots_used.add(k)
             active[n] = me
 
+        if not self.dry:
+            repo = os.environ.get("RT_REPO_DIR") or os.path.join(os.path.dirname(RT_HOME), "roundtable-work")
+            self.drift = drift.check(RT_HOME, repo, self.state, self.logs, time.time(), os.environ.get("RT_DRIFT_ALERT_CMD"))
         self.heartbeat(act if self.dry else self.active_workers())
 
     # ---- main CI health / auto-revert
@@ -1089,8 +1095,9 @@ class Sched:
             return
         ws = ",".join("%d:%d:%d" % (n, a["slot"], a["pid"]) for n, a in sorted(act.items()))
         now = time.time()
-        txt = "ts=%s\nepoch=%d\npid=%d\ndry=0\nslots=%d\nrunning=%d\nmain_red=%d\nworkers=%s\n" % (
-            time.strftime("%F %T %Z"), now, os.getpid(), self.workers_max, len(act), 1 if self.main_red else 0, ws)
+        txt = "ts=%s\nepoch=%d\npid=%d\ndry=0\nslots=%d\nrunning=%d\nmain_red=%d\nworkers=%s\ndrift=%s\n" % (
+            time.strftime("%F %T %Z"), now, os.getpid(), self.workers_max, len(act), 1 if self.main_red else 0, ws,
+            ",".join(self.drift))
         path = os.path.join(self.state, "heartbeat")
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
