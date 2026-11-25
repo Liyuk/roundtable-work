@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# rt-decision-parse <DECISION file>: prints the Chief verb from the first line, or nothing and exit 1 when unrecognised.
+# Accepts case, spaces, backticks/emphasis, an optional `decision` prefix, and text after a separator. A first line
+# `no-pr` means done: the file is rewritten so line 1 is `done` and line 2 starts with `no-pr`.
+f=$1
+l=$(head -1 "$f" 2>/dev/null | tr 'A-Z' 'a-z' | tr -d '`*_' | sed -E 's/^[[:space:]]*(decision)?[[:space:]]*[:=]?[[:space:]]*//')
+verb=""
+[[ $l =~ ^(continue|wait|ask|done|stop|decompose|out-of-scope)([^[:alnum:]-].*)?$ ]] && verb=${BASH_REMATCH[1]}
+if [[ $l =~ ^no-pr([^[:alnum:]-].*)?$ ]]; then
+  verb=done
+  l2=$(sed -n 2p "$f")
+  [[ $(printf '%s' "$l2" | tr 'A-Z' 'a-z') == no-pr* ]] || l2="no-pr $l2"
+  { printf 'done\n%s\n' "$l2"; sed -n '3,$p' "$f"; } >"$f.tmp" && mv "$f.tmp" "$f"
+fi
+[ -n "$verb" ] || exit 1
+echo "$verb"
