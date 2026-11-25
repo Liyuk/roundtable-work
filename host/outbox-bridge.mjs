@@ -5,7 +5,6 @@
 //   node host/outbox-bridge.mjs <root> <repo> label <issue> add|rm <label>
 //   node host/outbox-bridge.mjs <root> <repo> merge <issue|""> <pr> <head> <highRisk 0|1>     (tier-gated squash; then the done-pending-confirmation notice)
 //   node host/outbox-bridge.mjs <root> <repo> rollback <issue|""> <pr> <head> <mergeSha>   (runs bin/rt-revert)
-//   node host/outbox-bridge.mjs <root> <repo> stall-cycle   (snapshot JSON on stdin; stall-alert notices through submit, #668)
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -15,7 +14,6 @@ import { createGitHubOutboxProvider } from '../runtime/lib/outbox-github.mjs';
 import { openOutbox } from '../runtime/lib/outbox.mjs';
 import { mergeItem, mergedNotice, requestRollback, rollbackItem } from '../runtime/lib/merge-outbox.mjs';
 import { hostMergeRefusal } from '../runtime/lib/merge-tier.mjs';
-import { runLoopStallCycle } from '../runtime/lib/loop-stall-cycle.mjs';
 import { notifyEvent } from '../runtime/lib/watch-rules.mjs';
 import { loadImRouter, withIm } from '../runtime/lib/outbox-im.mjs';
 import { createWebhookSink } from '../runtime/lib/outbox-webhook.mjs';
@@ -99,19 +97,10 @@ export async function submit({ root, writer, item, send, env = process.env }) {
   return true;
 }
 
-// Self-judgment (#668): loop-stall observes the scheduler's snapshot; each stall-alert firing is delivered through submit (same ledger key).
-export async function stallCycle({ root, writer, snapshot, send, env = process.env }) {
-  const { firings } = runLoopStallCycle({ root, snapshot, config: {} });
-  for (const f of firings) await submit({ root, writer, item: { ...f.item, payload: { ...f.item.payload, of: `${f.kind} #${f.root} (${f.class})` } }, send, env });
-  return firings.length;
-}
-
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [root, repo, op, issue, a, b, c] = process.argv.slice(2);
   const writer = ghWriter({ gh: process.env.RT_GH_REAL || '/usr/bin/gh', repo, rtHome: root });
-  if (op === 'stall-cycle') {
-    await stallCycle({ root, writer, snapshot: JSON.parse(readFileSync(0, 'utf8')) });
-  } else if (op === 'merge' || op === 'rollback') {
+  if (op === 'merge' || op === 'rollback') {
     const cause = { issue: Number(issue) || null, pr: Number(a), head: b, mergeSha: c };
     if (op === 'merge') {
       const refusal = await hostMergeRefusal({ readLive: () => writer.pullRequest(cause.pr), evidence: { highRisk: c === '1' }, revertOf: b.startsWith('rt/revert-') ? b : undefined });
