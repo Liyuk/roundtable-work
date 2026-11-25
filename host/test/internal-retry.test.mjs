@@ -91,7 +91,7 @@ function setup(t, { seq = {}, wakes = {}, env = {} }) {
   const wt = join(home, 'wt', N);
   const run = (args = []) => spawnSync('bash', [join(home, 'rt-work.sh'), N, ...args], {
     encoding: 'utf8', timeout: 120_000,
-    env: { ...process.env, ...env, RT_HOME: home, RT_REPO_DIR: repo, RT_GH_REAL: join(fake, 'gh'), FAKE: fake, FAKE_WT: wt, WT: wt,
+    env: { ...process.env, RT_XCHECK_MODEL: 'stub-xcheck', ...env, RT_HOME: home, RT_REPO_DIR: repo, RT_GH_REAL: join(fake, 'gh'), FAKE: fake, FAKE_WT: wt, WT: wt,
       FAKE_BRIDGE_LOG: join(fake, 'bridge.log'), RT_WAIT_SLEEP: '1' },
   });
   const bridge = () => (existsSync(join(fake, 'bridge.log')) ? readFileSync(join(fake, 'bridge.log'), 'utf8') : '');
