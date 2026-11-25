@@ -19,13 +19,13 @@ case "$1 $2" in
   "issue list") case "$*" in *"--state all"*) echo "$ALL_ISSUES";; *) echo "$OPEN_ISSUES";; esac;;
   "issue view") echo "$COMMENTS";;
   "issue comment") cat >> "$FAKE_GH_LOG";;
-  "pr list") case "$*" in *"--state merged"*) echo "$MERGED_PRS";; *"--state closed"*) echo "$CLOSED_PRS";; *) echo "$OPEN_PRS";; esac;;
+  "pr list") case "$*" in *"--state merged"*) echo "$MERGED_PRS";; *"--state closed"*) echo "$CLOSED_PRS";; *) [ -n "$OPEN_PRS_FAIL" ] && { echo "boom" >&2; exit 1; }; echo "$OPEN_PRS";; esac;;
   "run list") echo '[]';;
 esac
 `;
 
 // Writes the status rows and per-issue state, then runs one live Sched cycle (RT_WORKERS=0: nothing is claimed).
-function cycle(t, home, { status = {}, state = {}, issues = [], comments = [], openPrs = [], mergedPrs = [], closedPrs = [] }) {
+function cycle(t, home, { status = {}, state = {}, issues = [], comments = [], openPrs = [], mergedPrs = [], closedPrs = [], openPrsFail = false }) {
   if (!home) {
     home = mkdtempSync(join(tmpdir(), 'rt-sweeps-'));
     t.after(() => rmSync(home, { recursive: true, force: true }));
@@ -43,6 +43,7 @@ function cycle(t, home, { status = {}, state = {}, issues = [], comments = [], o
     RT_HOME: home, RT_GH_REAL: fakegh, FAKE_GH_LOG: gh, PYTHONDONTWRITEBYTECODE: '1',
     ALL_ISSUES: '[]', OPEN_ISSUES: JSON.stringify(issues), COMMENTS: JSON.stringify({ comments }),
     MERGED_PRS: JSON.stringify(mergedPrs), CLOSED_PRS: JSON.stringify(closedPrs), OPEN_PRS: JSON.stringify(openPrs),
+    OPEN_PRS_FAIL: openPrsFail ? '1' : '',
   };
   const py = `import importlib.util, sys
 spec = importlib.util.spec_from_file_location("rt_sched", sys.argv[1])
@@ -99,4 +100,16 @@ test('a ready-to-merge issue whose PR was closed unmerged is requeued (#650 case
   assert.equal(status[4].state, 'queued');
   assert.match(gh, /issue edit 4 .*--remove-label rt:ready-to-merge/);
   assert.doesNotMatch(gh, /issue close 4 /);
+});
+
+test('a failed open-PR read does not close a merged-without-Closes issue (#650 case 5)', (t) => {
+  const { status, gh } = cycle(t, null, {
+    issues: [issue(7, ['rt:ready-to-merge'])],
+    status: { 7: ['done', 'merged'] },
+    mergedPrs: [{ number: 70, headRefName: 'rt/7-pi', body: 'no closing keyword' }],
+    openPrsFail: true,
+  });
+  assert.doesNotMatch(gh, /issue close 7 /);
+  assert.equal(status[7].state, 'done');
+  assert.equal(status[7].detail, 'merged');
 });
