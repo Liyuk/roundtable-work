@@ -113,3 +113,16 @@ test('a fired stale-wait key is not returned again on replay', () => {
   assert.equal(first.state.fired.length, 1);
   assert.deepEqual(observeCycle({ state: first.state, snapshot, config: {} }).firings, []);
 });
+
+test('a stale-wait episode that crosses UTC midnight fires once per 24 h of effective wait, not per date', () => {
+  const since = Date.UTC(2026, 10, 25, 18);
+  const blocked = (at) => snap({ at, issues: [issue(80, { labels: ['rt:blocked'], since })] });
+  const atTwentyThree = blocked(Date.UTC(2026, 10, 25, 23));
+  const nextMorning = blocked(Date.UTC(2026, 10, 26, 1, 30));
+  const dayTwo = blocked(since + 24 * HOUR);
+  const { firings } = run([atTwentyThree, nextMorning, dayTwo]);
+  assert.deepEqual(firings.map((f) => f.key), [
+    `notice:stall:stale-wait:80:${since}:0`,
+    `notice:stall:stale-wait:80:${since}:1`,
+  ]);
+});

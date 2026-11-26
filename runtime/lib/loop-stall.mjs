@@ -6,6 +6,7 @@
 import { buildNotifyRecord } from './outbox-notify.mjs';
 
 const HOUR_MS = 3600000;
+const DAY_MS = 24 * HOUR_MS;
 
 export function initialState() {
   return { idleCycles: 0, fired: [] };
@@ -24,7 +25,8 @@ export function observeCycle({ state, snapshot, config = {} }) {
   }
   for (const issue of snapshot.issues) {
     const stale = issue.state === 'OPEN' && (issue.labels.includes('rt:blocked') || (issue.labels.includes('rt:ready-to-merge') && !issue.hasOpenPr));
-    if (stale && effectiveAge(issue.since, snapshot) > staleHours * HOUR_MS) candidates.push(firing('stale-wait', issue.number, issue.labels.includes('rt:blocked') ? 'rt:blocked' : 'rt:ready-to-merge', snapshot.at));
+    const age = effectiveAge(issue.since, snapshot);
+    if (stale && age > staleHours * HOUR_MS) candidates.push(firing('stale-wait', issue.number, issue.labels.includes('rt:blocked') ? 'rt:blocked' : 'rt:ready-to-merge', snapshot.at, `${issue.since}:${Math.floor(age / DAY_MS)}`));
   }
 
   const fresh = candidates.filter((candidate) => !state.fired.includes(candidate.key));
@@ -61,10 +63,11 @@ function effectiveAge(since, { at, freezes = [] }) {
   return at - since - frozen;
 }
 
-function firing(kind, root, cls, at) {
+// idle-backlog keys by UTC date; stale-wait passes `<since>:<24h index>` so one wait episode keys once per 24 h of effective wait.
+function firing(kind, root, cls, at, suffix = new Date(at).toISOString().slice(0, 10)) {
   const action = cls === 'verified-complete-leaf' ? 'auto-close' : 'escalate';
   const ts = new Date(at).toISOString();
-  const key = `notice:stall:${kind}:${root}:${ts.slice(0, 10)}`;
+  const key = `notice:stall:${kind}:${root}:${suffix}`;
   const item = { id: key, kind: 'notification', issue: root, payload: { subtype: 'stall-alert', kind, class: cls, action } };
   return { kind, root, class: cls, action, key, ledger: `${ts}\t${kind}\t${root}\t${cls}\t${action}\t${key}\n`, item, record: buildNotifyRecord(item, ts) };
 }
