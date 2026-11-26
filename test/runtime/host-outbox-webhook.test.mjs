@@ -9,7 +9,7 @@ import { openOutbox } from '../../runtime/lib/outbox.mjs';
 
 const KEY = 'host-key-643-xyz';
 const URL_ = 'https://hook.example.test/in';
-const cause = { issue: 286, pr: 7, head: 'abc123' };
+const cause = { issue: 286, pr: 7, head: 'abc123', mergeSha: '9dd3481' };
 
 const writer = () => ({
   squashMerge() {},
