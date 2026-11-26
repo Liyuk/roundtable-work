@@ -2,7 +2,7 @@
 # rt-delegate <role> <card-file> [workdir]
 # Starts ONE independent agent session (separate process, never the Chief's session) as a Roundtable executor,
 # through bin/rt-agent (harness from RT_HARNESS: codex|pi; model per role from config.env).
-# role: developer|fixer|reviewer|researcher. Prints the executor's final reply (delivery card).
+# role: any standing role (developer|fixer|reviewer|researcher|verifier|security|chief) or a legacy alias (bin/rt-policy.mjs maps it). Prints the executor's final reply (delivery card).
 # Gate 1 first-line contract (case-insensitive): Verdict: pass | reject | block
 # Legacy first line still accepted by the parser: 审查结论：通过 | 打回 | 阻塞
 set -uo pipefail
@@ -31,7 +31,7 @@ if [ "${1:-}" = --parse-verdict ]; then
 fi
 
 role="${1:?role}"; card="${2:?card file}"; wd="${3:-$PWD}"
-case "$role" in developer|fixer|reviewer|researcher) ;; *) echo "rt-delegate: bad role $role" >&2; exit 2;; esac
+role=$(node "$RT_HOME/bin/rt-policy.mjs" role "$role" 2>/dev/null) || { echo "rt-delegate: bad role $1" >&2; exit 2; }
 [ -f "$card" ] || { echo "rt-delegate: card not found: $card" >&2; exit 2; }
 set -a; . "$RT_HOME/config.env"; set +a   # single source of truth for harness + models
 AGENT="$RT_HOME/bin/rt-agent"
@@ -66,10 +66,11 @@ Working method: before you start, read $SK/tdd/SKILL.md and $SK/implement/SKILL.
 Working method: before you start, read $SK/diagnosing-bugs/SKILL.md, and follow that diagnosis loop: reproduce, find the root cause, then make the smallest fix and add a regression test. If that conflicts with the assignment card, the assignment card wins.";;
 esac
 tree_before=""; [ "$role" = reviewer ] && tree_before=$("$RT_HOME/bin/rt-tree" "$wd" 2>/dev/null)
+roles_sys=(--system "$skill/prompts/shared.md"); [ -f "$skill/prompts/roles/$role.md" ] && roles_sys+=(--system "$skill/prompts/roles/$role.md")
 printf '%s' "You are the $role of Roundtable Work (executor mode, independent session), not the Chief. Do not dispatch further work, and do not git commit / push / open a PR. Workspace: $wd. Complete the work from the assignment card below, and in your final reply output only the delivery card (for a reviewer, the first line must be Verdict: pass or Verdict: reject or Verdict: block).$focus
 
 $(cat "$card")" | timeout --kill-after=30 "$TMO" "$AGENT" "$role" "$wd" "$log" \
-    --system "$skill/prompts/shared.md" --system "$skill/prompts/roles/$role.md" 2>>"$log.agent"
+    "${roles_sys[@]}" 2>>"$log.agent"
 rc=$?
 echo "[rt-delegate] exit=$rc" >>"$log"
 if [ "$role" = reviewer ]; then

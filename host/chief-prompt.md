@@ -42,6 +42,7 @@ Write `.roundtable/state/DECISION`. Line 1 is exactly one word from this list:
 - `continue`: there is work within authorization that can move forward now. Line 2 gives the reason.
 - `wait`: an executor or an external check is still running. Line 2 gives the reason. Line 3 is `unblock_at <ISO-8601 time>` for when to wake again.
 - `ask`: a human decision is needed. Line 2 is the category: `credentials`, `destructive`, `scope`, or `direction`. Line 3 onward is one concrete question, with your recommended option and the cost of each option.
+   For a `direction` ask you may add two lines after the question: `options: A | B` and `recommendation: <one of the options>`. With both, the host may resolve it by policy. A `scope` ask is never resolved by policy; it goes to the owner or decider.
 - `done`: every acceptance criterion has evidence, the work is committed on the branch, and the pull request body is ready. Line 2 summarizes the evidence.
 - `stop`: budget exhausted, no progress, a risk beyond authorization, or authorization expired. Line 2 gives the reason and the decision needed.
 - `decompose`: the issue is too large for one wake. Write one draft per sub-issue at `.roundtable/state/subissues/NN-<short-title>.md` (NN = 01, 02, ...). Line 1 of each draft is its title, then its body with the acceptance criteria. Line 2 of DECISION gives the reason.

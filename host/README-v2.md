@@ -27,6 +27,8 @@ GitHub intake + autonomous decisions + parallel workers. `rt-loop.sh` / `queue.t
 ## Model routing (`config.env`)
 The only source of model routing is `config.env`. At each role start, `bin/rt-agent` generates the "routing facts" block (each role's harness and model, plus `RT_NOFUNDS_MODEL` for when DeepSeek has no funds) and injects it into the system prompt. `bin/rt-agent --routing-facts` shows it; `bin/rt-agent --check` verifies that every role has a model configured (start-box.sh runs it before startup). Prompts and policy files only name tiers (developer tier, reviewer tier, decider tier), never model names.
 
+Standing roles: `chief`, `researcher`, `developer`, `fixer`, `reviewer`, `verifier`, `security`. Legacy names are accepted during the alias window and mapped by `bin/rt-policy.mjs` (the table in `runtime/lib/routing.mjs`): `opus-fix`→`fixer`; `xcheck`, `crosscheck`, `cross-reviewer`→`reviewer`; `decider`, `acceptor`, `tester`→`verifier`; `threat`, `exploit`, `threat-modeler`, `red-teamer`→`security`. `verifier` and `security` use `RT_DECIDER_MODEL`.
+
 ## Role memory preload (#605)
 `RT_ROLE_MEMORY=1` makes `bin/rt-agent` append the role's preloaded memory to the prompt of each new role start, under a `## Memory` heading. The section is what `rtd` appends for the same role (`appendMemory` in `runtime/rtd.mjs`, `preload` in `runtime/lib/role-memory.mjs`): active layer-3 rules, then layer-2 index lines, capped at `LIMITS.preloadChars` (2000 characters). `bin/rt-role-memory.mjs` is the host helper; it has no copy of the cap or the heading format.
 - Default: `0` (off). With `0`, or when the store is empty or missing, the prompt is unchanged and the launch is unaffected. If the helper fails, rt-agent prints a warning and launches with the original prompt.
@@ -41,7 +43,7 @@ The only source of model routing is `config.env`. At each role start, `bin/rt-ag
 ## Gate 2 (high-risk second pass)
 Gate 2 is the second pass of the reviewer role (`bin/rt-xcheck`, reviewer model from `rt-window --model reviewer`). It runs only when `bin/rt-risk <wt> origin/<base> <issue-title>` prints a reason; a low-risk diff gets one review pass (Gate 1) only. Triggers, checked in this order:
 - Paths: `scripts/`, `.github/`, `runtime/`, `.agents/skills/`, `profiles/`, and any `templates/` path.
-- Path words (case-insensitive, any changed file name): `auth` (authentication), `secret` / `credential` / `token` (secrets), `network` / `proxy` / `webhook` (network), `intake` (external input), `deploy` (deployment).
+- Security tokens (`runtime/lib/security-triggers.mjs`): a changed path triggers when one of its tokens, split on `/` `.` `_` `-` and compared case-insensitively as a whole token, is one of: auth, oauth, login, session, password, rbac, permission, permissions (auth); network, http, https, socket, proxy, webhook, listener (network); secret, secrets, credential, credentials, token, tokens, env, key, keys, pem (secrets); intake, ingest, inbox, parse, parser, input, inputs (external input); deploy, deployment, docker, dockerfile, systemd, launchd (deployment).
 - High blast radius: more than 400 changed lines (added + deleted, `git diff --numstat`).
 - Issue title containing `I18N`.
 
