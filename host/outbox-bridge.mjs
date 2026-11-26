@@ -5,7 +5,6 @@
 //   node host/outbox-bridge.mjs <root> <repo> label <issue> add|rm <label>
 //   node host/outbox-bridge.mjs <root> <repo> merge <issue|""> <pr> <head> <highRisk 0|1>     (tier-gated squash; then the done-pending-confirmation notice)
 //   node host/outbox-bridge.mjs <root> <repo> rollback <issue|""> <pr> <head> <mergeSha>   (runs bin/rt-revert)
-//   node host/outbox-bridge.mjs <root> <repo> stall-cycle   (snapshot JSON on stdin; stall-alert notices through submit, #668)
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -15,7 +14,6 @@ import { createGitHubOutboxProvider } from '../runtime/lib/outbox-github.mjs';
 import { openOutbox } from '../runtime/lib/outbox.mjs';
 import { mergeItem, mergedNotice, requestRollback, rollbackItem } from '../runtime/lib/merge-outbox.mjs';
 import { hostMergeRefusal } from '../runtime/lib/merge-tier.mjs';
-import { runLoopStallCycle } from '../runtime/lib/loop-stall-cycle.mjs';
 import { notifyEvent } from '../runtime/lib/watch-rules.mjs';
 import { loadImRouter, withIm } from '../runtime/lib/outbox-im.mjs';
 import { createWebhookSink } from '../runtime/lib/outbox-webhook.mjs';
@@ -42,7 +40,11 @@ export function ghWriter({ gh, repo, rtHome }) {
   };
   const ghRun = (args, input) => run(gh, args, input);
   return {
-    squashMerge: (pr, head, issue) => ghRun(['pr', 'merge', String(pr), '-R', repo, '--squash', '--match-head-commit', head, '--body', issue ? `Closes #${issue}` : '']),
+    // Returns the commit that landed on main (undefined when gh reports none).
+    squashMerge: (pr, head, issue) => {
+      ghRun(['pr', 'merge', String(pr), '-R', repo, '--squash', '--match-head-commit', head, '--body', issue ? `Closes #${issue}` : '']);
+      return JSON.parse(ghRun(['pr', 'view', String(pr), '-R', repo, '--json', 'mergeCommit'])).mergeCommit?.oid;
+    },
     // Reverts through the existing mechanism (bin/rt-revert reads state/merges.log under RT_HOME).
     revertMerge: (mergeSha) => run(join(rtHome, 'bin', 'rt-revert'), [mergeSha], undefined, { ...process.env, RT_HOME: rtHome }),
     addLabel: (issue, label) => ghRun(['issue', 'edit', String(issue), '-R', repo, '--add-label', label]),
@@ -62,8 +64,8 @@ export function hostProvider(writer, im) {
     deliver(item) {
       if (item.kind === 'merge') {
         const { op, pr, head, mergeSha } = item.payload;
-        if (op === 'squash') writer.squashMerge(pr, head, item.issue);
-        else writer.revertMerge(mergeSha);
+        if (op === 'squash') return { ok: true, mergeSha: writer.squashMerge(pr, head, item.issue) };
+        writer.revertMerge(mergeSha);
         return { ok: true };
       }
       if (item.kind === 'label' && item.payload.op === 'rm') {
@@ -95,19 +97,10 @@ export async function submit({ root, writer, item, send, env = process.env }) {
   return true;
 }
 
-// Self-judgment (#668): loop-stall observes the scheduler's snapshot; each stall-alert firing is delivered through submit (same ledger key).
-export async function stallCycle({ root, writer, snapshot, send, env = process.env }) {
-  const { firings } = runLoopStallCycle({ root, snapshot, config: {} });
-  for (const f of firings) await submit({ root, writer, item: { ...f.item, payload: { ...f.item.payload, of: `${f.kind} #${f.root} (${f.class})` } }, send, env });
-  return firings.length;
-}
-
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [root, repo, op, issue, a, b, c] = process.argv.slice(2);
   const writer = ghWriter({ gh: process.env.RT_GH_REAL || '/usr/bin/gh', repo, rtHome: root });
-  if (op === 'stall-cycle') {
-    await stallCycle({ root, writer, snapshot: JSON.parse(readFileSync(0, 'utf8')) });
-  } else if (op === 'merge' || op === 'rollback') {
+  if (op === 'merge' || op === 'rollback') {
     const cause = { issue: Number(issue) || null, pr: Number(a), head: b, mergeSha: c };
     if (op === 'merge') {
       const refusal = await hostMergeRefusal({ readLive: () => writer.pullRequest(cause.pr), evidence: { highRisk: c === '1' }, revertOf: b.startsWith('rt/revert-') ? b : undefined });
@@ -115,8 +108,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.stderr.write(`REFUSE[tier]: ${refusal}\n`);
         process.exitCode = 2;
       } else {
-        const delivered = await submit({ root, writer, item: mergeItem(cause) });
-        if (delivered && cause.issue) await submit({ root, writer, item: mergedNotice(cause) });
+        const merge = mergeItem(cause);
+        const delivered = await submit({ root, writer, item: merge });
+        // The notice names the commit the squash receipt reports; with no landed sha known, no notice is sent.
+        const mergeSha = openOutbox(root).receipts().get(merge.id)?.mergeSha;
+        if (delivered && cause.issue && mergeSha) await submit({ root, writer, item: mergedNotice({ ...cause, mergeSha }) });
         if (delivered) notifyEvent(root, { event: 'pr-merged', issue: cause.issue, key: cause.pr });
         if (delivered && cause.issue) notifyEvent(root, { event: 'issue-merged', issue: cause.issue, key: cause.issue });
         process.exitCode = delivered ? 0 : 1;

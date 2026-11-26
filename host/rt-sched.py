@@ -984,28 +984,6 @@ class Sched:
         hb = act if self.dry else self.active_workers()
         self.idle_cycles = self.idle_cycles + 1 if not hb and not self.claimable else 0
         self.heartbeat(hb)
-        if not self.dry:   # #668: claimable = candidates that passed the claim gates; awake = claims were not held or unreadable
-            self.stall_cycle(issues, allst, prs_of, status, len(cands), claims_ok and not hold)
-
-    # ---- self-judgment (#668): loop-stall.observeCycle through host/outbox-bridge.mjs, from data this cycle already read
-    def stall_cycle(self, issues, allst, prs_of, status, claimable, awake):
-        """`since` is the issue's status.tsv timestamp: a proxy for when its current label was set (createdAt when it has no status row)."""
-        byn = {n: {"number": n, "state": s, "labels": [], "deps": [], "hasOpenPr": False, "since": 0} for n, s in allst.items()}
-        for i in issues:
-            n, st = i["number"], status.get(i["number"]) or {}
-            since = parse_status_ts(st["ts"]) if st.get("ts") else parse_iso(i["createdAt"])
-            byn[n] = {"number": n, "state": "OPEN", "labels": sorted(i["names"]), "deps": i["deps"], "hasOpenPr": bool(prs_of(n)), "since": since * 1000}
-        freezes = []
-        ledger = os.path.join(RT_HOME, ".roundtable", "state", "freeze-ledger.jsonl")
-        if os.path.exists(ledger):
-            freezes = [{"start": e["start"], "end": e["end"]} for e in map(json.loads, open(ledger))]
-        snapshot = {"at": int(time.time() * 1000), "awake": awake, "claimable": claimable, "activeWorkers": len(self.active_workers()),
-                    "issues": list(byn.values()), "mainRed": self.main_red, "freezes": freezes,
-                    "verifiedComplete": [n for n, st in status.items() if "verified complete" in st.get("detail", "")]}
-        r = subprocess.run(["node", BRIDGE, RT_HOME, self.repo, "stall-cycle"], input=json.dumps(snapshot), capture_output=True, text=True,
-                           timeout=120, env=dict(os.environ, RT_GH_REAL=GH))
-        if r.returncode != 0:
-            self.log("WARN stall cycle failed: %s" % r.stderr.strip()[:200])
 
     # ---- main CI health / auto-revert
     def merged_row(self, sha):
