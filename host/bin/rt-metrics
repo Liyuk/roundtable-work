@@ -50,6 +50,8 @@ START_RE = re.compile(
     r"rt-sched start pid=(\d+) dry=(True|False) once=(True|False) workers=(\d+) poll=(\d+)s"
 )
 GAP_WARN_RE = re.compile(r"WARN scheduler cycle gap (\d+)s")
+CLAIM_WAIT_RE = re.compile(r"no new claims.*\((\d+) candidate\(s\) wait\)")  # claimable_n (#661)
+INTERNAL_EXIT_RE = re.compile(r"worker #(\d+) exited .*blocked: internal:")  # internal block (#661)
 ISSUE_IN_TITLE_RE = re.compile(r"\[#(\d+)\]")
 USAGE_NAMES = (
     "usage-ledger.jsonl",
@@ -522,34 +524,34 @@ def pr_first_pass(comments: list[dict]) -> Optional[bool]:
 
 def parse_sched_log(path: Path) -> dict:
     events = []  # (dt, msg)
-    if not path.is_file():
-        return {
-            "events": [],
-            "starts": [],
-            "spawns": [],
-            "exits": [],
-            "warn_gaps": [],
-            "downtime": [],
-            "gh_read_fails": [],
-            "poll": POLL_DEFAULT,
-        }
-    with path.open(encoding="utf-8", errors="replace") as f:
-        for line in f:
-            m = SCHED_RE.match(line.rstrip("\n"))
-            if not m:
-                continue
-            dt = parse_cst(m.group(1))
-            events.append((dt, m.group(2)))
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+    for line in lines:
+        m = SCHED_RE.match(line)
+        if not m:
+            continue
+        dt = parse_cst(m.group(1))
+        events.append((dt, m.group(2)))
 
     starts = []
     warn_gaps = []  # (start, end, seconds, kind)
     spawns = []  # (dt, issue, slot)
     exits = []
     gh_read_fails = []  # dt of each failed GitHub read (#652)
+    gh_skips = []  # dt of each cycle whose claims were skipped after a failed GitHub read (#661)
+    claim_waits = []  # (dt, candidates) for each cycle that refused claims with candidates queued (#661)
+    internal_exits = []  # (dt, issue) of workers that stopped with an internal block (#661)
     poll = POLL_DEFAULT
     for dt, msg in events:
         if msg.startswith("gh_read_fail "):
             gh_read_fails.append(dt)
+        if "GitHub read failed: no new claims" in msg:
+            gh_skips.append(dt)
+        cw = CLAIM_WAIT_RE.search(msg)
+        if cw:
+            claim_waits.append((dt, int(cw.group(1))))
+        im = INTERNAL_EXIT_RE.search(msg)
+        if im:
+            internal_exits.append((dt, int(im.group(1))))
         sm = START_RE.search(msg)
         if sm:
             dry = sm.group(2) == "True"
@@ -600,8 +602,41 @@ def parse_sched_log(path: Path) -> dict:
         "warn_gaps": warn_gaps,
         "downtime": downtime,
         "gh_read_fails": gh_read_fails,
+        "gh_skips": gh_skips,
+        "claim_waits": claim_waits,
+        "internal_exits": internal_exits,
         "poll": poll,
     }
+
+
+def effective_secs(a: datetime, b: datetime, down: list[tuple[datetime, datetime, float, str]]) -> float:
+    """Seconds of [a, b) outside `down` (host freezes and restart idle, merged so nothing is counted twice)."""
+    return max(0.0, (b - a).total_seconds()) - sum(overlap_seconds(a, b, d0, d1) for d0, d1, _, _ in down)
+
+
+def intersect(xs: list[tuple[datetime, datetime]], ys: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    """Intersection of two sorted lists of (start, end) intervals."""
+    out, i, j = [], 0, 0
+    while i < len(xs) and j < len(ys):
+        lo, hi = max(xs[i][0], ys[j][0]), min(xs[i][1], ys[j][1])
+        if hi > lo:
+            out.append((lo, hi))
+        if xs[i][1] < ys[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def idle_backlog_intervals(sched: dict, samples: list[tuple[datetime, int, int]]) -> list[tuple[datetime, datetime]]:
+    """Intervals with a logged claim wait (candidates queued, no new claim) and no busy worker.
+
+    The scheduler logs a wait every cycle it refuses claims, so one wait line holds for STALL_MULT polls (the stall threshold).
+    """
+    span = timedelta(seconds=STALL_MULT * sched["poll"])
+    claim = [(a, b) for a, b, _, _ in merge_intervals([(dt, dt + span, 0.0, "") for dt, _ in sched["claim_waits"]])]
+    idle = [(s0[0], s1[0]) for s0, s1 in zip(samples, samples[1:]) if s0[1] == 0]
+    return intersect(claim, idle)
 
 
 def merge_intervals(ivals: list[tuple[datetime, datetime, float, str]]) -> list[tuple[datetime, datetime, float, str]]:
@@ -944,6 +979,7 @@ def compute(now: Optional[datetime] = None) -> list[dict]:
     down = merge_intervals(down_raw)
     warn_only = merge_intervals(list(sched["warn_gaps"]))
     samples = worker_busy_series(sched, now)
+    idle_iv = idle_backlog_intervals(sched, samples)
     usage_rows, usage_note = find_usage_ledger()
 
     # claim times per issue
@@ -1038,6 +1074,12 @@ def compute(now: Optional[datetime] = None) -> list[dict]:
         max_to_date = max_to_date / 3600.0
 
     label_iv = label_intervals(raw_events, issues_by_n, now)
+    # rt:blocked dwell is "internal" when the worker stopped with `blocked: internal:` within the hour before the
+    # label (or during it); every other rt:blocked interval is owner-side (the block asks for an owner reply).
+    blocked_iv = [
+        (a, b, any(en == n and a - timedelta(hours=1) <= dt <= b for dt, en in sched["internal_exits"]))
+        for n, a, b in label_iv.get("rt:blocked", [])
+    ]
 
     # first issue date
     created_dates = []
@@ -1197,6 +1239,20 @@ def compute(now: Optional[datetime] = None) -> list[dict]:
                 cov -= sum(overlap_seconds(a, b, lo, min(hi, now)) for a, b, s, k in down)
                 up_h = max(0.0, cov) / 3600.0
 
+        # Effective time: from the first live start to `edge`, minus host freezes (cycle-gap WARN) and restart idle (`down`).
+        # The freeze ledger is not read here; the WARN gap lines are the freeze intervals.
+        eff_start = max(lo, first_live) if first_live else hi
+        eff_h = effective_secs(eff_start, edge, down) / 3600 if eff_start < edge else None
+        idle_min = [effective_secs(max(a, lo), min(b, hi), down) / 60 for a, b in idle_iv]
+        claim_ns = [n for dt, n in sched["claim_waits"] if lo <= dt < hi]
+        # no-PR wait: issues claimed (claim_at) by `edge` with no PR and not closed; age = effective time since claim.
+        has_pr = {closing_issue_from_pr(p, merges_by_pr) for p in prs if p.get("createdAt") and parse_iso(p["createdAt"]) <= edge}
+        closed_n = {i["number"] for i in issues if i.get("closedAt") and parse_iso(i["closedAt"]) <= edge}
+        no_pr_secs = [effective_secs(t, edge, down) for n, t in claim_at.items() if t < edge and n not in has_pr and n not in closed_n]
+        blk = [(effective_secs(max(a, lo), min(b, hi), down) / 60, internal) for a, b, internal in blocked_iv]
+        if d == days[0]:
+            rec_notes.append("unparsed_decisions: sched.log carries no DECISION-parse failure marker; emitted as 0")
+
         tokens = None
         if usage_rows is None:
             tokens = None
@@ -1255,6 +1311,17 @@ def compute(now: Optional[datetime] = None) -> list[dict]:
             "box_freeze_intervals_n": freeze_n,
             "box_freeze_minutes": rround(freeze_min, 1),
             "gh_read_failures_n": gh_fail_n,
+            "effective_hours": rround(eff_h, 3),
+            "merges_per_effective_hour": rround(len(day_merged) / eff_h, 4) if eff_h else None,
+            "idle_backlog_effective_minutes_max": rround(max(idle_min, default=0.0), 1),
+            "idle_backlog_effective_minutes_total": rround(sum(idle_min), 1),
+            "claimable_n_min": min(claim_ns, default=None),
+            "claimable_n_mean": rround(sum(claim_ns) / len(claim_ns), 3) if claim_ns else None,
+            "blocked_internal_effective_minutes": rround(sum(m for m, internal in blk if internal), 1),
+            "blocked_owner_effective_minutes": rround(sum(m for m, internal in blk if not internal), 1),
+            "no_pr_wait_oldest_effective_hours": rround(max(no_pr_secs) / 3600, 3) if no_pr_secs else None,
+            "gh_skipped_cycles": sum(lo <= t < hi for t in sched["gh_skips"]),
+            "unparsed_decisions": 0,
             "tokens_per_merged_pr": rround(tokens, 1) if tokens is not None else None,
             "tokens_note": usage_note if tokens is None else None,
             "worker_util_avg_busy_slots": rround(util, 3),
