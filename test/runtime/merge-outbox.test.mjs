@@ -12,6 +12,7 @@ import { openOutbox } from '../../runtime/lib/outbox.mjs';
 const BRIDGE = fileURLToPath(new URL('../../host/outbox-bridge.mjs', import.meta.url));
 const RT_MERGE = fileURLToPath(new URL('../../host/bin/rt-merge', import.meta.url));
 const SHA = 'abc1234';
+const LANDED = '9dd3481'; // the squash commit on main for PR head SHA
 
 const withRoot = async (fn) => {
   const root = mkdtempSync(join(tmpdir(), 'merge-outbox-test-'));
@@ -24,7 +25,7 @@ const fakeGh = (root) => {
   const comments = [];
   return {
     calls, comments,
-    squashMerge(pr, head, issue) { calls.push(['squash', pr, head, issue, openOutbox(root).pending().map((i) => i.id)]); },
+    squashMerge(pr, head, issue) { calls.push(['squash', pr, head, issue, openOutbox(root).pending().map((i) => i.id)]); return LANDED; },
     revertMerge(mergeSha) { calls.push(['revert', mergeSha]); },
     listComments: async (issue) => comments.filter((c) => c.issue === issue),
     createComment(issue, body) { calls.push(['comment', issue]); comments.push({ issue, body }); },
@@ -47,11 +48,12 @@ test('the squash is enqueued before the provider call: the merge item is pending
 test('a delivered merge yields one done-pending-confirmation notice; a replayed merge adds no second notice or squash', async () => {
   await withRoot(async (root) => {
     const writer = fakeGh(root);
-    const cause = { issue: 286, pr: 7, head: SHA };
+    const cause = { issue: 286, pr: 7, head: SHA, mergeSha: LANDED };
     await deliver(root, writer, mergeItem(cause));
     await deliver(root, writer, mergedNotice(cause));
     assert.equal(writer.comments.length, 1);
-    assert.match(writer.comments[0].body, /PR #7 merged/);
+    assert.match(writer.comments[0].body, /PR #7 merged \(main 9dd3481\)/);
+    assert.equal(openOutbox(root).items().find((i) => i.kind === 'notification').payload.sha, LANDED);
     assert.equal(openOutbox(root).items().filter((i) => i.payload.subtype === 'done-pending-confirmation').length, 1);
     assert.equal(openOutbox(root).items().find((i) => i.kind === 'notification').id, `notice:merge:7:${SHA}`);
     await deliver(root, writer, mergeItem(cause));
@@ -85,7 +87,7 @@ test('the rollback item reaches gh only through the provider, with the merge sha
 test('unknown, wrong-state, non-owner and malformed replies change nothing', async () => {
   await withRoot(async (root) => {
     const writer = fakeGh(root);
-    const cause = { issue: 286, pr: 7, head: SHA };
+    const cause = { issue: 286, pr: 7, head: SHA, mergeSha: LANDED };
     await deliver(root, writer, mergeItem(cause));
     const snapshot = () => JSON.stringify([openOutbox(root).items(), [...openOutbox(root).receipts()]]);
     const before = snapshot();
@@ -107,7 +109,7 @@ test('unknown, wrong-state, non-owner and malformed replies change nothing', asy
 test('a confirm reply from the owner for a delivered notice enqueues one confirmation', async () => {
   await withRoot(async (root) => {
     const writer = fakeGh(root);
-    const cause = { issue: 286, pr: 7, head: SHA };
+    const cause = { issue: 286, pr: 7, head: SHA, mergeSha: LANDED };
     await deliver(root, writer, mergeItem(cause));
     await deliver(root, writer, mergedNotice(cause));
     const reply = (body) => applyMergeReply({ root, owner: 'owner', event: { payload: { body, author: 'owner' } } });
@@ -117,27 +119,52 @@ test('a confirm reply from the owner for a delivered notice enqueues one confirm
   });
 });
 
+test('the notice carries the landed squash sha; merge, rollback and notice ids stay stable', () => {
+  const cause = { issue: 286, pr: 7, head: SHA, mergeSha: LANDED };
+  assert.equal(mergedNotice(cause).payload.sha, LANDED);
+  assert.equal(mergedNotice(cause).id, `notice:merge:7:${SHA}`);
+  assert.equal(mergeItem(cause).id, `merge:7:${SHA}`);
+  assert.equal(rollbackItem(cause).id, `rollback:merge:7:${SHA}`);
+});
+
 test('the rt-merge script calls the outbox bridge and has no direct gh pr merge call', () => {
   const src = readFileSync(RT_MERGE, 'utf8');
   assert.doesNotMatch(src, /"pr", "merge"/);
   assert.match(src, /outbox-bridge\.mjs/);
 });
 
-test('the CLI merge op enqueues before gh runs, sends the notice once, and exits 0 only when delivered', async () => {
+// A gh stub for the CLI: `pr view` answers with the given mergeCommit JSON; pr merge and comments are logged.
+const ghStub = (root, mergeCommit) => {
+  const log = join(root, 'gh.log');
+  const gh = join(root, 'gh');
+  const outboxFile = join(root, '.roundtable', 'state', 'outbox.jsonl');
+  writeFileSync(gh, `#!/bin/sh\nif [ "$1 $2" = "issue view" ]; then echo '{"comments":[]}'; exit 0; fi\nif [ "$1 $2" = "pr view" ]; then echo '{"mergeCommit":${mergeCommit}}'; exit 0; fi\nif [ "$1 $2" = "pr merge" ]; then grep -c '"id":"merge:7:${SHA}"' '${outboxFile}' >> '${log}'; fi\necho "$@" >> '${log}'\ncat >> '${log}.body' 2>/dev/null\n`);
+  chmodSync(gh, 0o755);
+  mkdirSync(join(root, '.roundtable', 'state'), { recursive: true });
+  const run = (args) => spawnSync(process.execPath, [BRIDGE, root, 'owner/repo', ...args], { env: { ...process.env, RT_GH_REAL: gh }, encoding: 'utf8' });
+  return { run, log };
+};
+
+test('the CLI merge op enqueues before gh runs, sends the notice once with the landed sha, and exits 0 only when delivered', async () => {
   await withRoot(async (root) => {
-    const log = join(root, 'gh.log');
-    const gh = join(root, 'gh');
-    const outboxFile = join(root, '.roundtable', 'state', 'outbox.jsonl');
-    writeFileSync(gh, `#!/bin/sh\nif [ "$1 $2" = "issue view" ]; then echo '{"comments":[]}'; exit 0; fi\nif [ "$1 $2" = "pr merge" ]; then grep -c '"id":"merge:7:${SHA}"' '${outboxFile}' >> '${log}'; fi\necho "$@" >> '${log}'\ncat >> '${log}.body' 2>/dev/null\n`);
-    chmodSync(gh, 0o755);
-    mkdirSync(join(root, '.roundtable', 'state'), { recursive: true });
-    const run = (args) => spawnSync(process.execPath, [BRIDGE, root, 'owner/repo', ...args], { env: { ...process.env, RT_GH_REAL: gh }, encoding: 'utf8' });
-    assert.equal(run(['merge', '286', '7', SHA]).status, 0);
-    assert.equal(run(['merge', '286', '7', SHA]).status, 0);
+    const { run, log } = ghStub(root, `{"oid":"${LANDED}"}`);
+    assert.equal(run(['merge', '286', '7', SHA, '0']).status, 0);
+    assert.equal(run(['merge', '286', '7', SHA, '0']).status, 0);
     const lines = readFileSync(log, 'utf8').trim().split('\n');
     assert.equal(lines[0], '1');
     assert.equal(lines[1], `pr merge 7 -R owner/repo --squash --match-head-commit ${SHA} --body Closes #286`);
     assert.equal(lines.filter((l) => l.startsWith('pr merge')).length, 1);
     assert.equal(lines.filter((l) => l.startsWith('issue comment')).length, 1);
+    assert.match(readFileSync(`${log}.body`, 'utf8'), /PR #7 merged \(main 9dd3481\)/);
+  });
+});
+
+test('the CLI sends no notice when the landed squash sha is unknown; the merge itself still exits 0', async () => {
+  await withRoot(async (root) => {
+    const { run, log } = ghStub(root, 'null');
+    assert.equal(run(['merge', '286', '7', SHA, '0']).status, 0);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    assert.equal(lines.filter((l) => l.startsWith('pr merge')).length, 1);
+    assert.equal(lines.filter((l) => l.startsWith('issue comment')).length, 0);
   });
 });

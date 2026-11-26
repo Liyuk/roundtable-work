@@ -24,7 +24,7 @@ test('under test mode, the webhook sink posts nothing without an injected transp
   const root = mkdtempSync(join(tmpdir(), 'webhook-isolation-'));
   try {
     const env = { RT_NOTIFY_WEBHOOK_URL: hook.url, RT_NOTIFY_WEBHOOK_KEY: 'isolation-key' };
-    assert.equal(await submit({ root, writer, item: mergedNotice({ issue: 286, pr: 7, head: 'abc1234' }), env }), true);
+    assert.equal(await submit({ root, writer, item: mergedNotice({ issue: 286, pr: 7, head: 'abc1234', mergeSha: '9dd3481' }), env }), true);
     assert.equal(await submit({ root, writer, item: stallAlert, env }), true);
     assert.deepEqual(hook.requests, []);
     assert.equal(createWebhookSink({ env }), null);

@@ -8,7 +8,7 @@ import { noticeId, openOutbox } from './outbox.mjs';
 
 export const mergeItem = ({ issue, pr, head }) => ({ id: `merge:${pr}:${head}`, kind: 'merge', issue, payload: { op: 'squash', pr, head } });
 
-export const mergedNotice = ({ issue, pr, head }) => ({ id: noticeId({ kind: 'merge', pr, head }), kind: 'notification', issue, payload: { subtype: 'done-pending-confirmation', pr, head } });
+export const mergedNotice = ({ issue, pr, head, mergeSha }) => ({ id: noticeId({ kind: 'merge', pr, head }), kind: 'notification', issue, payload: { subtype: 'done-pending-confirmation', pr, head, sha: mergeSha } });
 
 export const rollbackItem = ({ issue, pr, head, mergeSha }) => ({ id: `rollback:merge:${pr}:${head}`, kind: 'merge', issue, payload: { op: 'rollback', pr, head, mergeSha } });
 
