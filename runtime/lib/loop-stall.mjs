@@ -2,14 +2,17 @@
 // Exports:
 //   initialState()                          { idleCycles, fired } before the first cycle
 //   observeCycle({ state, snapshot, config }) { state, firings } for one cycle; repeated keys are not returned again
-// Detectors: idle-backlog (rt:go work nothing will take) and stale-wait (rt:blocked or ready-to-merge without a PR for too long).
+// Detectors: idle-backlog (rt:go work nothing will take), stale-wait (rt:blocked or ready-to-merge without a PR for too long),
+// and red-main (main red for more than 2 h). red-main reads snapshot.mainRed / snapshot.mainGreen; pending is neither and keeps the episode.
+// redSince is the first red observation of the loop, not the provider's first red run (the history has no timestamps).
 import { buildNotifyRecord } from './outbox-notify.mjs';
 
 const HOUR_MS = 3600000;
 const DAY_MS = 24 * HOUR_MS;
+const RED_MAIN_HOURS = 2;
 
 export function initialState() {
-  return { idleCycles: 0, fired: [] };
+  return { idleCycles: 0, redSince: null, fired: [] };
 }
 
 export function observeCycle({ state, snapshot, config = {} }) {
@@ -18,6 +21,7 @@ export function observeCycle({ state, snapshot, config = {} }) {
   const openGo = snapshot.issues.filter((issue) => issue.state === 'OPEN' && issue.labels.includes('rt:go'));
   const idle = snapshot.awake && openGo.length > 0 && snapshot.claimable === 0 && snapshot.activeWorkers === 0;
   const idleCycles = idle ? state.idleCycles + 1 : 0;
+  const redSince = snapshot.mainGreen ? null : state.redSince ?? (snapshot.mainRed ? snapshot.at : null);
 
   const candidates = [];
   if (idle && idleCycles >= idleThreshold) {
@@ -29,8 +33,10 @@ export function observeCycle({ state, snapshot, config = {} }) {
     if (stale && age > staleHours * HOUR_MS) candidates.push(firing('stale-wait', issue.number, issue.labels.includes('rt:blocked') ? 'rt:blocked' : 'rt:ready-to-merge', snapshot.at, `${issue.since}:${Math.floor(age / DAY_MS)}`));
   }
 
+  if (redSince !== null && snapshot.at - redSince > RED_MAIN_HOURS * HOUR_MS) candidates.push(firing('red-main', null, 'main-red', snapshot.at, `${redSince}`));
+
   const fresh = candidates.filter((candidate) => !state.fired.includes(candidate.key));
-  return { state: { idleCycles, fired: [...state.fired, ...fresh.map((candidate) => candidate.key)] }, firings: fresh };
+  return { state: { idleCycles, redSince, fired: [...state.fired, ...fresh.map((candidate) => candidate.key)] }, firings: fresh };
 }
 
 // Walks each open rt:go issue through its deps; returns Map(root issue -> class) for the unmet blockers.
@@ -67,7 +73,8 @@ function effectiveAge(since, { at, freezes = [] }) {
 function firing(kind, root, cls, at, suffix = new Date(at).toISOString().slice(0, 10)) {
   const action = cls === 'verified-complete-leaf' ? 'auto-close' : 'escalate';
   const ts = new Date(at).toISOString();
-  const key = `notice:stall:${kind}:${root}:${suffix}`;
+  const label = root ?? 'main';
+  const key = `notice:stall:${kind}:${label}:${suffix}`;
   const item = { id: key, kind: 'notification', issue: root, payload: { subtype: 'stall-alert', kind, class: cls, action } };
-  return { kind, root, class: cls, action, key, ledger: `${ts}\t${kind}\t${root}\t${cls}\t${action}\t${key}\n`, item, record: buildNotifyRecord(item, ts) };
+  return { kind, root, class: cls, action, key, ledger: `${ts}\t${kind}\t${label}\t${cls}\t${action}\t${key}\n`, item, record: buildNotifyRecord(item, ts) };
 }
