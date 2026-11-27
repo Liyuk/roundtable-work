@@ -126,3 +126,47 @@ test('a stale-wait episode that crosses UTC midnight fires once per 24 h of effe
     `notice:stall:stale-wait:80:${since}:1`,
   ]);
 });
+
+// Red main: the episode starts at the first red observation after the last green; one stall-alert per episode.
+const red = (at, fields = {}) => snap({ at, mainRed: true, ...fields });
+const green = (at) => snap({ at, mainGreen: true });
+const pending = (at) => snap({ at });
+const redAlerts = (firings) => firings.filter((f) => f.kind === 'red-main');
+
+test('main red for more than 2 h raises one red-main stall-alert, through the stall-alert payload', () => {
+  const { firings } = run([red(DAY_AT), red(DAY_AT + HOUR), red(DAY_AT + 2 * HOUR + 1)]);
+  assert.equal(redAlerts(firings).length, 1);
+  const [alert] = redAlerts(firings);
+  assert.equal(alert.key, `notice:stall:red-main:main:${DAY_AT}`);
+  assert.equal(alert.item.payload.subtype, 'stall-alert');
+  assert.equal(alert.item.payload.class, 'main-red');
+});
+
+test('main red for exactly 2 h or less raises no red-main alert', () => {
+  const { firings } = run([red(DAY_AT), red(DAY_AT + 2 * HOUR)]);
+  assert.deepEqual(redAlerts(firings), []);
+});
+
+test('a red episode that continues past 2 h raises its alert once, not on every later red cycle', () => {
+  const { state, firings } = run([red(DAY_AT), red(DAY_AT + 3 * HOUR), red(DAY_AT + 4 * HOUR), red(DAY_AT + 5 * HOUR)]);
+  assert.equal(redAlerts(firings).length, 1);
+  assert.equal(state.redSince, DAY_AT);
+});
+
+test('a green observation ends the episode, so the next red run starts a new 2 h clock', () => {
+  const { firings } = run([red(DAY_AT), green(DAY_AT + HOUR), red(DAY_AT + 2 * HOUR), red(DAY_AT + 4 * HOUR)]);
+  assert.equal(redAlerts(firings).length, 0);
+  const again = run([red(DAY_AT), green(DAY_AT + HOUR), red(DAY_AT + 2 * HOUR), red(DAY_AT + 5 * HOUR)]);
+  assert.deepEqual(redAlerts(again.firings).map((f) => f.key), [`notice:stall:red-main:main:${DAY_AT + 2 * HOUR}`]);
+});
+
+test('a pending observation neither ends the red episode nor starts one', () => {
+  const { firings } = run([red(DAY_AT), pending(DAY_AT + HOUR), red(DAY_AT + 3 * HOUR)]);
+  assert.equal(redAlerts(firings).length, 1);
+});
+
+test('green main never raises a red-main alert', () => {
+  const { firings, state } = run([green(DAY_AT), green(DAY_AT + 5 * HOUR)]);
+  assert.deepEqual(redAlerts(firings), []);
+  assert.equal(state.redSince, null);
+});
