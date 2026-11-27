@@ -81,17 +81,19 @@ function setup(t, { seq = {}, wakes = {}, env = {} }) {
   cpSync(join(hostDir, 'bin'), join(home, 'bin'), { recursive: true });
   cpSync(join(hostDir, 'rt-work.sh'), join(home, 'rt-work.sh'));
   cpSync(join(hostDir, 'chief-prompt.md'), join(home, 'chief-prompt.md'));
+  cpSync(join(hostDir, 'policy.md'), join(home, 'policy.md'));
   writeFileSync(join(home, 'outbox-bridge.mjs'), BRIDGE);
   writeFileSync(join(home, 'config.env'), `RT_REPO=example/repo\nRT_OWNER=owner\nRT_AUTOMERGE=1\nRT_LENIENT=0\n`);
   const stubs = { 'rt-stage-run': STAGE, 'rt-gate0': GATE0, 'rt-sync-branch': SYNC, 'rt-merge': MERGE, 'rt-delegate': DELEGATE, ...SIMPLE };
   for (const [name, body] of Object.entries(stubs)) { writeFileSync(join(home, 'bin', name), body); chmodSync(join(home, 'bin', name), 0o755); }
   writeFileSync(join(fake, 'gh'), GH); chmodSync(join(fake, 'gh'), 0o755);
+  writeFileSync(join(fake, 'flock'), '#!/usr/bin/env bash\n[ "$1" = -w ] && { shift 3; exec "$@"; }\nexit 0\n', { mode: 0o755 }); // lock is not under test (macOS has no flock); `flock -w T file cmd` runs cmd
   for (const [k, lines] of Object.entries(seq)) writeFileSync(join(fake, `${k}.seq`), lines.join('\n') + '\n');
   for (const [k, body] of Object.entries(wakes)) writeFileSync(join(fake, `wake-${k}.sh`), body);
   const wt = join(home, 'wt', N);
   const run = (args = []) => spawnSync('bash', [join(home, 'rt-work.sh'), N, ...args], {
     encoding: 'utf8', timeout: 120_000,
-    env: { ...process.env, RT_XCHECK_MODEL: 'stub-xcheck', ...env, RT_HOME: home, RT_REPO_DIR: repo, RT_GH_REAL: join(fake, 'gh'), FAKE: fake, FAKE_WT: wt, WT: wt,
+    env: { ...process.env, PATH: `${fake}:${process.env.PATH}`, RT_HANDS_OFF_PRS: '', RT_XCHECK_MODEL: 'stub-xcheck', ...env, RT_HOME: home, RT_REPO_DIR: repo, RT_GH_REAL: join(fake, 'gh'), FAKE: fake, FAKE_WT: wt, WT: wt,
       FAKE_BRIDGE_LOG: join(fake, 'bridge.log'), RT_WAIT_SLEEP: '1' },
   });
   const bridge = () => (existsSync(join(fake, 'bridge.log')) ? readFileSync(join(fake, 'bridge.log'), 'utf8') : '');
