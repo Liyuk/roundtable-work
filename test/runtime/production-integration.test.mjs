@@ -13,6 +13,12 @@ test('production adapter requires github.setBase for stacked retargeting', () =>
   assert.throws(() => createProductionAdapter({ context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn }, github, git: { createRevert: fn } }), /provider github\.setBase is required/);
 });
 
+test('production adapter requires git.revertPlan for red-main recovery', () => {
+  const fn = async () => {};
+  const github = Object.fromEntries(['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'].map((name) => [name, fn]));
+  assert.throws(() => createProductionAdapter({ context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn }, github, git: { createRevert: fn } }), /provider git\.revertPlan is required/);
+});
+
 test('production adapter requires github.createComment for actionable safety rejects', () => {
   const fn = async () => {};
   const github = Object.fromEntries(['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue'].map((name) => [name, fn]));

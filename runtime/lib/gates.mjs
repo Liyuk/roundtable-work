@@ -214,7 +214,7 @@ export async function recoverRedMain({ mergeCommit, mainHead, mainRed, history =
   if (typeof mainRed !== 'boolean' || typeof mainHead !== 'string') throw new TypeError('mainRed and mainHead are required');
   if (!mainRed || mainHead !== mergeCommit) return { status: 'no-action' };
   required(merge, 'merge');
-  if (typeof merge.squash !== 'function' || typeof github.requiredGreen !== 'function') throw new TypeError('merge.squash and github.requiredGreen are required');
+  if (typeof merge.squash !== 'function' || typeof github.requiredGreen !== 'function' || typeof git.revertPlan !== 'function') throw new TypeError('merge.squash, github.requiredGreen and git.revertPlan are required');
   await pause.claimsAndMerges({ paused: true, reason: 'main is red after auto-merge' });
   const target = findBreakingCommit(history) ?? mergeCommit;
   const branch = `rt/revert-${target.slice(0, 7)}`;

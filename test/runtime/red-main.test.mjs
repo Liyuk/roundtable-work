@@ -86,3 +86,15 @@ test('a revert that would leave dangling references is refused: no revert, no PR
   assert.deepEqual(calls[1][1], ['type:bug', 'rt:self', 'priority:p0']);
   assert.match(calls[1][2], /runtime\/rtd\.mjs imports \.\/lib\/new\.mjs/);
 });
+
+test('a git provider without revertPlan is refused before any claim, revert, or issue', async () => {
+  const calls = [];
+  const deps = {
+    pause: { async claimsAndMerges() { calls.push('claims'); } },
+    git: { async createRevert() { calls.push('revert'); } },
+    github: { async requiredGreen() { return true; }, async createIssue() { calls.push('issue'); } },
+    merge: { async squash() { calls.push('merge'); } },
+  };
+  await assert.rejects(recoverRedMain({ mergeCommit: 'fff9999aaaa', mainHead: 'fff9999aaaa', mainRed: true, ...deps }), TypeError);
+  assert.deepEqual(calls, []);
+});

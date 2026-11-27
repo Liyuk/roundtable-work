@@ -284,7 +284,7 @@ export default {
     async mainStatus() { return { head: 'abcdef0123456789', status: 'green' }; },
     openRevertPullRequest: stub, createIssue: stub,
   },
-  git: { createRevert: stub },
+  git: { createRevert: stub, revertPlan: stub },
   observation: {
     expectedSha() { return SHA; },
     issue: { async get() { return { state: 'open', labels: ['rt:running'] }; } },

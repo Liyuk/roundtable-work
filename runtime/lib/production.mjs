@@ -31,7 +31,7 @@ export function createProductionAdapter(providers = {}) {
   for (const [name, methods] of Object.entries({
     context: ['get'], gates: ['gate0', 'reviewer', 'crossCheck'],
     github: ['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'],
-    git: ['createRevert'],
+    git: ['createRevert', 'revertPlan'],
   })) {
     for (const method of methods) {
       if (typeof providers[name]?.[method] !== 'function') throw new TypeError(`provider ${name}.${method} is required`);
