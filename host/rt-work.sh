@@ -325,13 +325,30 @@ write_supervisor(){ # heading text...
   } >"$SD/SUPERVISOR.md"
 }
 release(){ label issue "$n" rm rt:running; }
-block_issue(){ # reason
-  local r="$1" f; f=$(mktemp)
-  printf 'Blocked: %s\n\nThe branch and worktree are preserved. Reply in this issue to resume; the loop will remove `rt:blocked` and continue from the existing work.\n' "$r" >"$f"
+block_issue(){ # owner|internal reason  (owner: a human decides; internal: a loop budget is used up, alert only)
+  local cat=$1 r="$2" f; f=$(mktemp)
+  printf 'Blocked (%s): %s\n\nThe branch and worktree are preserved. Reply in this issue to resume; the loop will remove `rt:blocked` and continue from the existing work.\n' "$cat" "$r" >"$f"
   gh_comment issue "$n" '<!-- rt:blocked -->' "$f"; rm -f "$f"
   label issue "$n" add rt:blocked; release
-  setstatus "$n" stop "$wake" "blocked: $r"
-  log "blocked: $r"
+  setstatus "$n" stop "$wake" "blocked ($cat): $r"
+  log "blocked ($cat): $r"
+}
+# loop-internal failures (#647): retried with a budget per head SHA; the owner is alerted (rt:blocked, internal) only when it is used up
+retry_ok(){ # 0 = one more try for this head, 1 = the 3 retries are used up
+  local head; head=$(git -C "$WT" rev-parse --short=7 HEAD)
+  [ "$(cget retry_head)" = "$head" ] || { cset retry_head "$head"; cset retry_n 0; }
+  [ "$(cinc retry_n)" -le 3 ]
+}
+backoff_queue(){ # reason : requeue with a backoff of 15 / 60 / 240 min (by retry number); no owner comment, one ledger line
+  local k mins; local -a bo=(15 60 240)
+  k=$(cget retry_n 1); mins=${bo[$((k-1))]}
+  cset next_retry "$(( $(date +%s) + mins*60 ))"
+  setstatus "$n" queued "$wake" "internal retry $k/3 after $mins min backoff: $1"; release
+  echo "$(date -Is) #$n internal-retry $k/3 backoff=${mins}m $1" >>"$STATE/internal-retries.log"
+  log "internal retry $k/3 in $mins min: $1"
+}
+transient_hold(){ # tag message : PR stays ready-to-merge and the sweep retries the merge; alert once the head's budget is used up
+  if retry_ok; then hold transient "$1" "$2 (retry $(cget retry_n)/3)"; else block_issue internal "$1: $2 (retry budget used up for this head)"; fi
 }
 post_ask(){ # category question
   local cat="$1" q="$2" f; f=$(mktemp)
@@ -360,7 +377,7 @@ The Chief wants to ask the owner:
 $q"
     case "$DECIDE_RESULT" in
       resolve) write_supervisor "Answer from the decider (the owner was not asked):" "$DECIDE_TEXT"; extra=1; return 0;;
-      stop) block_issue "decider: $(printf '%s' "$DECIDE_TEXT" | head -c 400)"; return 1;;
+      stop) block_issue owner "decider: $(printf '%s' "$DECIDE_TEXT" | head -c 400)"; return 1;;
       *) [ -n "$DECIDE_TEXT" ] && q="$DECIDE_TEXT";;
     esac
   fi
@@ -378,7 +395,7 @@ Decide whether one more Chief wake with your instruction can make progress."
     fi
     why="$why; decider: $DECIDE_RESULT $(printf '%s' "$DECIDE_TEXT" | tr '\n' ' ' | head -c 300)"
   fi
-  block_issue "$why"; return 1
+  block_issue internal "$why"; return 1
 }
 
 handle_outofscope(){
@@ -687,9 +704,9 @@ ${issue_txt:-"(issue text unavailable)"}"
       GATE2_DOWNGRADED=1
       return 0;;
     exploitable)
-      block_issue "Opus judged at least one remaining Gate 2 blocking finding exploitable (PR #${PRN:-?}): $(awk -F'\t' '\$1=="JUDGE" && \$2=="exploitable"{printf "%s: %s; ", \$3, \$4}' "$outf" | head -c 400)"; return 1;;
+      block_issue owner "Opus judged at least one remaining Gate 2 blocking finding exploitable (PR #${PRN:-?}): $(awk -F'\t' '\$1=="JUDGE" && \$2=="exploitable"{printf "%s: %s; ", \$3, \$4}' "$outf" | head -c 400)"; return 1;;
     *)
-      block_issue "Opus exploitability judgment was unparseable or inconclusive (PR #${PRN:-?}); failing closed. See the worker log on the host."; return 1;;
+      block_issue internal "Opus exploitability judgment was unparseable or inconclusive (PR #${PRN:-?}); failing closed. See the worker log on the host."; return 1;;
   esac
 }
 
@@ -703,24 +720,18 @@ need_fix(){ # findings [no-downgrade] -> 0 = another Chief wake, 1 = finished (b
   fi
   if [ "$(cget opus_fix_n)" -lt "$OPUS_FIX_MAX" ]; then
     opus_fix_round "$findings"
-    if [ "${GATE_PIPE_DEPTH:-0}" -ge 3 ]; then
-      block_issue "gates still failing after an Opus fix round (re-entry limit)"; return 1
-    fi
     log "re-running gates after the Opus fix round"
     gate_pipeline; return $?
   fi
   # Sonnet + Opus fix budgets used. Exploitability downgrade only for remaining Gate 2 blockers when Gate 0 and Gate 1 passed.
   if [ "$nodowngrade" != no-downgrade ] && [ "${GATE_ESC_G0:-1}" = 0 ] && [ "${GATE_ESC_G1:-}" = pass ] && [ "${GATE_ESC_G2:-}" = fail ] && [ "$(cget opus_exploit_n)" -lt "$OPUS_EXPLOIT_MAX" ]; then
     if opus_exploit_judge "$findings"; then
-      if [ "${GATE_PIPE_DEPTH:-0}" -ge 3 ]; then
-        block_issue "gates still failing after a Gate 2 downgrade (re-entry limit)"; return 1
-      fi
       log "re-running gates after a not-exploitable Gate 2 downgrade"
       gate_pipeline; return $?
     fi
     return 1
   fi
-  block_issue "gates still failing after $FIX_MAX Sonnet fix round(s) and $OPUS_FIX_MAX Opus fix round: $(printf '%s' "$findings" | tr '\n' ' ' | head -c 500)"; return 1
+  block_issue internal "gates still failing after $FIX_MAX Sonnet fix round(s) and $OPUS_FIX_MAX Opus fix round: $(printf '%s' "$findings" | tr '\n' ' ' | head -c 500)"; return 1
 }
 hold(){ # transient|owner  tag  message  : PR stays rt:ready-to-merge but is not merged now
   local kind=$1 tag=$2 msg=$3 head7 prn_=${PRN:-}
@@ -873,7 +884,7 @@ merge_step(){ # -> 0 finished (merged/held), 2 = need another Chief wake
        if ci_infra_rerun; then hold transient ci-rerun "required CI jobs were cancelled (runner/infrastructure), not failed; they were re-run and the loop retries."; return 0; fi
        unmark_ready; need_fix "CI is not green after the gates passed:
 $(head -1 <<<"$mo")" no-downgrade; return $((2 - $?*2));;
-    *) hold owner "rt-merge-${mrc}" "rt-merge refused or failed: $(head -1 <<<"$mo" | cut -c1-250)"; return 0;;
+    *) transient_hold "rt-merge-${mrc}" "rt-merge refused or failed: $(head -1 <<<"$mo" | cut -c1-250)"; return 0;;
   esac
 }
 
@@ -886,9 +897,10 @@ refresh_base(){ # a stacked base whose PR is no longer open has been merged: the
 
 # gate_pipeline: returns 0 = another Chief wake is needed (fix round / conflict), 1 = worker is finished
 gate_pipeline(){
-  GATE_PIPE_DEPTH=$((${GATE_PIPE_DEPTH:-0}+1))
+  GATE_PIPE_DEPTH=$((${GATE_PIPE_DEPTH:-0}+1))   # reset at each Chief wake: counts recursion inside one wake
   if [ "$GATE_PIPE_DEPTH" -gt 3 ]; then
-    block_issue "internal: gate pipeline re-entered too many times"; return 1
+    if retry_ok; then backoff_queue "gate pipeline re-entered too many times in one wake"; else block_issue internal "gate pipeline re-entered too many times (retry budget used up)"; fi
+    return 1
   fi
   local pr isdraft hsha sy ts g0f xcf g0 xc risk hard=0 findings head head7 g0t g2t gate0val ov="" note g2_block=0 g2_fu=0
   pr=$("$GH" pr list -R "$RT_REPO" --head "$BRANCH" --state open --json number,isDraft,headRefOid -L 1 --jq '.[0] // empty | "\(.number)\t\(.isDraft)\t\(.headRefOid)"' 2>/dev/null)
@@ -903,7 +915,7 @@ gate_pipeline(){
   sy=$(RT_SYNC_HELD=1 "$RT_HOME/bin/rt-sync-branch" "$n" 2>/dev/null | head -1); log "sync with origin/main: $sy"
   case "$sy" in
     # main moving on is not the PR's fault: conflicts get their own budget (sync_n), not the review fix budget
-    "SYNC: conflict"*) if [ "$(cget sync_n)" -ge "${RT_SYNC_MAX:-3}" ] || stopped; then block_issue "merging origin/main conflicts and the conflict-resolution budget (${RT_SYNC_MAX:-3}) is used up"; return 1; fi
+    "SYNC: conflict"*) if [ "$(cget sync_n)" -ge "${RT_SYNC_MAX:-3}" ] || stopped; then block_issue internal "merging origin/main conflicts and the conflict-resolution budget (${RT_SYNC_MAX:-3}) is used up"; return 1; fi
                        cinc sync_n >/dev/null; extra=1; return 0;;
   esac
   git -C "$REPO_DIR" fetch -q origin 2>/dev/null
@@ -974,7 +986,7 @@ $findings"
 Decider instructions:
 $(tail -n +2 <<<"$DECIDE_TEXT")"; return $?
         fi;;
-      *) block_issue "gates disagree and the decider could not settle it (PR #$PRN): $(printf '%s' "$findings" | tr '\n' ' ' | head -c 400)"; return 1;;
+      *) block_issue internal "gates disagree and the decider could not settle it (PR #$PRN): $(printf '%s' "$findings" | tr '\n' ' ' | head -c 400)"; return 1;;
     esac
   fi
   if [ "$G1" = unavailable ]; then
@@ -982,7 +994,7 @@ $(tail -n +2 <<<"$DECIDE_TEXT")"; return $?
     write_gates_json "${ov:-pass}" unavailable "$xc" "$risk"
     mark_ready
     post_gates_comment "$head7" "pass" "unavailable (reviewer gave no verdict after a retry)" "$xc" "incomplete"
-    hold owner gate1-unavailable "the independent review (Gate 1) was unavailable, so the PR is ready-to-merge but not merged automatically."
+    transient_hold gate1-unavailable "the independent review (Gate 1) was unavailable, so the PR is ready-to-merge but not merged automatically."
     return 1
   fi
   # ---- all gates passed for this head
@@ -1132,6 +1144,7 @@ if [ "$GATE_ONLY" = 1 ]; then
   if gate_pipeline; then log "gate-only run needs a Chief wake (fix round / conflict)"; else run_loop=0; fi
 fi
 while [ "$run_loop" = 1 ]; do
+  GATE_PIPE_DEPTH=0
   if stopped; then setstatus "$n" paused "$wake" "STOP file present; resumes after restart"; log "STOP present; leaving at a wake boundary"; exit 0; fi
   if [ "$extra" -eq 0 ]; then
     if [ "$used" -ge "$MAXWAKE" ]; then
