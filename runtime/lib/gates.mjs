@@ -3,6 +3,8 @@ import { safetyFiles } from './safety.mjs';
 import { gate2Triggers } from './gate2-triggers.mjs';
 import { triageFindings } from './review-ledger.mjs';
 import { localCheckEntry, localCheckPasses, ciAllowsMerge } from './local-checks.mjs';
+import { findDanglingImports } from './revert-check.mjs';
+import { findBreakingCommit } from './red-main.mjs';
 
 // A single-session (`independent: false`) review is never a Gate 1 pass, whatever its verdict says.
 const PASS = (result) => result?.independent !== false && (result === true || result?.passed === true || result?.status === 'pass');
@@ -206,18 +208,27 @@ export async function runGates({ issue, head, tree, highRisk = false, changedFil
 export const startsFixRound = (findings, previous = []) => triageFindings(findings, previous).some(finding => finding.fix);
 
 /** Recover an auto-merge that made main red. Every git/GitHub action is an injected side effect. */
-export async function recoverRedMain({ mergeCommit, mainHead, mainRed, git, github, pause, merge }) {
+export async function recoverRedMain({ mergeCommit, mainHead, mainRed, history = [], git, github, pause, merge }) {
   if (typeof mergeCommit !== 'string' || !/^[0-9a-f]{7,40}$/i.test(mergeCommit)) throw new TypeError('mergeCommit must be a git SHA');
   required(git, 'git'); required(github, 'github'); required(pause, 'pause');
   if (typeof mainRed !== 'boolean' || typeof mainHead !== 'string') throw new TypeError('mainRed and mainHead are required');
   if (!mainRed || mainHead !== mergeCommit) return { status: 'no-action' };
   required(merge, 'merge');
-  if (typeof merge.squash !== 'function' || typeof github.requiredGreen !== 'function') throw new TypeError('merge.squash and github.requiredGreen are required');
+  if (typeof merge.squash !== 'function' || typeof github.requiredGreen !== 'function' || typeof git.revertPlan !== 'function') throw new TypeError('merge.squash, github.requiredGreen and git.revertPlan are required');
   await pause.claimsAndMerges({ paused: true, reason: 'main is red after auto-merge' });
-  const branch = `rt/revert-${mergeCommit.slice(0, 7)}`;
-  const revert = await git.createRevert({ mergeCommit, branch });
-  const pr = await github.openRevertPullRequest({ branch, revert, title: `Revert ${mergeCommit.slice(0, 7)} after red main` });
-  await github.createIssue({ title: `Investigate red main after auto-merge ${mergeCommit.slice(0, 7)}`, labels: ['type:bug', 'rt:self'], body: `Auto-merge ${mergeCommit} caused main CI to fail. Revert PR: #${pr.number}.` });
+  const target = findBreakingCommit(history) ?? mergeCommit;
+  const branch = `rt/revert-${target.slice(0, 7)}`;
+  const investigate = (body) => github.createIssue({ title: `Investigate red main after auto-merge ${target.slice(0, 7)}`, labels: ['type:bug', 'rt:self', 'priority:p0'], body });
+  const dangling = findDanglingImports(await git.revertPlan({ mergeCommit: target }));
+  if (dangling.length) {
+    const refs = dangling.map(({ file, specifier }) => `${file} imports ${specifier}`).join('; ');
+    await investigate(`Revert of ${target} is blocked: it would leave dangling references (${refs}). Main stays paused until they are resolved by hand.`);
+    return { status: 'blocked-dangling', branch, dangling, paused: true };
+  }
+  const revert = await git.createRevert({ mergeCommit: target, branch });
+  const body = `Reverts breaking commit ${target} onto branch ${branch}. Dangling references: none. The required green check gates the merge.`;
+  const pr = await github.openRevertPullRequest({ branch, revert, title: `Revert ${target.slice(0, 7)} after red main`, body });
+  await investigate(`Auto-merge ${target} caused main CI to fail. Revert PR: #${pr.number}.`);
   const checks = await github.requiredGreen(pr.number);
   if (checks !== true && checks?.green !== true) return { status: 'revert-pending', branch, pr: pr.number, paused: true };
   await merge.squash(pr.number, { revert: true, head: pr.head });

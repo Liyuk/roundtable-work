@@ -399,7 +399,7 @@ These constraints are what make a Haiku-class model safe to run unattended. Each
 | `gh-write-failed` | outbox failure record | backoff, then dead-letter and one `stall-alert` | no |
 | `ci-red` on the PR | gates | fix round | yes (fix budget) |
 | `ci-cancelled` | gates | one re-run, then hold (`MAX_CI_RERUNS`) | no |
-| `main-red-after-merge` | `recoverRedMain` | pause claims and merges, revert PR, investigate issue | no |
+| `main-red-after-merge` | `recoverRedMain` | pause claims and merges; revert the breaking commit (first red after the last green in `github.mainHistory`, else the merge commit at head) as `rt/revert-<sha7>`; refuse with `blocked-dangling` when `findDanglingImports` finds a reference to a deleted file; p0 investigate issue | no |
 | `merge-unknown` | main monitor | main hold and a manual-check issue (existing) | no |
 | `claim-stuck` | claim held by the live pid with no running dispatch | release the claim (B2) | no |
 | `revert-failed` | journal | hold the line, `approval-request` | no |

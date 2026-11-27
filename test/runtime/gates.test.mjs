@@ -408,7 +408,7 @@ test('red-main recovery pauses claims and merges, opens revert PR, and files bug
   const calls = [];
   const result = await recoverRedMain({ mergeCommit: 'abcdef0123456789', mainHead: 'abcdef0123456789', mainRed: true,
     pause: { async claimsAndMerges(v) { calls.push(['pause', v.paused]); } },
-    git: { async createRevert(v) { calls.push(['revert', v.branch]); return { sha: 'revertsha' }; } },
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert(v) { calls.push(['revert', v.branch]); return { sha: 'revertsha' }; } },
     github: {
       async openRevertPullRequest(v) { calls.push(['pr', v.branch]); return { number: 91, head: 'reverthead' }; },
       async requiredGreen(pr) { calls.push(['revert-ci', pr]); return { green: true }; },
@@ -417,12 +417,12 @@ test('red-main recovery pauses claims and merges, opens revert PR, and files bug
     merge: { async squash(pr, evidence) { calls.push(['merge-revert', pr, evidence.revert]); } },
   });
   assert.equal(result.status, 'reverted');
-  assert.deepEqual(calls, [['pause', true], ['revert', 'rt/revert-abcdef0'], ['pr', 'rt/revert-abcdef0'], ['issue', 'type:bug', 'rt:self'], ['revert-ci', 91], ['merge-revert', 91, true]]);
+  assert.deepEqual(calls, [['pause', true], ['revert', 'rt/revert-abcdef0'], ['pr', 'rt/revert-abcdef0'], ['issue', 'type:bug', 'rt:self', 'priority:p0'], ['revert-ci', 91], ['merge-revert', 91, true]]);
 });
 
 test('no red main or unrelated main head does not cause recovery side effects', async () => {
   let invoked = false;
-  const deps = { pause: { async claimsAndMerges() { invoked = true; } }, git: { async createRevert() { invoked = true; } }, github: {} };
+  const deps = { pause: { async claimsAndMerges() { invoked = true; } }, git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { invoked = true; } }, github: {} };
   assert.equal((await recoverRedMain({ mergeCommit: 'abcdef0123456789', mainHead: 'other123', mainRed: true, ...deps })).status, 'no-action');
   assert.equal(invoked, false);
 });
@@ -444,7 +444,7 @@ test('red main with a not-green revert CI pauses before revert and does not merg
   const calls = [];
   const result = await recoverRedMain({ mergeCommit: 'abcdef0123456789', mainHead: 'abcdef0123456789', mainRed: true,
     pause: { async claimsAndMerges(v) { calls.push(['pause', v]); } },
-    git: { async createRevert(v) { calls.push(['revert', v.branch]); return {}; } },
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert(v) { calls.push(['revert', v.branch]); return {}; } },
     github: {
       async openRevertPullRequest() { calls.push(['pr']); return { number: 91, head: 'reverthead' }; },
       async createIssue() { calls.push(['issue']); },

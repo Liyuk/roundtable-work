@@ -512,9 +512,9 @@ export async function runQueue({
       }
       if (status.status !== 'red' || status.head !== record.mergeCommit) return true;
       notify?.({ event: 'main-red', key: record.mergeCommit });
-      await recoverRedMain({ mergeCommit: record.mergeCommit, mainHead: status.head, mainRed: true,
+      await recoverRedMain({ mergeCommit: record.mergeCommit, mainHead: status.head, mainRed: true, history: await autoMerge.github.mainHistory?.() ?? [],
       pause: { async claimsAndMerges() {} },
-      git: { createRevert: (args) => once('revert', () => autoMerge.git.createRevert(args)) },
+      git: { createRevert: (args) => once('revert', () => autoMerge.git.createRevert(args)), revertPlan: (args) => autoMerge.git.revertPlan(args) },
       github: {
         openRevertPullRequest: (args) => once('pullRequest', () => autoMerge.github.openRevertPullRequest(args)),
         createIssue: (args) => once('issue', () => autoMerge.github.createIssue(args)),

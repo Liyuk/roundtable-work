@@ -13,6 +13,12 @@ test('production adapter requires github.setBase for stacked retargeting', () =>
   assert.throws(() => createProductionAdapter({ context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn }, github, git: { createRevert: fn } }), /provider github\.setBase is required/);
 });
 
+test('production adapter requires git.revertPlan for red-main recovery', () => {
+  const fn = async () => {};
+  const github = Object.fromEntries(['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment'].map((name) => [name, fn]));
+  assert.throws(() => createProductionAdapter({ context: { get: fn }, gates: { gate0: fn, reviewer: fn, crossCheck: fn }, github, git: { createRevert: fn } }), /provider git\.revertPlan is required/);
+});
+
 test('production adapter requires github.createComment for actionable safety rejects', () => {
   const fn = async () => {};
   const github = Object.fromEntries(['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue'].map((name) => [name, fn]));
@@ -51,7 +57,7 @@ test('an in-flight recovery effect stays paused and requests human intervention 
       async openRevertPullRequest() { return { number: 91, head: 'reverthead' }; },
       async createIssue(input) { calls.push(['issue', input]); return { number: 121 }; },
     },
-    git: { async createRevert() { calls.push('revert'); return { sha: '1234567' }; } },
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { calls.push('revert'); return { sha: '1234567' }; } },
     observation: observationProvider(),
     context: { async get() { throw new Error('recovery must not proceed'); } },
     gates: { async gate0() { return true; }, async reviewer() { return { passed: true, head: 'head', rationale: RATIONALE }; }, async crossCheck() { return true; } },
@@ -91,7 +97,7 @@ test('distinct unknown recovery effects each receive an intervention notificatio
       async openRevertPullRequest() { throw new Error('must not repeat pull request'); },
       async createIssue(input) { calls.push(input); return { number: 120 + calls.length }; },
     },
-    git: { async createRevert() { throw new Error('must not repeat revert'); } },
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { throw new Error('must not repeat revert'); } },
     observation: observationProvider(),
     context: { async get() {} }, gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
   });
@@ -131,7 +137,7 @@ for (const scenario of ['throws', 'null', 'restart']) {
         async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
         async openRevertPullRequest() {}, async createIssue() { calls++; if (scenario === 'throws') throw new Error('network failure'); return null; },
       },
-      git: { async createRevert() { throw new Error('must not repeat'); } },
+      git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { throw new Error('must not repeat'); } },
       observation: observationProvider(),
       context: { async get() {} }, gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
     });
@@ -161,7 +167,7 @@ test('an uncertain notification does not duplicate or hide a different unknown e
       async recordedEscalationApproval() {}, async mainStatus() { return { head: 'abcdef0123456789', status: 'red' }; }, async createComment() {},
       async openRevertPullRequest() {}, async createIssue(input) { calls.push(input); return { number: 122 }; },
     },
-    git: { async createRevert() {} }, context: { async get() {} }, observation: observationProvider(),
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() {} }, context: { async get() {} }, observation: observationProvider(),
     gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
   });
   try {
@@ -190,7 +196,7 @@ for (const status of [{ head: 'changed', status: 'red' }, { head: 'changed', sta
         async recordedEscalationApproval() {}, async mainStatus() { return status; }, async openRevertPullRequest() {}, async createComment() {},
         async createIssue() { calls++; return { number: 121 }; },
       },
-      git: { async createRevert() {} }, context: { async get() {} }, observation: observationProvider(),
+      git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() {} }, context: { async get() {} }, observation: observationProvider(),
       gates: { async gate0() {}, async reviewer() {}, async crossCheck() {} },
     });
     try {
@@ -219,7 +225,7 @@ ${body('92', REVERT_SHA, 'reverttree')}`, files: ['x'] }; },
     async createIssue() { calls.push('bug'); return { number: 92 }; },
   };
   const providers = {
-    github, git: { async createRevert() { calls.push('revert'); return { sha: '1234567' }; } },
+    github, git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { calls.push('revert'); return { sha: '1234567' }; } },
     context: { async get({ recovery }) { return recovery ? { pr: 91, head: REVERT_SHA, tree: 'reverttree', highRisk: false, changedFiles: ['x'] } : { pr: 90, head: BASE_SHA, tree: 'tree', highRisk: false, changedFiles: ['x'] }; } },
     gates: { async gate0() { calls.push('gate0'); return true; }, async reviewer({ head }) { calls.push('reviewer'); return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
     observation: observationProvider(),
@@ -258,7 +264,7 @@ const log = async (...v) => appendFile(${JSON.stringify(log)}, JSON.stringify(v)
 export default {
  context: { async get({recovery}) { return recovery ? {pr:91,head:'${REVERT_SHA}',tree:'reverttree',highRisk:false,changedFiles:['x']} : {pr:90,head:'${BASE_SHA}',tree:'tree',highRisk:false,changedFiles:['x']}; } },
  gates: { async gate0(input) { await log('gate0'); issue = input.issue; return true; }, async reviewer({head}) { await log('reviewer'); return {passed:true,head,rationale:RATIONALE}; }, async crossCheck() { return true; } },
- git: { async createRevert() { await log('revert'); return {sha:'1234567'}; } },
+ git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { await log('revert'); return {sha:'1234567'}; } },
  github: {
   async setBase() {}, async getPullRequest(pr) { return { body: (pr === 90 ? 'Closes #53 Closes #54 ' : 'Closes #92 ') + upsertPrRecord('', buildPrRecord({issue, head: pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}', tree: pr === 90 ? 'tree' : 'reverttree', passed: ['gate0', 'gate1', 'ci'], rounds: { gate1: { role: 'reviewer', harness: 'test', model: 'test-reviewer' } }})), state:'open',draft:false,mergeable:true,head:pr === 90 ? '${BASE_SHA}' : '${REVERT_SHA}',files:['x']}; },
   async requiredGreen(pr) { return pr === 90 || ${revertGreen}; },
@@ -298,7 +304,7 @@ test('CLI production providers perform unattended green and red-main recovery th
         : [{ method: 'squash', sha: BASE_SHA }, { method: 'squash', sha: BASE_SHA }]);
       if (status === 'red') {
         assert.deepEqual(calls.map(x => x[0]), ['gate0', 'reviewer', 'squash', 'revert', 'revert-pr', 'bug', 'gate0', 'reviewer', 'squash']);
-        assert.deepEqual(calls.find(x => x[0] === 'bug')[1], ['type:bug', 'rt:self']);
+        assert.deepEqual(calls.find(x => x[0] === 'bug')[1], ['type:bug', 'rt:self', 'priority:p0']);
         assert.equal(JSON.parse(child.stdout).skipped[0].reason, 'main_paused');
       }
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -359,7 +365,7 @@ ${body(issue, REVERT_SHA, 'tree')}`, files: ['x'] }; },
     async createIssue() { return { number: 92 }; },
   };
   const autoMerge = createProductionAdapter({ pause, github,
-    git: { async createRevert() { return { sha: '1234567' }; } },
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { return { sha: '1234567' }; } },
     context: { async get({ recovery }) { return { pr: recovery ? 91 : 90, head: recovery ? REVERT_SHA : BASE_SHA, tree: 'tree', highRisk: false, changedFiles: ['x'] }; } },
     gates: { async gate0(input) { issue = input.issue; return issue === '53' || gatePass; }, async reviewer({ head }) { return { passed: true, head, rationale: RATIONALE }; }, async crossCheck() { return true; } },
     observation: observationProvider(),

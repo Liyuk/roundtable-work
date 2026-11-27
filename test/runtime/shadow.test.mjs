@@ -160,7 +160,7 @@ console.log(JSON.stringify(answers[key]));
 export default {
   context: { get: stub }, gates: { gate0: stub, reviewer: stub, crossCheck: stub },
   github: { setBase: stub, getPullRequest: stub, requiredGreen: stub, squashMerge: stub, addLabel: stub, recordedEscalationApproval: stub, mainStatus: stub, openRevertPullRequest: stub, createIssue: stub, createComment: stub },
-  git: { createRevert: stub },
+  git: { createRevert: stub, revertPlan: stub },
   observation: { issue: { get: stub }, worktree: { inspect: stub }, git: { head: stub, commit: stub }, evidence: { checks: stub, review: stub } },
 };
 `);

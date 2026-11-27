@@ -7,7 +7,7 @@ export default {
   context: methods('context', ['get']),
   gates: methods('gates', ['gate0', 'reviewer', 'crossCheck']),
   github: methods('github', ['getPullRequest', 'setBase', 'requiredGreen', 'squashMerge', 'addLabel', 'recordedEscalationApproval', 'mainStatus', 'openRevertPullRequest', 'createIssue', 'createComment']),
-  git: methods('git', ['createRevert']),
+  git: methods('git', ['createRevert', 'revertPlan']),
   observation: {
     issue: methods('observation.issue', ['get']),
     worktree: methods('observation.worktree', ['inspect']),
