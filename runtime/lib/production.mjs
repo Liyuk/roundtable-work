@@ -12,7 +12,10 @@
  * `mergeCommit` SHA to resolve a merge whose outcome was unknown, and a closed pull request must report
  * `merged: false` to be treated as unmerged. github.squashMerge resolves only after a successful squash and returns
  * { mergeCommit: <SHA> }. github.setBase(pr, base) updates the pull request's base through the provider.
- * github.mainStatus returns { head, status: 'green'|'red'|'pending' }.
+ * github.mainStatus returns { head, status: 'green'|'red'|'pending' }. The optional github.mainHistory() returns main's commits newest-first as
+ * [{ sha, state: 'green'|'red'|'pending' }]; without it red-main recovery reverts the merge commit at main head.
+ * git.revertPlan({ mergeCommit }) returns { deleted, files }: the paths the revert removes and a Map of the post-revert contents of
+ * the remaining repository files; recovery refuses the revert when a remaining .mjs file imports a deleted path.
  * github.requiredGreen returns `true` or `{ green, status? }`, where `status: 'cancelled'` means cancelled-only
  * required CI; a provider may also expose the optional `rerunCancelled(pr)` used to re-run such CI. That method is
  * optional by design: without it a cancelled answer keeps today's fail-closed behaviour. `status: 'absent'` means no

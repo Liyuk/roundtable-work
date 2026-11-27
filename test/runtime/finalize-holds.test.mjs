@@ -344,7 +344,7 @@ test('a gate hold never pauses main and writes no monitor record', async () => {
     const pause = { writes: [], value: null, async get() { return this.value; }, async put(value) { this.writes.push(value); this.value = value; } };
     const autoMerge = createProductionAdapter({
       pause, github: w.github, gates: w.gates, context: w.context,
-      git: { async createRevert() { throw new Error('unexpected revert'); } },
+      git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { throw new Error('unexpected revert'); } },
       observation: observationProvider(),
     });
     const result = await runQueue({ workRoot: root, queue: ['53'], autoMerge, models: MODELS, handler: async ({ phase }) => ({ exitCode: 0, output: phase === 'reviewing' ? PASS : 'ok' }) });
@@ -414,7 +414,7 @@ ${revertBody}`, files: w.state.changedFiles };
   } };
   w.autoMerge = createProductionAdapter({
     pause: w.pause, github: w.github, gates: w.gates, context: w.context,
-    git: { async createRevert() { w.calls.push('revert'); return { sha: '1234567' }; } },
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { w.calls.push('revert'); return { sha: '1234567' }; } },
     observation: observationProvider(),
   });
   return w;

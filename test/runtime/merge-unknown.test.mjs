@@ -44,7 +44,7 @@ ${REVERT_BODY}`, state: 'open', draft: false, mergeable: true, head: pr === 90 ?
   };
   return createProductionAdapter({
     github,
-    git: { async createRevert() { return { sha: '1234567' }; }, ...overrides.git },
+    git: { async revertPlan() { return { deleted: [], files: new Map() }; }, async createRevert() { return { sha: '1234567' }; }, ...overrides.git },
     context: { async get({ recovery } = {}) {
       return recovery
         ? { pr: 91, head: 'reverthead', tree: 'reverttree', highRisk: false, changedFiles: ['x'] }
@@ -211,7 +211,7 @@ ${REVERT_BODY}`, state: merged ? 'merged' : 'open', draft: false, mergeable: tru
     assert.equal(record.stage, 'monitoring');
     assert.equal(record.mergeCommit, 'abcdef0123456789');
     assert.equal(record.recovery.revertMerged.done, true, 'the existing red-main revert path still runs');
-    assert.deepEqual(calls.filter(Array.isArray), [['issue', 'type:bug', 'rt:self'], ['squash', 91]]);
+    assert.deepEqual(calls.filter(Array.isArray), [['issue', 'type:bug', 'rt:self', 'priority:p0'], ['squash', 91]]);
     assert.equal(calls.filter((c) => c === 'revert-pr').length, 1);
 
     main = { head: '2222222222222222', status: 'green' };
