@@ -248,6 +248,7 @@ class Sched:
         self.sweep_retry = int(c.get("RT_SWEEP_RETRY", "900"))
         self.main_red = False
         self.cycle_no = 0
+        self.backlog = self.claimable = self.idle_cycles = 0   # heartbeat counters, set by cycle()
         self.gh_good = {}     # key -> (cycle no, last good read), see gh_read_cached
         self.last_sweep = {}   # n -> (head sha, time)
         self.aux = {}          # revert helpers: sha7 -> Popen
@@ -684,6 +685,7 @@ class Sched:
         merged_raw = self.gh_read_cached("merged", ["pr", "list", "-R", self.repo, "--state", "merged", "-L", "500", "--json", "number,headRefName,body"])[0]
         claims_ok = all(fresh for _, fresh in opened) and prs_raw is not None and allst_raw is not None and merged_raw is not None
         issues = [i for v, _ in opened for i in v or []]   # the last good list when a read failed (orphans still respawn)
+        self.backlog = sum("rt:running" not in {l["name"] for l in i["labels"]} for i in issues)   # open, unclaimed
         prs = prs_raw or []
         allst = {i["number"]: i["state"] for i in allst_raw or []}
         merged_prs = merged_raw or []
@@ -955,6 +957,7 @@ class Sched:
         if self.main_red and cands:
             self.log("%smain CI is red: no new claims (%d candidate(s) wait)" % ("DRY " if self.dry else "", len(cands)))
             cands = []
+        self.claimable = len(cands)
         for i in cands:
             n = i["number"]
             k = free_slot()
@@ -992,7 +995,9 @@ class Sched:
             slots_used.add(k)
             active[n] = me
 
-        self.heartbeat(act if self.dry else self.active_workers())
+        hb = act if self.dry else self.active_workers()
+        self.idle_cycles = self.idle_cycles + 1 if not hb and not self.claimable else 0
+        self.heartbeat(hb)
 
     # ---- main CI health / auto-revert
     def merged_row(self, sha):
@@ -1153,6 +1158,7 @@ class Sched:
         now = time.time()
         txt = "ts=%s\nepoch=%d\npid=%d\ndry=0\nslots=%d\nrunning=%d\nmain_red=%d\nworkers=%s\n" % (
             time.strftime("%F %T %Z"), now, os.getpid(), self.workers_max, len(act), 1 if self.main_red else 0, ws)
+        txt += "backlog=%d\nclaimable=%d\nidle_cycles=%d\n" % (self.backlog, self.claimable, self.idle_cycles)
         path = os.path.join(self.state, "heartbeat")
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
